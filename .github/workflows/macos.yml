@@ -58,6 +58,9 @@ jobs:
           app="$temp_dir/Somnus.app"
           backend="$app/Contents/Resources/backend/SomnusBackend"
           codesign --verify --deep --strict "$app"
+          icon="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
+          if [[ "$icon" != *.icns ]]; then icon="$icon.icns"; fi
+          cmp "$app/Contents/Resources/$icon" electron/brand/somnus.icns
           expected_arch="$PACKAGE_ARCH"
           if [[ "$expected_arch" == "x64" ]]; then expected_arch=x86_64; fi
           [[ "$(lipo -archs "$app/Contents/MacOS/Somnus")" == "$expected_arch" ]]

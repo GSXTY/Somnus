@@ -51,6 +51,7 @@
     },
     "mac": {
       "target": "zip",
+      "icon": "brand/somnus.icns",
       "executableName": "Somnus",
       "identity": "-",
       "hardenedRuntime": false,
