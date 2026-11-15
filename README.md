@@ -1,11 +1,13 @@
-# Somnus
+<p align="center">
+  <img src="page_design/frontend/src/assets/somnus-mascot.png" width="120" alt="Somnus 水獭标志">
+</p>
 
-Somnus 是为团队打造的桌面 AI Agent。它把会话、本地项目和企业授权数据放进同一个工作台，让用户围绕手头的项目提问、分析信息并协作完成任务。
+<h1 align="center">Somnus</h1>
 
-开箱使用公司配置的默认 Agent。需要其他模型或执行环境时，也可以接入自己的 Agent 和模型供应商，在同一个会话里切换并继续。团队可统一管理公司提供的能力，用户可以按需添加自己的扩展。
+Somnus 是面向团队的桌面 AI Agent，将会话、本地项目和企业授权数据放在同一个工作台。你可以使用公司配置的默认 Agent，也可以接入自己的 Agent、模型供应商和扩展。
 
-项目可以关联本地工作目录，集中保存相关会话。接入公司数据网关后，Agent 可以在授权范围内使用团队数据，让回答和分析建立在业务上下文上。
+## Windows 下载
 
-## 开发与维护
+Windows 版本发布后，在发布页查看版本说明，从对应版本的附件下载并运行 `Somnus-Setup-<版本>-windows-x64.exe`。这是私有仓库，请登录已获仓库访问权限的 GitHub 账号。 [Windows 下载和版本说明](https://github.com/GSXTY/Somnus/releases)
 
-Windows 本机版构建后，从 `dist/electron/win-unpacked/Somnus.exe` 启动。开发入口、部署与发布流程见 [维护指南](docs/MAINTAINER.md)。
+[维护指南](docs/MAINTAINER.md)
