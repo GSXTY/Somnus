@@ -1,0 +1,70 @@
+.codex-theme .nav-with-rail .nav-rail .nav-rail-settings { margin-top: auto; flex-shrink: 0; }
+
+.data-page-nav { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.data-page-nav button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--shell-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.data-page-nav button:hover { background: var(--shell-hover); }
+.data-page-nav button[aria-current=page] { background: var(--shell-selected); color: var(--shell-ink); font-weight: 600; }
+
+.settings-workspace-panel { overflow: auto; }
+.settings-page {
+  display: grid;
+  grid-template-columns: 215px minmax(0, 1fr);
+  align-items: start;
+  min-height: 100%;
+}
+.settings-sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 16px;
+  min-height: 0;
+  padding: 22px 13px;
+  border-right: 1px solid var(--shell-line);
+  background: var(--shell-bg);
+}
+.settings-sidebar h1 { margin: 0 4px; font-size: 20px; font-weight: 600; }
+.settings-sidebar nav { display: grid; gap: 3px; }
+.settings-sidebar nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--shell-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-sidebar nav button:hover { background: var(--shell-hover); }
+.settings-sidebar nav button[aria-current=page] { background: var(--shell-selected); font-weight: 600; }
+.settings-content { width: min(100%, 800px); padding: 24px clamp(16px, 4vw, 52px) 36px; }
+.settings-content h2 { margin: 0 0 18px; font-size: 23px; font-weight: 600; }
+.settings-content .settings-subheading { margin: 20px 0 8px; font-size: 13px; font-weight: 600; }
+.settings-card { border: 1px solid var(--shell-line); border-radius: 8px; }
+.settings-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 13px 15px; }
+.settings-row + .settings-row { border-top: 1px solid var(--shell-line); }
+.settings-row h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.settings-row p { margin: 3px 0 0; color: var(--shell-muted); font-size: 12px; }
+.settings-row-action { flex-shrink: 0; }
+.settings-row-action .ant-btn { height: 28px; }
+.settings-shortcuts { padding: 12px 15px; }
+.settings-shortcuts .shortcut-list { margin: 0; }
+
+@media (max-width: 660px) {
+  .settings-page { grid-template-columns: minmax(0, 1fr); }
+  .settings-sidebar { position: static; border: 0; border-bottom: 1px solid var(--shell-line); padding: 16px; gap: 9px; }
+  .settings-sidebar nav { display: flex; flex-wrap: wrap; }
+  .settings-sidebar nav button { padding: 6px 8px; }
+}

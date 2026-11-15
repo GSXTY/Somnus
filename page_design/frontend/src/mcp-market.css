@@ -1,0 +1,57 @@
+.mcp-config.ant-tabs .ant-tabs-nav { margin-bottom: 20px; }
+.mcp-market { display: grid; gap: 16px; min-width: 0; padding: 3px 0 26px; }
+.mcp-market-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mcp-market-heading h2 { margin: 0; font-size: 25px; font-weight: 650; }
+.mcp-market-heading p { margin: 6px 0 0; color: var(--shell-muted); }
+.mcp-market-heading a { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--shell-muted); }
+.mcp-market-heading a:hover { color: var(--shell-ink); }
+.mcp-market-search { max-width: 480px; }
+.mcp-market-loading { display: flex; align-items: center; gap: 9px; padding: 13px 0; color: var(--shell-muted); }
+.mcp-market-results { display: grid; gap: 8px; }
+.mcp-market-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--shell-line);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--shell-surface);
+}
+.mcp-market-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--shell-line);
+  border-radius: 9px;
+  background: var(--shell-bg);
+  color: var(--shell-ink);
+  font-size: 17px;
+}
+.mcp-market-copy { min-width: 0; overflow-wrap: anywhere; }
+.mcp-market-copy h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.mcp-market-copy small { color: var(--shell-muted); }
+.mcp-market-copy p { margin: 4px 0 0; color: var(--shell-muted); }
+.mcp-market-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: end; gap: 6px; }
+.mcp-market-actions .ant-tag { margin-inline-end: 0; }
+.mcp-market-more { justify-self: center; }
+.mcp-market-detail { display: grid; gap: 12px; overflow-wrap: anywhere; }
+.mcp-market-detail p { margin: 0; }
+.mcp-market-detail dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+.mcp-market-detail dd { margin: 0; }
+.mcp-market-variants { display: grid; gap: 8px; min-width: 0; }
+.mcp-market-variants .ant-radio-wrapper {
+  align-items: flex-start;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--shell-line);
+  border-radius: 8px;
+}
+.mcp-market-variants small { display: block; color: var(--shell-muted); }
+.mcp-market-note { color: var(--shell-muted); }
+@media (max-width: 620px) {
+  .mcp-market-heading { flex-wrap: wrap; }
+  .mcp-market-result { grid-template-columns: auto minmax(0, 1fr); }
+  .mcp-market-actions { grid-column: 2; justify-content: start; }
+}

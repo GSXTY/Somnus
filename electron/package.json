@@ -1,0 +1,66 @@
+{
+  "name": "respiratory-viewer-desktop",
+  "productName": "Somnus",
+  "version": "0.3.0-beta.4",
+  "description": "Somnus",
+  "author": "VVFLY",
+  "private": true,
+  "main": "main.cjs",
+  "packageManager": "pnpm@11.25.0",
+  "devDependencies": {
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.vvfly.respiratoryviewer",
+    "electronVersion": "45.3.2",
+    "npmRebuild": false,
+    "files": [
+      "*.cjs",
+      "package.json",
+      "brand/*",
+      "!*.test.cjs"
+    ],
+    "directories": {
+      "output": "../dist/electron"
+    },
+    "extraResources": [
+      {
+        "from": "../build/electron/backend/SomnusBackend",
+        "to": "backend"
+      },
+      {
+        "from": "../build/electron/THIRD_PARTY_LICENSES",
+        "to": "THIRD_PARTY_LICENSES"
+      },
+      {
+        "from": "../USER_GUIDE.md",
+        "to": "使用说明.txt"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "brand/somnus.ico",
+      "executableName": "Somnus",
+      "signExecutable": false,
+      "artifactName": "Somnus-Setup-${version}-windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "shortcutName": "Somnus"
+    },
+    "mac": {
+      "target": "zip",
+      "executableName": "Somnus",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "CFBundleDisplayName": "Somnus"
+      },
+      "artifactName": "Somnus-${version}-electron-macos-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "6.8.3"
+  }
+}

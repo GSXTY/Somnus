@@ -1,0 +1,9 @@
+-r requirements.txt
+-r requirements-build.txt
+
+PyMySQL==1.2.4
+cryptography==50.0.2
+openpyxl==3.1.5
+pypdf==7.0.1
+sqlglot==30.31.0
+python-docx==1.2.0

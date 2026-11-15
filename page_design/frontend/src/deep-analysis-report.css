@@ -1,0 +1,220 @@
+/* Result layout: report first, charts beside it, raw steps collapsed last. */
+
+.deep-result-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.deep-result-card .ant-card-body > .deep-answer {
+  order: 1;
+}
+
+.deep-result-card .ant-card-body > .deep-artifacts {
+  order: 2;
+  margin-top: 18px;
+}
+
+.deep-result-card .ant-card-body > .deep-steps-block {
+  order: 3;
+  margin: 22px 0 4px;
+}
+
+/* Wide screens: charts sit beside the report (no sticky, so nothing overlaps). */
+@media (min-width: 1360px) {
+  .deep-result-card .ant-card-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    column-gap: 24px;
+    align-items: start;
+  }
+
+  .deep-result-card .ant-card-body > * {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .deep-result-card .ant-card-body > .deep-answer {
+    grid-column: 1;
+  }
+
+  .deep-result-card .ant-card-body > .deep-artifacts {
+    grid-column: 2;
+    margin-top: 0;
+    align-self: start;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Collapsed execution log */
+.deep-steps-block > summary {
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #62646c;
+  background: #f7f7f8;
+  border: 1px solid #e5e5e7;
+  border-radius: 9px;
+  list-style: none;
+  user-select: none;
+}
+
+.deep-steps-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.deep-steps-block > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 7px;
+  color: #b08a6f;
+}
+
+.deep-steps-block[open] > summary::before {
+  content: '▾';
+}
+
+.deep-steps-block[open] > summary {
+  margin-bottom: 10px;
+}
+
+.deep-steps-block .deep-steps {
+  margin: 0;
+}
+
+/* Artifact cards: preview, name, explicit download */
+.deep-artifacts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.deep-artifacts h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #202124;
+}
+
+.deep-artifacts h3 small {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 11px;
+  color: #62646c;
+}
+
+.deep-artifacts .deep-artifact {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 9px;
+  min-width: 0;
+  background: #fff;
+  border: 1px solid #e5e5e7;
+  border-radius: 12px;
+}
+
+.deep-artifacts .deep-artifact-preview {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.deep-artifacts .deep-artifact-preview img {
+  width: 100%;
+  max-height: 190px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+  transition: transform .18s ease;
+}
+
+.deep-artifacts .deep-artifact-preview:hover img {
+  transform: scale(1.015);
+}
+
+.deep-artifacts .deep-artifact-icon {
+  align-self: center;
+  margin: 12px 0;
+  font-size: 26px;
+  color: #c2a894;
+}
+
+.deep-artifacts figcaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #6b5346;
+}
+
+.deep-artifacts figcaption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deep-artifacts figcaption small {
+  flex: none;
+  color: #62646c;
+}
+
+.deep-artifacts .deep-artifact-download {
+  align-self: flex-start;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: var(--shell-accent);
+  background: #f7f7f8;
+  border: 1px solid #e5e5e7;
+  border-radius: 999px;
+  text-decoration: none;
+}
+
+.deep-artifacts .deep-artifact-download:hover {
+  background: #f6e8da;
+  color: #7d3f2c;
+}
+
+/* Give the result card most of the width so the report stays readable. */
+@media (min-width: 1500px) {
+  .deep-columns {
+    grid-template-columns: 360px minmax(0, 1fr);
+  }
+}
+
+/* Report typography: readable measure, calmer headings. */
+.deep-answer {
+  max-width: 820px;
+  font-size: 13.5px;
+  line-height: 1.95;
+}
+
+.deep-answer .assistant-markdown h3 {
+  font-size: 15px;
+  margin: 22px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e5e5e7;
+}
+
+.deep-answer .assistant-markdown :is(h4, h5, h6) {
+  margin: 16px 0 8px;
+}
+
+.deep-answer .assistant-markdown p {
+  margin: 0 0 12px;
+}
+
+.deep-answer .assistant-markdown table {
+  font-size: 12.5px;
+}
+
+.deep-answer .assistant-markdown :is(ul, ol) {
+  margin: 0 0 12px;
+}

@@ -1,0 +1,642 @@
+"""Local detection service. Start the workspace with: python launcher.py"""
+from __future__ import annotations
+import argparse
+import io
+import hashlib
+import json
+import threading
+import webbrowser
+import sys
+import os
+import socket
+import mimetypes
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import numpy as np
+import pandas as pd
+from event_detection.event_store import create_store, Conflict
+from event_detection.detector import detect, DETECTABLE_TYPES, VERSION
+from app_version import APP_VERSION, APP_ID
+from ai_assistant.service import AssistantService
+from ai_assistant.http import handle_http as handle_assistant_http
+from agent_core.analytics import dashboard as user_dashboard
+from agent_core.workbench import dashboard as workbench_dashboard, user_detail as workbench_user
+from event_detection.workbench_bridge import build_detection_context
+from event_detection.feedback_export import scoped_review,save_package,folder_for
+from event_detection.recording_cache import RecordingCache
+from event_detection.signal_analysis import analyze_recording
+from event_detection.company_rules import pressure_flow,amplitude_channel,Q_CHANNEL,A_CHANNEL,FLOW_A_CHANNEL,settings as company_settings
+from event_detection.adaptive_test import amplitude_channel as test_amplitude,A_CHANNEL as TEST_A_CHANNEL,settings as test_settings,VERSION as TEST_VERSION
+from event_detection.multifeature_test import CHANNELS as MULTI_CHANNELS, VERSION as MULTI_VERSION, settings as multi_settings, waveform_channels as multi_channels
+from event_detection.dynamic_baseline_web import CHANNELS as DYNAMIC_CHANNELS, WINDOWS as DYNAMIC_WINDOWS, VERSION as DYNAMIC_VERSION, waveform_channels as dynamic_channels, analyze as dynamic_analyze
+from event_detection.dynamic_baseline_detector import settings as baseline_settings, VERSION as BASELINE_VERSION
+from event_detection.dynamic_baseline_v2 import CHANNELS as OPTIMIZED_CHANNELS, VERSION as OPTIMIZED_VERSION, settings as optimized_settings, waveform_channels as optimized_channels
+from event_detection.dynamic_baseline_v3 import CHANNELS as V3_CHANNELS, VERSION as V3_VERSION, settings as v3_settings, waveform_channels as v3_channels
+from event_detection.patient_flow_v4 import CHANNELS as PATIENT_CHANNELS, VERSION as PATIENT_VERSION, settings as patient_settings, waveform_channels as patient_channels
+
+ROOT = Path(__file__).resolve().parents[1]
+ASSETS = Path(getattr(sys, '_MEIPASS', ROOT))
+EVENT_ASSETS = ASSETS / 'event_detection'
+PAGE_ASSETS = ASSETS / 'page_design'
+DEFAULT = os.environ.get('RESPIRATORY_CSV','')
+PRESSURE_ROLES = {'气压1':'内部压力','气压2':'出风口压力','气压3':'标准气压',
+                  '控制压力':'控制压力','压力':'压力','治疗压':'治疗压力','吸气压':'吸气压力','呼气压':'呼气压力',
+                  '气压1−气压3（补偿）':'内部相对标准气压','气压2−气压3（补偿）':'出风口相对标准气压','气压1−气压2（差压）':'内部与出风口差压'}
+
+
+class Recording:
+    def __init__(self, raw, name):
+        self.raw_csv=raw
+        for encoding in ('utf-8-sig', 'gb18030'):
+            try:
+                df = pd.read_csv(io.BytesIO(raw), encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise ValueError('无法识别文件编码，请使用 UTF-8 或 GB18030 CSV。')
+        df = df.dropna(how='all').reset_index(drop=True)
+        if len(df.columns) < 2 or not len(df):
+            raise ValueError('文件至少需要时间列和一个数据列。')
+        times = pd.to_datetime(df.iloc[:, 0], errors='coerce')
+        if times.isna().any():
+            raise ValueError('第一列包含无效时间，请检查 CSV。')
+        seconds = (times - times.iloc[0]).dt.total_seconds().to_numpy()
+        if np.any(np.diff(seconds) < 0):
+            raise ValueError('时间戳存在倒序，请先核对记录顺序。')
+        # Keep source timestamps exactly: repeated timestamps are not a verified sampling clock.
+        self.x = seconds
+        # Match the reference script's estimated within-timestamp expansion.
+        # This is a display coordinate, never a replacement for source timestamps.
+        starts = np.r_[0, np.flatnonzero(np.diff(seconds) != 0) + 1]
+        lengths = np.diff(np.r_[starts, len(seconds)])
+        positive = np.diff(seconds)
+        positive = positive[positive > 0]
+        typical = float(np.median(positive)) if len(positive) else 1.0
+        threshold = max(typical * 3, typical + 120, 1.0)
+        normal = positive[positive <= threshold]
+        span = max(float(np.median(normal)) if len(normal) else typical, 1e-9)
+        deltas = np.diff(seconds[starts])
+        candidates = (lengths[:-1] > 1) & (deltas > 0) & (deltas <= threshold)
+        nominal = float(np.median(deltas[candidates] / lengths[:-1][candidates])) if candidates.any() else span / max(lengths.max(), 1)
+        steps = np.full(len(starts), max(nominal, 1e-12))
+        regular = (deltas > 0) & (deltas <= threshold)
+        steps[:-1] = np.where(regular, deltas / lengths[:-1], steps[:-1])
+        steps = np.minimum(np.maximum(steps, 1e-12), span / lengths)
+        offsets = np.arange(len(seconds)) - np.repeat(starts, lengths)
+        self.display_x = seconds + offsets * np.repeat(steps, lengths)
+        self.channels = {}
+        for col in df.columns[1:]:
+            values = pd.to_numeric(df[col], errors='coerce').to_numpy(dtype=float)
+            if np.isfinite(values).any():
+                self.channels[str(col)] = values
+        if not self.channels:
+            raise ValueError('没有找到数值通道。')
+        # Reference script's pressure compensation, exposed as additional channels.
+        # Preserve raw channels and do not apply device-specific byte conversion implicitly.
+        if all(name in self.channels for name in ('气压1', '气压2', '气压3')):
+            self.channels['气压1−气压3（补偿）'] = self.channels['气压1'] - self.channels['气压3']
+            self.channels['气压2−气压3（补偿）'] = self.channels['气压2'] - self.channels['气压3']
+            self.channels['气压1−气压2（差压）'] = self.channels['气压1'] - self.channels['气压2']
+            self.channels[Q_CHANNEL]=pressure_flow(self.channels['气压1−气压3（补偿）'],self.channels['气压2−气压3（补偿）'])
+            self.channels[A_CHANNEL]=amplitude_channel(seconds,self.channels[Q_CHANNEL],float(seconds[-1]))
+        if '流量' in self.channels:self.channels[FLOW_A_CHANNEL]=amplitude_channel(seconds,self.channels['流量'],float(seconds[-1]))
+        self.engineering = {}
+        for raw_name in ('气压1', '气压2'):
+            compensated = raw_name + '−气压3（补偿）'
+            if compensated in self.channels:
+                self.engineering[raw_name] = self.channels[compensated]
+        byte_column = str(df.columns[13]) if len(df.columns) > 13 else None
+        if byte_column in PRESSURE_ROLES:byte_column=None
+        if byte_column in self.channels:
+            values = self.channels[byte_column]
+            self.engineering[byte_column] = np.where(values > 125, values - 256, values)
+        gaps = np.flatnonzero(np.diff(seconds) > 1)
+        self.gaps = [[float(seconds[i]), float(seconds[i + 1])] for i in gaps]
+        reference_breaks = np.flatnonzero(np.diff(seconds) > threshold)
+        reference_gaps = [[float(self.display_x[i]), float(self.display_x[i+1])] for i in reference_breaks]
+        bins,counts=np.unique(np.floor(seconds).astype(np.int64),return_counts=True)
+        interior=counts[(bins>bins[0])&(bins<bins[-1])]
+        if not len(interior):interior=counts
+        self.meta = dict(name=name, rows=len(df), start=str(times.iloc[0]), end=str(times.iloc[-1]),
+                         file_id=hashlib.sha256(raw).hexdigest(),app_version=APP_VERSION,
+                         duration=float(seconds[-1]), channels=list(self.channels), gaps=self.gaps,
+                         median_records_per_second=float(np.median(interior)),
+                         repeated_timestamps=bool(times.duplicated().any()), encoding=encoding)
+        self.meta.update(channel_units={name:('Pa' if name in PRESSURE_ROLES else 'L/min') for name in self.channels if name in PRESSURE_ROLES or name in ('流量','漏气量')},
+                         channel_roles={name:(PRESSURE_ROLES[name] if name in PRESSURE_ROLES else '患者呼吸流量（使用者确认）' if name=='流量' else '瞬时总漏气率（计算值）') for name in self.channels if name in PRESSURE_ROLES or name in ('流量','漏气量')},
+                         flow_semantics=dict(role='patient_respiratory_flow',unit='L/min',confirmation='user',confirmed_date='2026-11-09',
+                            scope='当前YA70 CSV设备配置',leak_subtraction=False,independent_calibration_verified=False),
+                         device_profile='当前设备使用者确认配置；其他设备导入需另行核对',
+                         sampling_info=dict(record_count_p10=float(np.quantile(interior,.1)),record_count_p90=float(np.quantile(interior,.9)),
+                            recorded_seconds=len(bins),pressure_nominal_hz=50,pressure_reported_hz=[47,48],
+                            computed_flow_leak_reported_hz=30,computed_rate_verified=False,uniform_sampling_verified=False,
+                            note='CSV流量按使用者确认解释为患者呼吸流量，单位L/min；不再减去总漏气。每秒行数是记录密度，不等于独立采样或更新频率；不按50Hz重采样或插值。'))
+        if FLOW_A_CHANNEL in self.channels:
+            self.meta['channel_units'][FLOW_A_CHANNEL]='L/min'
+            self.meta['channel_roles'][FLOW_A_CHANNEL]='直接取CSV流量的前5秒最大值−最小值，每秒末端更新'
+        if Q_CHANNEL in self.channels:
+            self.meta['channel_units'][Q_CHANNEL]='L/min（暂定）'
+            self.meta['channel_roles'][Q_CHANNEL]='已减气压3的P1/P2公式推算Q；与CSV流量一致性未验证'
+            self.meta['channel_units'][A_CHANNEL]='L/min（暂定）'
+            self.meta['channel_roles'][A_CHANNEL]='公司判定同源A：前5个完整源秒Qmax−Qmin，每秒末端更新；不足窗口或无效数据留空'
+        self.meta.update(display_duration=float(self.display_x[-1]), engineering_gaps=reference_gaps,
+                         engineering_gap_threshold=threshold, engineering_byte_column=byte_column,
+                         engineering_pressure_compensated='气压1' in self.engineering,
+                         raw_duration=self.meta['duration'], raw_gaps=self.gaps)
+        if '流量' in self.channels:
+            self.channels[TEST_A_CHANNEL]=test_amplitude(self)
+            self.meta['channels'].append(TEST_A_CHANNEL)
+            self.meta['channel_units'][TEST_A_CHANNEL]='L/min'
+            self.meta['channel_roles'][TEST_A_CHANNEL]='CSV流量2%～98%分位、5秒因果范围；相对冻结参考判定，实际门限见事件依据'
+            self.meta['adaptive_test_version']=TEST_VERSION
+            # Dynamic traces are computed lazily with the requested scan settings.
+            # One shared placeholder avoids copying the CSV for unused channels.
+            placeholder=np.full(len(self.x),np.nan)
+            for name in MULTI_CHANNELS:
+                self.channels[name]=placeholder
+                self.meta['channels'].append(name)
+                self.meta['channel_units'][name]='%' if name in ('多特征剩余比例','多特征下降百分比') else 'L/min'
+                self.meta['channel_roles'][name]='当前多特征测试参数对应的原始秒级计算值；不是原设备通道'
+            self.meta['multifeature_test_version']=MULTI_VERSION
+            for name in DYNAMIC_CHANNELS:
+                self.channels[name]=placeholder
+                self.meta['channels'].append(name)
+                self.meta['channel_units'][name]='%' if name.endswith('剩余比例') else 'L/min'
+                self.meta['channel_roles'][name]='动态基线检测派生曲线；方法和窗口由检测方案选择，输入为机器流量'
+            self.meta['dynamic_baseline_version']=DYNAMIC_VERSION
+            self.meta['dynamic_baseline_windows']=list(DYNAMIC_WINDOWS)
+            self.meta['dynamic_baseline_detector_version']=BASELINE_VERSION
+            for name in OPTIMIZED_CHANNELS:
+                self.channels[name]=placeholder
+                self.meta['channels'].append(name)
+                self.meta['channel_units'][name]='%' if '剩余比例' in name else 'L/min'
+                self.meta['channel_roles'][name]='优化测试版派生曲线；1秒复核与主窗口分开，背景估计不是患者流量'
+            self.meta['dynamic_baseline_optimized_version']=OPTIMIZED_VERSION
+            for name in V3_CHANNELS:
+                self.channels[name]=placeholder
+                self.meta['channels'].append(name)
+                self.meta['channel_units'][name]='%' if '剩余比例' in name else 'L/min'
+                self.meta['channel_roles'][name]='优化v3派生曲线；弱事件按主窗口连续判定，漏气变化保留作复核提示'
+            self.meta['dynamic_baseline_optimized_v3_version']=V3_VERSION
+            self.meta['dynamic_baseline_optimized_v3_windows']=list(range(1,11))
+            self.meta['dynamic_baseline_optimized_v3_durations']=list(range(5,11))
+            for name in PATIENT_CHANNELS:
+                self.channels[name]=placeholder
+                self.meta['channels'].append(name)
+                self.meta['channel_units'][name]='%' if name.endswith('剩余比例') else 'L/min'
+                self.meta['channel_roles'][name]='患者呼吸流量v4派生幅度；前因果参考，暂停/低通气候选互斥；不是原始设备通道'
+            self.meta['patient_flow_v4_version']=PATIENT_VERSION
+            self.meta['patient_flow_v4_windows']=list(range(1,11))
+            self.meta['patient_flow_v4_durations']=[10]
+
+    def wave(self, start, end, names, pixels, mode='raw',test_duration=7,test_ratio=.5,dynamic_method='absolute_mean',optimized_method=None,optimized_duration=10):
+        if mode not in ('raw', 'engineering'):
+            raise ValueError('不支持的显示模式')
+        x = self.display_x if mode == 'engineering' else self.x
+        start, end = max(0, start), min(float(x[-1]), end)
+        if end < start:
+            raise ValueError('无效的时间范围。')
+        lo = int(np.searchsorted(x, start, side='left'))
+        hi = int(np.searchsorted(x, end, side='right'))
+        lo, hi = max(0, lo - 1), min(len(x), hi + 1)
+        result = {}
+        dynamic=multi_channels(self,test_duration,test_ratio) if any(n in MULTI_CHANNELS for n in names) else {}
+        if any(n in DYNAMIC_CHANNELS for n in names):dynamic.update(dynamic_channels(self,names,dynamic_method))
+        if any(n in OPTIMIZED_CHANNELS for n in names):dynamic.update(optimized_channels(self,names,dynamic_method if optimized_method is None else optimized_method))
+        if any(n in V3_CHANNELS for n in names):dynamic.update(v3_channels(self,names,dynamic_method if optimized_method is None else optimized_method,optimized_duration))
+        if any(n in PATIENT_CHANNELS for n in names):dynamic.update(patient_channels(self,names,'absolute_mean',10))
+        for name in names:
+            if name not in self.channels:
+                continue
+            y = dynamic[name] if name in dynamic else self.engineering.get(name, self.channels[name]) if mode == 'engineering' else self.channels[name]
+            # Min/max envelope preserves narrow peaks, unlike uniform subsampling.
+            size = max(1, int(np.ceil((hi - lo) / max(100, min(pixels, 9000)))))
+            block = y[lo:hi]
+            if not len(block):
+                result[name] = []
+                continue
+            if size == 1:
+                indices = np.arange(lo, hi)
+            else:
+                # Vectorized block reductions: avoid thousands of tiny NumPy calls per pan.
+                count = (len(block) + size - 1) // size
+                padded = np.full(count * size, np.nan)
+                padded[:len(block)] = block
+                matrix = padded.reshape(count, size)
+                finite = np.isfinite(matrix)
+                starts = np.arange(count) * size
+                mins = starts + np.argmin(np.where(finite, matrix, np.inf), axis=1)
+                maxs = starts + np.argmax(np.where(finite, matrix, -np.inf), axis=1)
+                # Include every finite/missing transition so missing runs always break lines.
+                transitions = np.flatnonzero(np.diff(np.isfinite(block)))
+                local = np.unique(np.concatenate((starts, np.minimum(starts+size-1, len(block)-1),
+                                                   mins, maxs, transitions, transitions+1)))
+                indices = local[local < len(block)] + lo
+            points = [[float(x[i]), float(y[i]) if np.isfinite(y[i]) else None, int(i)]
+                      for i in indices]
+            result[name] = points
+        return dict(series=result, start=start, end=end, source_rows=max(0, hi-lo))
+
+
+recording = None
+recording_lock = threading.Lock()
+event_store = None
+session_mode = 'shared'  # Set by the FastAPI host; isolated sessions keep their own file list.
+assistant_service = None
+scan_lock = threading.Lock()
+recording_cache = RecordingCache()
+analytics_repository = None  # Inject a read-only user database adapter when configured.
+
+
+def _remember(store, recording):
+    """Persist opened-file metadata so the recording list survives restarts."""
+    if store is None or recording is None:
+        return
+    try:
+        store.remember_record(recording.meta)
+    except Exception as exc:
+        print(f'Warning: could not record file metadata: {exc}', flush=True)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def send(self, value, status=200, content_type='application/json; charset=utf-8'):
+        raw = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def do_GET(self):
+        try:
+            if handle_assistant_http(self, assistant_service):
+                return
+            url = urlparse(self.path)
+            if url.path in ('/', '/dashboard'):
+                workbench = PAGE_ASSETS / 'web' / 'index.html'
+                if workbench.is_file():
+                    return self.send(workbench.read_bytes(), content_type='text/html; charset=utf-8')
+                return self.send((PAGE_ASSETS / 'dashboard.html').read_bytes(), content_type='text/html; charset=utf-8')
+            if url.path == '/legacy-overview':
+                return self.send((PAGE_ASSETS / 'dashboard.html').read_bytes(), content_type='text/html; charset=utf-8')
+            if url.path.startswith('/workbench-assets/'):
+                from urllib.parse import unquote
+                name = unquote(url.path[len('/workbench-assets/'):])
+                web_root = (PAGE_ASSETS / 'web').resolve()
+                asset = (web_root / name).resolve()
+                if '\\' in name or not asset.is_relative_to(web_root) or not asset.is_file():
+                    return self.send({'error':'资源不存在。'}, 404)
+                kind = {'.js':'text/javascript', '.css':'text/css', '.html':'text/html'}.get(asset.suffix,
+                        mimetypes.guess_type(str(asset))[0] or 'application/octet-stream')
+                return self.send(asset.read_bytes(), content_type=kind)
+            if url.path in ('/events', '/index.html'):
+                return self.send((EVENT_ASSETS / 'index.html').read_bytes(), content_type='text/html; charset=utf-8')
+            if url.path in ('/ui/bootstrap.min.css', '/ui/events.css'):
+                asset = PAGE_ASSETS / ('vendor/bootstrap.min.css' if url.path == '/ui/bootstrap.min.css' else 'events.css')
+                return self.send(asset.read_bytes(), content_type='text/css; charset=utf-8')
+            if url.path in ('/dashboard.js', '/dashboard.css'):
+                kind='text/javascript' if url.path.endswith('.js') else 'text/css'
+                return self.send((PAGE_ASSETS / url.path.lstrip('/')).read_bytes(), content_type=kind+'; charset=utf-8')
+            if url.path == '/api/dashboard':
+                return self.send(user_dashboard(parse_qs(url.query), analytics_repository))
+            if url.path == '/api/workbench':
+                return self.send(workbench_dashboard(parse_qs(url.query)))
+            if url.path == '/api/workbench/detection-context':
+                with recording_lock:
+                    context = build_detection_context(recording, event_store)
+                return self.send(context)
+            if url.path.startswith('/api/workbench/users/'):
+                from urllib.parse import unquote
+                try:
+                    return self.send(workbench_user(unquote(url.path[len('/api/workbench/users/'):]), parse_qs(url.query)))
+                except LookupError as exc:
+                    return self.send({'error':str(exc)}, 404)
+            if url.path == '/api/recording-overview':
+                with recording_lock:
+                    current=recording
+                    recording_cache.put(current)
+                    current_id=current.meta['file_id'] if current else None
+                    files=[]
+                    persisted={}
+                    if session_mode == 'shared' and event_store is not None:
+                        try:
+                            persisted={item['id']:item for item in event_store.records()}
+                        except Exception as exc:
+                            print(f'Warning: could not list recordings: {exc}', flush=True)
+                    merged={**persisted}
+                    for fid,item in recording_cache.inventory.items():
+                        previous=merged.get(fid,{})
+                        merged[fid]={**previous,**item}
+                    files=[dict(item,is_current=fid==current_id) for fid,item in merged.items()]
+                    if current is not None and not any(item['id']==current_id for item in files):
+                        meta=current.meta
+                        files.insert(0,dict(id=current_id,name=meta.get('name',''),duration_seconds=meta.get('raw_duration',0),
+                                            sample_count=meta.get('rows',0),scan_count=0,candidate_count=0,is_current=True))
+                    detail=None
+                    if current is not None:
+                        meta=current.meta
+                        events=event_store.read(current_id)['events'] if event_store else []
+                        counts={status:sum(e.get('status')==status for e in events) for status in ('candidate','reviewed','ignored')}
+                        detail=dict(name=meta['name'],sample_count=meta['rows'],duration_seconds=meta['raw_duration'],
+                                    channels=[dict(name=name,unit=meta['channel_units'].get(name,'')) for name in meta['channels']],
+                                    event_counts=dict(candidate=counts['candidate'],confirmed=counts['reviewed'],ignored=counts['ignored']))
+                return self.send(dict(files=files,summary=dict(file_count=len(files),total_duration_seconds=sum(f.get('duration_seconds') or 0 for f in files)),current_recording=detail))
+            if url.path == '/api/health':
+                return self.send(dict(app_id=APP_ID,app_version=APP_VERSION,
+                                      entrypoints=dict(workbench='/',events='/events'),
+                                      detection_profiles=dict(patient_flow_v4=PATIENT_VERSION)))
+            if url.path in ('/viewer.js', '/annotation-model.js'):
+                return self.send((EVENT_ASSETS / url.path.lstrip('/')).read_bytes(), content_type='text/javascript; charset=utf-8')
+            with recording_lock:
+                current = recording
+            if current is None:
+                return self.send({'error': '请先打开 CSV 文件。'}, 400)
+            if url.path == '/api/meta':
+                return self.send(current.meta)
+            if url.path == '/api/current-csv':
+                if parse_qs(url.query).get('file_id',[''])[0]!=current.meta['file_id']:
+                    return self.send({'error':'当前文件已变更，请重新读取'},409)
+                return self.send(current.raw_csv,content_type='application/octet-stream')
+            if url.path == '/api/device-summary':
+                if parse_qs(url.query).get('file_id',[''])[0]!=current.meta['file_id']:
+                    return self.send({'error':'文件已切换'},409)
+                for scan in event_store.scans(current.meta['file_id']):
+                    if scan['settings'].get('profile')=='device_candidates':
+                        snapshot=event_store.feedback(current.meta,scan['run_id'],'automatic')
+                        return self.send(dict(run_id=scan['run_id'],device_metrics=snapshot.get('device_metrics')))
+                return self.send(dict(device_metrics=None))
+            if url.path == '/api/events':
+                file_id = parse_qs(url.query).get('file_id', [''])[0]
+                if file_id != current.meta['file_id']:
+                    return self.send({'error': '当前文件已变更，请重新读取文件信息'}, 409)
+                return self.send(event_store.read(file_id))
+            if url.path == '/api/scans':
+                q=parse_qs(url.query)
+                if q.get('file_id',[''])[0]!=current.meta['file_id']:
+                    return self.send({'error':'文件已切换'},409)
+                return self.send(event_store.scan_page(current.meta['file_id'],int(q.get('limit',['10'])[0]),int(q.get('offset',['0'])[0]),q.get('q',[''])[0],q.get('state',['active'])[0],q.get('selected',[''])[0]))
+            if url.path == '/api/wave':
+                q = parse_qs(url.query)
+                if 'file_id' in q and q['file_id'][0] != current.meta['file_id']:
+                    return self.send({'error': '当前文件已变更'}, 409)
+                return self.send(current.wave(float(q['start'][0]), float(q['end'][0]),
+                                              q.get('channel', list(current.channels)[:3]),
+                                              int(q.get('pixels', ['1200'])[0]),
+                                              q.get('mode', ['raw'])[0],
+                                              float(q.get('test_duration',['7'])[0]),float(q.get('test_ratio',['.5'])[0]),
+                                              q.get('dynamic_method',['absolute_mean'])[0],q.get('optimized_method',[None])[0],float(q.get('optimized_duration',['10'])[0])))
+            self.send({'error': '不存在的地址'}, 404)
+        except Exception as exc:
+            self.send({'error': str(exc)}, 400)
+
+    def do_POST(self):
+        global recording
+        # Reject cross-site browser requests to the local service.
+        origin = self.headers.get('Origin')
+        if origin and origin != 'http://' + self.headers.get('Host', ''):
+            return self.send({'error': '不允许跨站请求'}, 403)
+        try:
+            if handle_assistant_http(self, assistant_service):
+                return
+            if urlparse(self.path).path=='/api/dynamic-baseline':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<10000:raise ValueError('对照分析请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('当前文件已切换')
+                result=dynamic_analyze(current,args.get('start',0),args.get('end'),args.get('method','absolute_mean'),args.get('window','both'))
+                with recording_lock:
+                    if recording is not current:raise Conflict('分析期间文件已切换，本次结果已丢弃')
+                return self.send(result)
+            if urlparse(self.path).path=='/api/analyze':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<10000:raise ValueError('分析请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('当前文件已切换')
+                analysis=analyze_recording(current,args.get('start',0),args.get('end'),args.get('max_examples',10),args.get('profile','device_candidates'),args.get('flow_source','pressure_q'),args.get('reduction_ratio'),args.get('dynamic_method'),args.get('window_seconds'),args.get('min_duration'))
+                with recording_lock:
+                    if recording is not current:raise Conflict('分析期间文件已切换，请重新读取')
+                return self.send(analysis)
+            if urlparse(self.path).path in ('/api/activate','/api/cache/release'):
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<1000:raise ValueError('缓存请求大小无效')
+                args=json.loads(self.rfile.read(length));fid=args.get('file_id')
+                if not isinstance(fid,str) or len(fid)!=64:raise ValueError('文件指纹无效')
+                with recording_lock:
+                    if urlparse(self.path).path.endswith('/release'):
+                        return self.send(dict(released=recording_cache.release(fid) if recording is None or recording.meta['file_id']!=fid else False))
+                    recording_cache.put(recording)
+                    cached=recording_cache.get(fid)
+                    if cached is None:return self.send(dict(hit=False))
+                    recording=cached
+                    _remember(event_store, cached)
+                    return self.send(dict(hit=True,meta=cached.meta))
+            if urlparse(self.path).path=='/api/close':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<1000:raise ValueError('关闭请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    if recording is None or args.get('file_id')!=recording.meta['file_id']:raise Conflict('当前文件已变化，关闭已取消')
+                    recording_cache.release(recording.meta['file_id'])
+                    recording=None
+                return self.send(dict(closed=True))
+            if urlparse(self.path).path=='/api/feedback/open-folder':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<1000:raise ValueError('请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('文件已切换')
+                    folder=folder_for(Path(event_store.path).parent/'feedback_exports',current.meta).resolve()
+                if not folder.is_dir():raise ValueError('尚未保存反馈文件夹')
+                if os.name!='nt':raise ValueError('请复制保存路径后在文件管理器打开')
+                os.startfile(str(folder))
+                return self.send(dict(opened=True))
+            if urlparse(self.path).path in ('/api/feedback/prepare','/api/feedback/export'):
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<20000:raise ValueError('反馈请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('文件已切换')
+                    automatic=event_store.feedback(current.meta,args.get('run_id'),'automatic')
+                    packet=event_store.read(current.meta['file_id'])
+                    reviewed=scoped_review(current.meta,automatic,packet,args.get('reviewer'),args.get('reviewed_range'),args.get('reviewed_types'),args.get('review_mode'))
+                    root=Path(event_store.path).parent/'feedback_exports'
+                    if urlparse(self.path).path.endswith('/prepare'):
+                        return self.send(dict(folder=str(folder_for(root,current.meta).resolve()),revision=packet['revision'],file_name=current.meta['name'],
+                             run_id=automatic['run_id'],reviewer=reviewed['reviewer'],reviewed_range=reviewed['reviewed_range'],reviewed_types=reviewed['reviewed_types'],review_mode=reviewed['review_mode'],
+                             event_count=len(reviewed['events']),confirmed_count=len(reviewed['training_scope']['positive_event_ids']),boundary_count=len(reviewed['boundary_events']),estimated_count=len(reviewed['estimated_time_events']),pending_count=len(reviewed['training_scope']['pending_event_ids'])))
+                    if isinstance(args.get('expected_revision'),bool) or args.get('expected_revision')!=packet['revision']:raise Conflict('标记已变化，请重新预览并确认后导出')
+                return self.send(save_package(root,current.meta,current.raw_csv,automatic,reviewed,args.get('confirmed',False)))
+            if urlparse(self.path).path in ('/api/scans/edit','/api/scans/match'):
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<20000:raise ValueError('批次请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('文件已切换')
+                    if urlparse(self.path).path.endswith('/edit'):
+                        return self.send(event_store.edit_scan(current.meta['file_id'],args.get('run_id'),args.get('title'),args.get('archived')))
+                    profile=args.get('profile','engineering');types=args.get('event_types')
+                    if profile not in DETECTABLE_TYPES:raise ValueError('检测方案无效')
+                    if types is not None and (not isinstance(types,list) or not types or any(t not in DETECTABLE_TYPES[profile] for t in types)):raise ValueError('检测类型无效')
+                    settings=dict(version=VERSION if profile=='engineering' else 'machine-flow-candidates-v2',profile=profile,
+                                  min_duration=args.get('min_duration',10),reduction_ratio=args.get('reduction_ratio',.3),event_types=types or list(DETECTABLE_TYPES[profile]))
+                    if profile=='company_rules':settings=company_settings(args.get('min_duration',7),types,args.get('flow_source','pressure_q'))
+                    if profile=='adaptive_test':settings=test_settings(args.get('min_duration',7),args.get('reduction_ratio',.5),types)
+                    if profile=='adaptive_multifeature':settings=multi_settings(args.get('min_duration',7),args.get('reduction_ratio',.5),types)
+                    if profile=='dynamic_baseline':settings=baseline_settings(args.get('min_duration',10),types,args.get('dynamic_method') or 'centered_rms',2 if args.get('window_seconds') is None else args['window_seconds'])
+                    if profile=='dynamic_baseline_v2':settings=optimized_settings(args.get('min_duration',10),types,args.get('dynamic_method'),args.get('window_seconds'))
+                    if profile=='dynamic_baseline_v3':settings=v3_settings(args.get('min_duration',10),types,args.get('dynamic_method'),args.get('window_seconds'))
+                    if profile=='patient_flow_v4':settings=patient_settings(args.get('min_duration',10),types,args.get('dynamic_method'),args.get('window_seconds'))
+                    return self.send(dict(match=event_store.matching_scan(current.meta['file_id'],args.get('start',0),args.get('end',current.meta['raw_duration']),settings)))
+            if urlparse(self.path).path == '/api/feedback':
+                length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<20000:raise ValueError('反馈请求大小无效')
+                args=json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current=recording
+                    if current is None or args.get('file_id')!=current.meta['file_id']:raise Conflict('文件已切换')
+                    if args.get('kind')=='reviewed' and 'reviewed_types' in args:
+                        automatic=event_store.feedback(current.meta,args.get('run_id'),'automatic')
+                        return self.send(scoped_review(current.meta,automatic,event_store.read(current.meta['file_id']),args.get('reviewer'),args.get('reviewed_range'),args.get('reviewed_types'),args.get('review_mode')))
+                    return self.send(event_store.feedback(current.meta,args.get('run_id'),args.get('kind'),args.get('reviewer',''),args.get('reviewed_range')))
+            if urlparse(self.path).path == '/api/detect':
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length < 20000:
+                    raise ValueError('扫描请求过大')
+                args = json.loads(self.rfile.read(length))
+                with recording_lock:
+                    current = recording
+                    if current is None or args.get('file_id') != current.meta['file_id']:
+                        raise Conflict('当前文件已变化，请重新读取')
+                    previous = event_store.read(current.meta['file_id'])
+                if not scan_lock.acquire(blocking=False):
+                    raise Conflict('已有扫描正在进行，请等待完成')
+                try:
+                    result = detect(current,args.get('start',0),args.get('end'),args.get('min_duration',7 if args.get('profile') in ('company_rules','adaptive_test','adaptive_multifeature') else 10),args.get('reduction_ratio',.5 if args.get('profile') in ('adaptive_test','adaptive_multifeature') else .3),args.get('profile','engineering'),args.get('event_types'),args.get('flow_source','pressure_q'),args.get('dynamic_method'),args.get('window_seconds'))
+                    saved=[];skipped=0;event_links={}
+                    for e in result['events']:
+                        duplicate=False
+                        for old in previous['events']+saved:
+                            overlap=max(0,min(old['end'],e['end'])-max(old['start'],e['start']))
+                            span=max(old['end'],e['end'])-min(old['start'],e['start'])
+                            old_amplitude=old.get('detection_profile')=='company_rules' or old['type'].startswith('公司') or '公司规则试验' in old['note']
+                            same_input=old_amplitude==(e.get('detection_profile')=='company_rules') and (not old_amplitude or old.get('detection_input','pressure_q')==e.get('detection_input','pressure_q'))
+                            if e.get('detection_profile') in ('adaptive_test','adaptive_multifeature','dynamic_baseline','dynamic_baseline_v2','dynamic_baseline_v3','patient_flow_v4') or old.get('detection_profile') in ('adaptive_test','adaptive_multifeature','dynamic_baseline','dynamic_baseline_v2','dynamic_baseline_v3','patient_flow_v4'):same_input=False  # exact IDs only; keep experiments with different settings separate
+                            if old['id']==e['id'] or (old['source']=='detector' and same_input and old['type']==e['type'] and old['mode']==e['mode'] and overlap/span>=.5):
+                                duplicate=True;event_links[e['id']]=old['id'];break
+                        if duplicate:skipped+=1
+                        else:saved.append(e)
+                    if len(saved)>1000:
+                        raise ValueError('候选超过1000条，请缩小范围或调整阈值；本次未保存')
+                    with recording_lock:
+                        if recording is not current:raise Conflict('扫描期间文件已变化，本次未保存')
+                        snapshot={k:result[k] for k in ('events','settings','scan_start','scan_end','warnings','analyzed_rows','eligible_seconds')}
+                        if result['settings']['profile']=='patient_flow_v4':
+                            snapshot.update(time_basis='raw',signal_metadata={k:current.meta[k] for k in ('channel_units','channel_roles','sampling_info','device_profile','flow_semantics') if k in current.meta})
+                        snapshot['event_links']=event_links
+                        if 'device_metrics' in result:snapshot['device_metrics']=result['device_metrics']
+                        packet=event_store.write(current.meta,previous['revision'],previous['events']+saved,scan=snapshot)
+                    result.update(added=len(saved),skipped=skipped,detected_count=len(result['events']),packet=packet)
+                    result.pop('events')
+                    return self.send(result)
+                finally:
+                    scan_lock.release()
+            if urlparse(self.path).path == '/api/events':
+                length = int(self.headers.get('Content-Length', '0'))
+                if length < 1 or length > 10*1024*1024:
+                    raise ValueError('标记请求超出大小限制')
+                packet = json.loads(self.rfile.read(length))
+                with recording_lock:
+                    if recording is None or packet.get('file_id') != recording.meta['file_id']:
+                        return self.send({'error': '当前文件已变更，请重新读取文件信息'}, 409)
+                    result = event_store.write(recording.meta, packet.get('revision'), packet.get('events'),reviewer=packet.get('reviewer',''))
+                return self.send(result)
+            if urlparse(self.path).path != '/api/open':
+                return self.send({'error': '不存在的地址'}, 404)
+            length = int(self.headers.get('Content-Length', '0'))
+            if length <= 0 or length > 1024**3:
+                raise ValueError('请选择大小在 1 GB 以内的 CSV 文件。')
+            from urllib.parse import unquote
+            raw=self.rfile.read(length);fid=hashlib.sha256(raw).hexdigest()
+            with recording_lock:
+                recording_cache.put(recording)
+                new=recording_cache.get(fid)
+            if new is None:new=Recording(raw, unquote(self.headers.get('X-Filename', 'recording.csv')))
+            with recording_lock:
+                recording_cache.put(new)
+                recording = new
+            _remember(event_store, new)
+            self.send(new.meta)
+        except Conflict as exc:
+            self.send({'error': str(exc)}, 409)
+        except Exception as exc:
+            self.send({'error': str(exc)}, 400)
+
+
+class ViewerHTTPServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR can let two listeners bind the same address.
+    if sys.platform == 'win32':
+        allow_reuse_address = False
+
+    def server_bind(self):
+        if sys.platform == 'win32':
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def main():
+    global recording, event_store, assistant_service
+    parser = argparse.ArgumentParser()
+    parser.add_argument('file', nargs='?', default='' if getattr(sys,'frozen',False) else DEFAULT)
+    parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--data-dir',type=Path)
+    parser.add_argument('--version',action='version',version=APP_VERSION)
+    args = parser.parse_args()
+    data_dir=args.data_dir or (Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'VVFLY' / 'RespiratoryViewer' if getattr(sys,'frozen',False) else ROOT / 'data')
+    event_store = create_store(data_dir)
+    try:
+        assistant_service = AssistantService(data_dir / 'assistant.sqlite3')
+    except Exception:
+        # A separate conversation-store failure must not stop waveform review.
+        # The assistant adapter reports an explicit unavailable response.
+        assistant_service = None
+        print('AI conversation storage unavailable; detection remains available.', flush=True)
+    if args.file and Path(args.file).is_file():
+        recording = Recording(Path(args.file).read_bytes(), Path(args.file).name)
+    try:
+        server = ViewerHTTPServer(('127.0.0.1', args.port), Handler)
+    except OSError as exc:
+        print(f'Cannot start viewer on port {args.port}. Close the previous viewer first. {exc}',flush=True)
+        if getattr(sys,'frozen',False):input('Press Enter to close...')
+        return 1
+    url = f'http://127.0.0.1:{args.port}'
+    print(f'Somnus waveform viewer: {url}', flush=True)
+    if not args.no_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == '__main__':
+    sys.exit(main() or 0)

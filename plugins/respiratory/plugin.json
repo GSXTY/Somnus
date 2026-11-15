@@ -1,0 +1,78 @@
+{
+  "key": "respiratory",
+  "name": "默认",
+  "version": "0.1.0",
+  "description": "YA70 呼吸机的用户、设备、治疗数据查询与深度分析",
+  "data_source": "ANALYTICS_DB_URL",
+  "tools": [
+    {
+      "name": "query_database",
+      "description": "把自然语言问题转成只读 SQL 并执行，返回列、行和实际 SQL。用于用户、设备、使用时长、趋势等业务数据查询。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "要查询的自然语言问题，尽量包含时间范围和口径"
+          }
+        },
+        "required": [
+          "question"
+        ]
+      }
+    },
+    {
+      "name": "list_database_schema",
+      "description": "列出当前可查询的表与字段，用于确认字段名后再查询。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "create_deep_analysis",
+      "description": "把本次消息附带的 CSV 交给深度分析子任务：模型写 Python、在隔离容器里执行并产出图表与报告。仅在用户消息里带有文件时可用。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "希望深度分析回答的问题"
+          }
+        },
+        "required": [
+          "question"
+        ]
+      }
+    },
+    {
+      "name": "create_deep_analysis_from_query",
+      "description": "先用只读 SQL 查询数据库，把结果存成 CSV，再交给深度分析生成图表与报告。用于没有附件但需要图表的分析任务。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "db_question": {
+            "type": "string",
+            "description": "要查询的数据问题，应返回逐行明细或按用户聚合的结果"
+          },
+          "analysis_question": {
+            "type": "string",
+            "description": "希望深度分析回答的问题"
+          }
+        },
+        "required": [
+          "db_question",
+          "analysis_question"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "path": "respiratory",
+      "title": "呼吸中枢",
+      "view": "dashboard",
+      "description": "用户、设备与治疗数据大盘"
+    }
+  ]
+}

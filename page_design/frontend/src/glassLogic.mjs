@@ -1,0 +1,8 @@
+import { navigationItems } from './navigation.mjs';
+
+export const commands = navigationItems.map(item => ({ key: item.key, label: item.label, hint: item.hint, group: item.groupLabel }));
+export function filterCommands(query) { const q=query.trim().toLocaleLowerCase(); return commands.filter(item => !q || `${item.label} ${item.hint} ${item.key}`.toLocaleLowerCase().includes(q)); }
+export function highlightParts(text, query) { const q=query.trim(); if(!q)return [{text,match:false}]; const at=text.toLocaleLowerCase().indexOf(q.toLocaleLowerCase()); return at<0?[{text,match:false}]:[{text:text.slice(0,at),match:false},{text:text.slice(at,at+q.length),match:true},{text:text.slice(at+q.length),match:false}]; }
+export function tiltAt(x,y,width,height) { if(width<=0||height<=0)return {x:0,y:0}; return {x:Math.max(-.7,Math.min(.7,(.5-y/height)*1.4)), y:Math.max(-.7,Math.min(.7,(x/width-.5)*1.4))}; }
+export function dockScale(index,hover) {const d=Math.abs(index-hover);return hover<0?1:d===0?1.22:d===1?1.1:1;}
+export function warmOption(value) { if(Array.isArray(value))return value.map(warmOption); if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,warmOption(v)])); if(typeof value==='string'){const map={'#7196dc':'#b77e65','#7bbeb0':'#a3ad86','#8b7fc7':'#ba8a6e','#a49acd':'#cfaa8e','#dff3ee':'#ecebd9','#edf4ff':'#f4e7d7','#efb96c':'#d3a66d','#1e6fff':'#ae6046','#2470ff':'#ae6046','#00a887':'#8b9470','#8d7bcc':'#b6816b','#718fd0':'#b77e65','#6f95dd':'#b77e65','#f3b763':'#d3a66d'};return map[value.toLowerCase()]||value;}return value; }
