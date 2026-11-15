@@ -37,8 +37,8 @@ flowchart TB
 
 用户可配置自己的模型供应商、接入 ACP Agent，或导入 MCP 服务与 Skill。Somnus 可将已选 Skill 作为文本上下文传给外接 Agent。DSH 的兼容 Skill 和插件由 DSH 运行时加载。
 
-## Windows 下载
+## 下载
 
-Windows x64 安装包发布后，从独立公开发布页下载并运行 `Somnus-Setup-<版本>-windows-x64.exe`。目前尚未发布安装包。 [Windows 下载和版本说明](https://github.com/GSXTY/Somnus-Releases/releases)
+预发行版 `v0.3.0-beta.4` 提供 Windows x64，以及 macOS Apple Silicon（arm64）和 Intel（x64）版本。Windows 安装包未签名，macOS 应用使用临时签名，尚未经 Apple 公证。[下载与版本说明](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.4)
 
 [维护指南](docs/MAINTAINER.md)
