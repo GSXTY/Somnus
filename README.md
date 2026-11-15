@@ -14,15 +14,28 @@ Somnus 是面向团队的桌面 AI Agent，将会话、本地项目和企业授�
 
 ## 技术架构
 
-| 层 | 实现 |
-| --- | --- |
-| 桌面与服务 | Electron 启动本机 Python FastAPI 服务，由同一个回环地址提供 React 工作台与 API。 |
-| Agent 调度 | Somnus 提供内置 Python Agent 循环，处理模型请求、上下文和工具调用。Electron 也可通过 ACP 启动 Codex、DSH 等运行时，经工具桥提供获准的 Somnus 能力。 |
-| 企业数据 | 独立的 HTTPS 数据网关管理授权和只读数据库查询。数据库凭据保存在网关侧。 |
+```mermaid
+flowchart TB
+    WORKSPACE["Somnus 工作台 · 会话与项目"] --> BUILTIN["默认 Agent · 公司配置的模型"]
+    WORKSPACE --> ACP["ACP 宿主 · Electron"]
+    ACP --> CODEX["Codex"]
+    ACP --> DSH["DSH"]
+    BUILTIN --> SERVICES["Somnus 本机服务 · FastAPI"]
+    CODEX --> BRIDGE["Somnus MCP 工具桥"]
+    DSH --> BRIDGE
+    BRIDGE --> SERVICES
+    SKILL["已选 Skill"] -->|会话上下文| BUILTIN
+    SKILL -->|文本上下文| ACP
+    SERVICES --> MCP["用户配置的 MCP 服务"]
+    SERVICES --> GATEWAY["公司数据网关 · HTTPS"]
+    GATEWAY --> DATABASE["公司数据库 · 授权只读"]
+```
+
+默认 Agent 直接调用 Somnus 服务。Codex 和 DSH 通过 ACP 接入，在支持 MCP 的会话中使用 Somnus 工具桥调用同一服务。数据库凭据保存在网关侧。
 
 ## 扩展生态
 
-默认 Agent 可使用公司提供的模型。用户也可配置自己的模型供应商、接入 ACP Agent，或导入 MCP 服务与 Skill。DSH 的兼容插件由 DSH 运行时加载。
+用户可配置自己的模型供应商、接入 ACP Agent，或导入 MCP 服务与 Skill。Somnus 可将已选 Skill 作为文本上下文传给外接 Agent。DSH 的兼容 Skill 和插件由 DSH 运行时加载。
 
 ## Windows 下载
 
