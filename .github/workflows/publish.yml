@@ -1,0 +1,119 @@
+name: Publish Somnus
+run-name: Somnus publish ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already committed to main
+        required: true
+        type: string
+      notes:
+        description: Public release notes
+        required: true
+        type: string
+      signed:
+        description: Include a signed Windows in-app update
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: somnus-public-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate committed release
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+          SIGNED: ${{ inputs.signed }}
+          GH_TOKEN: ${{ secrets.SOMNUS_RELEASES_TOKEN }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'GSXTY/Somnus' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]]
+          [[ ${#VERSION} -le 40 && ${#RELEASE_NOTES} -gt 0 && ${#RELEASE_NOTES} -le 12000 ]]
+          [[ "$VERSION" == "$(python -c 'from app_version import APP_VERSION; print(APP_VERSION)')" ]]
+          [[ "$VERSION" == "$(node -p 'require("./electron/package.json").version')" ]]
+          [[ "$SIGNED" == 'true' || "$VERSION" == *-beta.* ]] || { echo 'Stable releases require signed Windows updates.'; exit 1; }
+          if [[ "$SIGNED" == 'true' && ( -z "$WIN_CSC_LINK" || -z "$WIN_CSC_KEY_PASSWORD" ) ]]; then
+            echo 'Missing Windows code-signing credentials.'
+            exit 1
+          fi
+          [[ -n "$GH_TOKEN" ]] || { echo 'Missing SOMNUS_RELEASES_TOKEN.'; exit 1; }
+          gh api repos/GSXTY/Somnus-Releases --jq '.full_name' | grep -qx 'GSXTY/Somnus-Releases'
+          if gh release view "v$VERSION" --repo GSXTY/Somnus-Releases >/dev/null 2>&1; then
+            echo 'This release version already exists.'
+            exit 1
+          fi
+          [[ -z "$(git ls-remote https://github.com/GSXTY/Somnus-Releases.git "refs/tags/v$VERSION")" ]] ||
+            { echo 'This release tag already exists.'; exit 1; }
+  windows:
+    needs: validate
+    uses: ./.github/workflows/windows.yml
+    with:
+      signed: ${{ inputs.signed }}
+    secrets:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+  macos:
+    needs: validate
+    uses: ./.github/workflows/macos.yml
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: somnus-*
+          path: packages
+          merge-multiple: true
+      - name: Verify and publish exact assets
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+          SIGNED: ${{ inputs.signed }}
+          GH_TOKEN: ${{ secrets.SOMNUS_RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd packages
+          installer="Somnus-Setup-$VERSION-windows-x64.exe"
+          assets=()
+          for name in "$installer" "Somnus-$VERSION-macos-arm64.dmg" "Somnus-$VERSION-macos-x64.dmg"; do
+            [[ -s "$name" && -s "$name.sha256" ]]
+            grep -Eq "^[0-9a-f]{64}  $(printf '%s' "$name" | sed 's/\./\\./g')$" "$name.sha256"
+            sha256sum --check --status "$name.sha256"
+            assets+=("$name" "$name.sha256")
+          done
+          channel=latest
+          options=()
+          if [[ "$VERSION" == *-beta.* ]]; then
+            channel=beta
+            options+=(--prerelease --latest=false)
+          fi
+          if [[ "$SIGNED" == 'true' ]]; then
+            [[ -s "$channel.yml" && -s "$installer.blockmap" ]]
+            assets+=("$channel.yml" "$installer.blockmap")
+          fi
+          printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/somnus-release-notes.md"
+          repo=GSXTY/Somnus-Releases
+          tag="v$VERSION"
+          gh release create "$tag" --repo "$repo" --draft --title "Somnus $tag" \
+            --notes-file "$RUNNER_TEMP/somnus-release-notes.md" "${options[@]}"
+          gh release upload "$tag" "${assets[@]}" --repo "$repo"
+          expected="$(for name in "${assets[@]}"; do printf '%s sha256:%s\n' "$name" "$(sha256sum "$name" | cut -d ' ' -f 1)"; done | sort)"
+          actual="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[] | select(.state == "uploaded") | .name + " " + .digest' | sort)"
+          [[ "$expected" == "$actual" ]]
+          gh release edit "$tag" --repo "$repo" --draft=false "${options[@]}"

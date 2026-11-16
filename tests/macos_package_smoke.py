@@ -94,16 +94,20 @@ def verify_service(exe, folder, *, managed=False):
             assert detection['added'] >= 1
             assert detection['packet']['run_id']
             if managed:
-                # A clean desktop profile must receive the bundled default and its Skill.
+                policy = ROOT / 'skills' / 'defaults.json'
+                enabled = json.loads(policy.read_text(encoding='utf-8'))['project_handoff'] if policy.exists() else True
                 database = (data_dir / 'assistant.sqlite3').as_uri() + '?mode=ro'
                 with closing(sqlite3.connect(database, uri=True)) as db:
                     default = db.execute('SELECT enabled, skill_ids FROM default_plugins WHERE name=?',
                                          ('Project Handoff',)).fetchone()
-                    assert default and default[0] == 1
-                    (skill_id,) = json.loads(default[1])
-                    skill = db.execute('SELECT name, enabled FROM personal_skills WHERE id=?',
-                                       (skill_id,)).fetchone()
-                    assert skill == ('project-handoff', 1)
+                    if enabled:
+                        assert default and default[0] == 1
+                        (skill_id,) = json.loads(default[1])
+                        skill = db.execute('SELECT name, enabled FROM personal_skills WHERE id=?',
+                                           (skill_id,)).fetchone()
+                        assert skill == ('project-handoff', 1)
+                    else:
+                        assert default is None
                 process.stdin.close()
                 assert process.wait(timeout=15) == 0
                 assert not ready_file.exists()

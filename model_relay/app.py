@@ -134,7 +134,7 @@ def _stream(response):
             yield line
 
 
-def create_app(settings, *, open_upstream=None):
+def create_app(settings, *, open_upstream=None, control=None):
     quota = DailyQuota(settings)
     opener = open_upstream or build_opener(RejectRedirect()).open
     invites = tuple(sha256(token.encode('ascii')).hexdigest() for token in settings.invites)
@@ -153,6 +153,8 @@ def create_app(settings, *, open_upstream=None):
         digest = sha256(token.encode('ascii')).hexdigest()
         if not sum(compare_digest(digest, allowed) for allowed in invites):
             return _error('Invite token required.', 401)
+        if control is not None and not control.enabled():
+            return _error('Model sharing is temporarily disabled.', 503)
         payload = await _read_payload(request, settings)
         if payload is None:
             return _error('Unsupported model or invalid streaming request.', 400)

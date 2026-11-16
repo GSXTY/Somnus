@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from fastapi.testclient import TestClient
 
 from model_relay.app import Settings, UPSTREAM, create_app
+from model_relay.control import RelayControl
 
 
 class ModelRelayTests(unittest.TestCase):
@@ -59,6 +60,29 @@ class ModelRelayTests(unittest.TestCase):
         self.assertEqual(self.post(stream=False).status_code, 400)
         self.assertEqual(self.post(messages=[{'content': 'x' * 1024}]).status_code, 400)
         self.assertEqual(self.opened, [])
+
+    def test_owner_toggle_takes_effect_without_restarting_or_using_quota(self):
+        control = RelayControl(self.settings.database.with_name('sharing.json'))
+        self.client = TestClient(create_app(self.settings, open_upstream=self.upstream, control=control))
+        self.assertEqual(self.post(token='c' * 43).status_code, 401)
+        self.assertEqual(self.post().status_code, 503)
+        control.set_enabled(True)
+        self.assertEqual(self.post().status_code, 200)
+        control.set_enabled(False)
+        self.assertEqual(self.post().status_code, 503)
+        control.set_enabled(True)
+        self.assertEqual(self.post().status_code, 200)
+        self.assertEqual(len(self.opened), 2)
+
+    def test_invalid_owner_flag_stays_closed(self):
+        control = RelayControl(self.settings.database.with_name('sharing.json'))
+        for invalid in ('{', '{"enabled":1}', '{"enabled":true,"other":0}', '["enabled"]', ' ' * 128):
+            with self.subTest(invalid=invalid):
+                control.path.write_text(invalid, encoding='utf-8')
+                self.assertFalse(control.enabled())
+        control.set_enabled(True)
+        self.assertTrue(RelayControl(control.path).enabled())
+        self.assertEqual(list(control.path.parent.glob('.sharing-*')), [])
 
     def test_quota_survives_restart_and_takes_tokens_out_of_circulation(self):
         self.assertEqual(self.post().status_code, 200)

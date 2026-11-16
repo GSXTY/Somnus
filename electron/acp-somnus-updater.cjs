@@ -7,7 +7,55 @@ const errors = {
   check: '无法检查更新，请确认更新源和网络连接。',
   download: '无法下载或验证更新，请重试。',
   install: '无法启动安装程序，请重新打开 Somnus 后重试。',
+  publisher: '本机缺少预期的签名发布者。请从 Somnus 发布页手动安装已签名的版本。',
 };
+
+const publicFeed = {
+  provider: 'github',
+  owner: 'GSXTY',
+  repo: 'Somnus-Releases',
+  private: false,
+  protocol: 'https',
+};
+const releasePage = 'https://github.com/GSXTY/Somnus-Releases/releases';
+const versionPattern = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(?:-beta\.(0|[1-9]\d{0,8}))?$/;
+
+function releaseVersion(value) {
+  const match = typeof value === 'string' && versionPattern.exec(value);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] === undefined ? Infinity : Number(match[4])];
+}
+
+function compareVersions(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+async function findPublicRelease(currentVersion, request = fetch) {
+  const current = releaseVersion(currentVersion);
+  if (!current) return undefined;
+  const response = await request('https://api.github.com/repos/GSXTY/Somnus-Releases/releases?per_page=30', {
+    headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(errors.check);
+  const releases = await response.json();
+  if (!Array.isArray(releases)) throw new Error(errors.check);
+  let best;
+  for (const release of releases) {
+    const tag = release?.tag_name;
+    if (release?.draft !== false || typeof tag !== 'string' || !tag.startsWith('v')) continue;
+    const version = tag.slice(1);
+    const parsed = releaseVersion(version);
+    if (!parsed || (current[3] === Infinity && (release.prerelease || parsed[3] !== Infinity))) continue;
+    if (compareVersions(parsed, current) <= 0 || (best && compareVersions(parsed, best.parsed) <= 0)) continue;
+    const expected = `Somnus-Setup-${version}-windows-x64.exe`;
+    if (!Array.isArray(release.assets) || !release.assets.some(asset => asset?.name === expected && asset.state === 'uploaded')) continue;
+    best = { version, parsed, url: `${releasePage}/tag/${tag}` };
+  }
+  return best && { version: best.version, url: best.url };
+}
 
 function updateUrl(value, allowLoopback = false) {
   const url = typeof value === 'string' && value.length <= 2048 ? URL.parse(value.trim()) : null;
@@ -36,6 +84,9 @@ async function readUpdateConfig(profileDir) {
 function createUpdaterState({ currentVersion, supported, resolveUpdater, publish = () => {}, prepareInstall }) {
   let state = { phase: supported ? 'unconfigured' : 'unsupported', currentVersion };
   let updater;
+  let checkEmptyFeed;
+  let publicRelease;
+  let requiresPublisher = false;
   let installing = false;
   function set(phase, fields) {
     state = { phase, currentVersion, ...fields };
@@ -43,11 +94,14 @@ function createUpdaterState({ currentVersion, supported, resolveUpdater, publish
   }
   const ready = !supported ? Promise.resolve() : Promise.resolve().then(resolveUpdater).then(next => {
     if (!next) return;
-    updater = next;
+    ({ updater, checkEmptyFeed, publicRelease, requiresPublisher } = next);
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
     updater.allowDowngrade = false;
-    updater.on('update-available', info => set('available', { version: info.version }));
+    updater.on('update-available', info => {
+      if (requiresPublisher) set('error', { version: info.version, error: errors.publisher });
+      else set('available', { version: info.version });
+    });
     updater.on('update-not-available', () => set('current'));
     updater.on('download-progress', data => {
       if (state.phase === 'downloading' && Number.isFinite(data.percent)) {
@@ -56,8 +110,7 @@ function createUpdaterState({ currentVersion, supported, resolveUpdater, publish
     });
     updater.on('update-downloaded', info => set('downloaded', { version: info.version, percent: 100 }));
     updater.on('error', () => {
-      if (state.phase === 'checking') set('error', { error: errors.check });
-      else if (state.phase === 'downloading') set('error', { error: errors.download });
+      if (state.phase === 'downloading') set('error', { error: errors.download });
       else if (installing) {
         installing = false;
         set('error', { error: errors.install });
@@ -73,13 +126,32 @@ function createUpdaterState({ currentVersion, supported, resolveUpdater, publish
     },
     async check() {
       await ready;
-      if (!updater || !['idle', 'current', 'error', 'available'].includes(state.phase)) return state;
+      if (!updater || !['idle', 'current', 'error', 'available', 'no-release', 'manual'].includes(state.phase)) return state;
       set('checking');
       try {
+        if (requiresPublisher && publicRelease) {
+          const release = await publicRelease();
+          if (release) set('manual', release);
+          else set('current');
+          return state;
+        }
         await updater.checkForUpdates();
         if (state.phase === 'checking') set('current');
-      } catch {
-        set('error', { error: errors.check });
+      } catch (error) {
+        if (publicRelease && error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') {
+          try {
+            const release = await publicRelease();
+            if (release) {
+              set('manual', release);
+              return state;
+            }
+          } catch {
+            // Keep the standard update-check error when the release list is inaccessible.
+          }
+        }
+        const empty = checkEmptyFeed && await checkEmptyFeed(error);
+        if (empty) set('no-release');
+        else set('error', { error: errors.check });
       }
       return state;
     },
@@ -111,36 +183,77 @@ function createUpdaterState({ currentVersion, supported, resolveUpdater, publish
   };
 }
 
-async function resolveWindowsUpdater({ app, profileDir, env = process.env }) {
+function selectUpdateFeed(configured, releaseConfig, allowLoopback) {
+  if (releaseConfig.provider && !['generic', 'github'].includes(releaseConfig.provider)) throw new Error(errors.config);
+  if (configured || releaseConfig.provider === 'generic') {
+    const url = updateUrl(configured || releaseConfig.url, allowLoopback);
+    if (!url) throw new Error(errors.config);
+    return { provider: 'generic', url, ...(releaseConfig.channel && { channel: releaseConfig.channel }) };
+  }
+  if (releaseConfig.provider === 'github' &&
+      (releaseConfig.owner !== publicFeed.owner || releaseConfig.repo !== publicFeed.repo)) throw new Error(errors.config);
+  return { ...publicFeed };
+}
+
+async function isPublicFeedEmpty(error, request = fetch) {
+  // GitHubProvider parsed the Atom feed successfully but found no release entry.
+  if (error.code === 'ERR_XML_MISSED_ELEMENT' && error.message === 'No published versions on GitHub') return true;
+  // Ambiguous errors require confirmation from the public releases API.
+  if (!['ERR_UPDATER_NO_PUBLISHED_VERSIONS', 'ERR_UPDATER_INVALID_RELEASE_FEED',
+    'ERR_UPDATER_LATEST_VERSION_NOT_FOUND'].includes(error.code)
+      && error.statusCode !== 404) return false;
+  try {
+    const response = await request(`https://api.github.com/repos/${publicFeed.owner}/${publicFeed.repo}/releases?per_page=1`, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return false;
+    const releases = await response.json();
+    return Array.isArray(releases) && releases.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveWindowsUpdater({ app, profileDir, env = process.env, resourcesPath = process.resourcesPath,
+  createUpdater = () => new (require('electron-updater').NsisUpdater)() }) {
   const config = await readUpdateConfig(profileDir);
   const configured = env.SOMNUS_UPDATE_URL || config.url;
-  const generated = path.join(process.resourcesPath ?? profileDir, 'app-update.yml');
+  const generated = path.join(resourcesPath ?? profileDir, 'app-update.yml');
   const generatedExists = app.isPackaged && await stat(generated).then(info => info.isFile(), error => {
     if (error.code === 'ENOENT') return false;
     throw error;
   });
-  if (!configured && !generatedExists) return null;
-
-  const { NsisUpdater } = require('electron-updater');
-  const updater = new NsisUpdater();
+  const updater = createUpdater();
   if (!app.isPackaged) updater.forceDevUpdateConfig = true;
   const releaseConfig = generatedExists ? await updater.loadUpdateConfig() : {};
+  if (releaseConfig.verifyUpdateCodeSignature === false) throw new Error(errors.config);
   const allowLoopback = !app.isPackaged && env.SOMNUS_UPDATE_DEV_LOOPBACK === '1';
-  const url = updateUrl(configured || releaseConfig.url, allowLoopback);
-  if (!url || (generatedExists && releaseConfig.provider !== 'generic')) throw new Error(errors.config);
+  const feed = selectUpdateFeed(configured, releaseConfig, allowLoopback);
+  const usesPublicFeed = feed.provider === 'github';
+  const localDevelopmentFeed = allowLoopback && feed.provider === 'generic' && new URL(feed.url).protocol === 'http:';
+  let publisherName = releaseConfig.publisherName;
 
   // Local directory builds have no electron-builder cache or publisher configuration.
   if (!generatedExists) {
     const runtimeConfig = path.join(profileDir, 'somnus-update-runtime.yml');
-    const settings = { provider: 'generic', url, updaterCacheDirName: 'somnus-updater' };
-    if (typeof config.publisherName === 'string' && config.publisherName.trim()) {
-      settings.publisherName = [config.publisherName.trim()];
+    if (!usesPublicFeed && typeof config.publisherName === 'string' && config.publisherName.trim()) {
+      publisherName = [config.publisherName.trim()];
     }
+    const settings = { ...feed, publisherName, updaterCacheDirName: 'somnus-updater' };
     await writeFile(runtimeConfig, JSON.stringify(settings), { mode: 0o600 });
     updater.updateConfigPath = runtimeConfig;
   }
-  updater.setFeedURL({ provider: 'generic', url, ...(releaseConfig.channel && { channel: releaseConfig.channel }) });
-  return updater;
+  const currentVersion = typeof app.getVersion === 'function' ? app.getVersion() : '';
+  if (usesPublicFeed) updater.allowPrerelease = Number.isFinite(releaseVersion(currentVersion)?.[3]);
+  updater.setFeedURL(feed);
+  const publishers = Array.isArray(publisherName) ? publisherName : [publisherName];
+  return {
+    updater,
+    checkEmptyFeed: usesPublicFeed ? isPublicFeedEmpty : undefined,
+    publicRelease: usesPublicFeed ? () => findPublicRelease(currentVersion) : undefined,
+    requiresPublisher: !localDevelopmentFeed && !publishers.some(name => typeof name === 'string' && name.trim()),
+  };
 }
 
 function registerSomnusUpdater({ ipcMain, app, window, origin, prepareInstall }) {
@@ -166,4 +279,4 @@ function registerSomnusUpdater({ ipcMain, app, window, origin, prepareInstall })
   }
 }
 
-module.exports = { createUpdaterState, registerSomnusUpdater, resolveWindowsUpdater, updateUrl };
+module.exports = { createUpdaterState, findPublicRelease, isPublicFeedEmpty, registerSomnusUpdater, resolveWindowsUpdater, updateUrl };

@@ -2,6 +2,16 @@ name: Somnus Windows package
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      signed:
+        type: boolean
+        default: false
+    secrets:
+      WIN_CSC_LINK:
+        required: false
+      WIN_CSC_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -31,13 +41,21 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build Windows package
+      - name: Prepare Windows package build
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install -r requirements-electron.txt
           pnpm --dir electron install --frozen-lockfile
           node --test electron/backend.test.cjs
-          python build_electron.py
+      - name: Build local Windows preview
+        if: ${{ !inputs.signed }}
+        run: python build_electron.py
+      - name: Build signed Windows update
+        if: ${{ inputs.signed }}
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: python build_electron.py --signed-release
       - name: Verify packaged server and checksum installer
         shell: pwsh
         run: |
@@ -49,12 +67,35 @@ jobs:
           python tests/electron_package_smoke.py dist/electron/win-unpacked/resources/backend/SomnusBackend.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $filename" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
+          [IO.File]::WriteAllText("$installer.sha256", "$hash  $filename" + [char]10, [Text.Encoding]::ASCII)
+      - name: Verify Windows publisher and update manifest
+        if: ${{ inputs.signed }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = python -c 'from app_version import APP_VERSION; print(APP_VERSION)'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $name = "Somnus-Setup-$version-windows-x64.exe"
+          $installer = Join-Path 'dist/electron' $name
+          $installedExe = 'dist/electron/win-unpacked/Somnus.exe'
+          $releaseSigner = Get-AuthenticodeSignature -LiteralPath $installer
+          $appSigner = Get-AuthenticodeSignature -LiteralPath $installedExe
+          if ($releaseSigner.Status -ne 'Valid' -or $appSigner.Status -ne 'Valid' -or
+              $releaseSigner.SignerCertificate.Thumbprint -ne $appSigner.SignerCertificate.Thumbprint) {
+            throw 'The installer and application require the same trusted Authenticode signer.'
+          }
+          $channel = if ($version.Contains('-beta.')) { 'beta' } else { 'latest' }
+          $publisher = $releaseSigner.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          node tools/verify_windows_update.cjs $version $channel $publisher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: somnus-windows-x64
           path: |
             dist/electron/Somnus-Setup-*-windows-x64.exe
             dist/electron/Somnus-Setup-*-windows-x64.exe.sha256
+            dist/electron/Somnus-Setup-*-windows-x64.exe.blockmap
+            dist/electron/latest.yml
+            dist/electron/beta.yml
           compression-level: 0
           if-no-files-found: error

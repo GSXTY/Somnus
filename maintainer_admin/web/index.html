@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Somnus 管理后台</title>
+  <link rel="stylesheet" href="/static/admin.css">
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="top"><strong>Somnus</strong><span>本机管理后台</span></div>
+  </header>
+  <main>
+    <h1>管理后台</h1>
+    <div id="notice" role="status" hidden></div>
+    <div class="services">
+      <section aria-labelledby="relay-heading">
+        <div class="heading"><h2 id="relay-heading">默认模型共享</h2><span class="status" id="relay-status">正在检查</span></div>
+        <p id="relay-description">正在读取本机模型中继状态。</p>
+        <p class="hint">朋友还需要可用的 HTTPS 转发地址和各自的邀请令牌。此处只检测本机中继。</p>
+        <button type="button" id="relay-toggle" disabled>检查中</button>
+      </section>
+      <section aria-labelledby="defaults-heading">
+        <div class="heading"><h2 id="defaults-heading">默认插件</h2><span class="status" id="standard-status">正在检查</span></div>
+        <p>内置工具随标准版提供。Project Handoff 适用于 Windows 的本地项目会话。</p>
+        <label class="check"><input type="checkbox" id="handoff" disabled> 在下个版本包含 Project Handoff</label>
+      </section>
+    </div>
+    <section class="release" aria-labelledby="release-heading">
+      <div class="heading"><h2 id="release-heading">发布新版本</h2><span class="status" id="workflow-status">正在检查</span></div>
+      <form id="draft-form">
+        <div class="fields">
+          <label for="version">版本号
+            <input id="version" name="version" type="text" placeholder="0.3.0-beta.6" maxlength="32" required>
+          </label>
+          <label for="notes">发布说明
+            <textarea id="notes" name="notes" rows="4" maxlength="3000" required></textarea>
+          </label>
+        </div>
+        <label class="check"><input id="signed" type="checkbox"> 对 Windows 安装包签名</label>
+        <p>提交后将标准版配置推送到私有源码仓库。GitHub CI 构建并验证安装包，再发布到公开下载仓库。</p>
+        <p class="hint">GitHub Actions 需要发布凭据。签名版另需 Windows 签名证书。未签名的预览版可从更新提示下载并手动安装。</p>
+        <div class="actions">
+          <button type="submit" id="save" disabled>保存发布草稿</button>
+          <button type="button" id="submit" class="primary" disabled>提交 GitHub 发布</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

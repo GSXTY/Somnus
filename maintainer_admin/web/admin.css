@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light;
+  font: 15px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #1b2b33;
+  background: #f6f8f8;
+}
+body { margin: 0; }
+header { background: #fff; border-bottom: 1px solid #dde6e6; }
+.top { max-width: 960px; margin: auto; padding: 14px 24px; display: flex; gap: 12px; align-items: baseline; color: #50646a; }
+.top strong { color: #114b43; letter-spacing: -.02em; font-size: 20px; }
+main { max-width: 960px; padding: 32px 24px 64px; margin: auto; }
+h1 { margin: 0 0 24px; font-size: 32px; letter-spacing: -.03em; }
+h2 { margin: 0; color: #1c2c33; font-size: 19px; }
+p { margin: 10px 0 16px; color: #425960; }
+.services { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+section { background: #fff; border: 1px solid #dce6e5; padding: 22px; border-radius: 12px; }
+.release { margin-top: 16px; }
+.heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.status { font-size: 13px; padding: 3px 10px; border-radius: 20px; background: #edf2f2; color: #486267; }
+.status.on { background: #e1f4ec; color: #14634e; }
+.check { display: flex; align-items: center; gap: 8px; }
+input[type="checkbox"] { accent-color: #176f5d; width: 16px; height: 16px; }
+.fields { margin-top: 18px; display: grid; gap: 14px; }
+.fields label { display: grid; gap: 6px; }
+textarea { resize: vertical; }
+input[type="text"], textarea { padding: 9px 10px; background: #fbfcfc; border: 1px solid #cbd8d8; border-radius: 6px; font: inherit; }
+#version { width: min(260px, 90%); }
+input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 3px solid #178171; outline-offset: 2px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+button { border: 1px solid #c5d6d3; border-radius: 6px; padding: 8px 13px; font: inherit; color: #114b43; background: #f7fcfa; }
+button.primary { color: #fff; background: #126455; border-color: #126455; }
+button:not(:disabled):hover { filter: brightness(.95); cursor: pointer; }
+button:disabled { opacity: .52; }
+form .check { margin-top: 14px; }
+.hint { color: #61747a; font-size: 14px; }
+#notice { white-space: pre-wrap; background: #e9f4f0; color: #165448; border: 1px solid #c5e5db; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+#notice.error { background: #fff0ee; color: #852821; border-color: #edd3cf; }
+@media (max-width: 660px) {
+  .services { grid-template-columns: 1fr; }
+  main { padding: 18px 14px 36px; }
+}

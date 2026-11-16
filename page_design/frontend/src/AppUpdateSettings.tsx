@@ -3,11 +3,12 @@ import { Alert, Button, Progress } from 'antd';
 import { describeError } from './errors.mjs';
 
 type UpdateState = {
-  phase: 'unconfigured' | 'unsupported' | 'idle' | 'checking' | 'available' | 'current' | 'downloading' | 'downloaded' | 'error';
+  phase: 'unconfigured' | 'unsupported' | 'idle' | 'checking' | 'available' | 'current' | 'downloading' | 'downloaded' | 'error' | 'no-release' | 'manual';
   currentVersion: string;
   version?: string;
   percent?: number;
   error?: string;
+  url?: string;
 };
 type UpdateAction = 'check' | 'download' | 'install';
 type Updater = {
@@ -37,6 +38,8 @@ function statusText(state: UpdateState) {
     case 'available': return `有新版本${version}可下载。`;
     case 'downloading': return `正在下载${version}…`;
     case 'downloaded': return `新版本${version}已下载。点击「重启并更新」安装。`;
+    case 'no-release': return 'GitHub 暂无可用版本。';
+    case 'manual': return `新版本${version}可以手动下载。`;
     case 'idle': return '检查是否有新版本。';
     case 'error': return '更新未完成。';
   }
@@ -93,7 +96,8 @@ export function AppUpdateSettings() {
   if (!bridge) return null;
   const action: UpdateAction | undefined = state?.phase === 'available' ? 'download' :
     state?.phase === 'downloaded' ? 'install' :
-    state?.phase === 'idle' || state?.phase === 'current' || state?.phase === 'error' || !state && error ? 'check' : undefined;
+    state?.phase === 'idle' || state?.phase === 'current' || state?.phase === 'error' ||
+    state?.phase === 'no-release' || state?.phase === 'manual' || !state && error ? 'check' : undefined;
   const progress = state?.percent;
   const percent = typeof progress === 'number' && Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : undefined;
   const failure = error || (state?.phase === 'error' && state.error);
@@ -103,6 +107,8 @@ export function AppUpdateSettings() {
       <h3>应用更新</h3>
       <p role="status">{state ? statusText(state) : error ? '更新状态暂不可用。' : '正在读取更新状态…'}</p>
       {state?.phase === 'downloading' && percent !== undefined && <Progress aria-label="下载进度" percent={percent} size="small" />}
+      {state?.phase === 'manual' && state.url && /^(https:\/\/github\.com\/GSXTY\/Somnus-Releases\/releases\/tag\/v\d+\.\d+\.\d+(?:-beta\.\d+)?)$/.test(state.url) &&
+        <a href={state.url} target="_blank" rel="noreferrer noopener">在 GitHub 下载</a>}
       {failure && <Alert type="error" message={failure} showIcon />}
     </div>
     {displayAction && <div className="settings-row-action">

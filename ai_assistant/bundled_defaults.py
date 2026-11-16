@@ -20,6 +20,14 @@ def install_bundled_defaults(service, assets):
     slug = PROJECT_HANDOFF['slug']
     source_id = uuid5(NAMESPACE_URL, f'https://github.com/GSXTY/Somnus/default/{slug}/source').hex
     plugin_id = uuid5(NAMESPACE_URL, f'https://github.com/GSXTY/Somnus/default/{slug}').hex
+    policy = assets / 'skills' / 'defaults.json'
+    enabled = json.loads(policy.read_text(encoding='utf-8'))['project_handoff'] if policy.exists() else True
+    if type(enabled) is not bool:
+        raise ValueError('Bundled Project Handoff policy must specify a Boolean value.')
+    if not enabled:
+        with service.db() as db:
+            db.execute('UPDATE default_plugins SET enabled=0 WHERE id=? AND source_id=?', (plugin_id, source_id))
+        return
     raw = (assets / 'skills' / slug / 'SKILL.md').read_bytes()
     skill = parse_upload('SKILL.md', raw)
     if skill['name'] != slug:
@@ -27,6 +35,8 @@ def install_bundled_defaults(service, assets):
 
     with service.db() as db:
         db.execute('BEGIN IMMEDIATE')
+        if db.execute('UPDATE default_plugins SET enabled=1 WHERE id=? AND source_id=?', (plugin_id, source_id)).rowcount:
+            return
         defaults = db.execute('SELECT source_id, name FROM default_plugins').fetchall()
         if len(defaults) >= MAX_BUNDLES or any(
             item['source_id'] == source_id or item['name'].casefold() == PROJECT_HANDOFF['name'].casefold()

@@ -6,6 +6,7 @@ from pathlib import Path
 import uvicorn
 
 from .app import Settings, create_app
+from .control import RelayControl
 
 
 def main():
@@ -27,7 +28,8 @@ def main():
         parser.error(f'Missing environment variable {error.args[0]}.')
     except ValueError:
         parser.error('Invalid model relay settings.')
-    uvicorn.run(create_app(settings), host='127.0.0.1', port=args.port,
+    control = RelayControl(os.getenv('SOMNUS_MODEL_RELAY_CONTROL') or settings.database.parent / 'sharing.json')
+    uvicorn.run(create_app(settings, control=control), host='127.0.0.1', port=args.port,
                 access_log=False, proxy_headers=False, limit_concurrency=16)
 
 
