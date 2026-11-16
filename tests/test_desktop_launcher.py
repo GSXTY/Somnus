@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -7,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from server import cli
-from server.paths import default_data_dir
+from server.paths import default_data_dir, prepare_default_data_dir
 
 
 class DesktopPathsTests(unittest.TestCase):
@@ -37,7 +38,7 @@ class DesktopPathsTests(unittest.TestCase):
                     self.assertEqual(cli.load_env(), config.resolve())
                 with (patch.object(sys, 'platform', 'win32'), patch.object(sys, 'executable', str(home / 'RespiratoryViewer.exe')),
                       patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True)):
-                    self.assertEqual(default_data_dir(), home / 'VVFLY' / 'RespiratoryViewer')
+                    self.assertEqual(default_data_dir(), home / 'VVFLY' / 'Somnus')
                     self.assertEqual(cli.load_env(), config)
 
     def test_windows_installed_backend_reads_writable_data_configuration(self):
@@ -52,6 +53,77 @@ class DesktopPathsTests(unittest.TestCase):
                   patch.dict(os.environ, {'AI_AGENT_DATA_DIR': str(data_dir)}, clear=True)):
                 self.assertEqual(cli.load_env(), config.resolve())
                 self.assertEqual(os.environ['AI_AGENT_DESKTOP_CONFIG'], 'installed')
+
+    def test_windows_first_launch_copies_profile_and_uses_new_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            legacy = base / 'VVFLY' / 'RespiratoryViewer'
+            legacy.mkdir(parents=True)
+            config = legacy / '.env'
+            config.write_text('DATA_AGENT_REMOTE_CA=gateway-cert.pem\n', encoding='utf-8')
+            (legacy / 'gateway-cert.pem').write_bytes(b'public certificate')
+            (legacy / 'mcp.json').write_bytes(b'{"servers":[]}')
+            with sqlite3.connect(legacy / 'assistant.sqlite3') as db:
+                db.execute('CREATE TABLE conversations (content)')
+                db.execute('INSERT INTO conversations VALUES (?)', ('kept',))
+                db.execute('CREATE TABLE default_plugins (name)')
+                db.execute('INSERT INTO default_plugins VALUES (?)', ('handoff',))
+            db.close()
+            target = base / 'VVFLY' / 'Somnus'
+            with (patch.object(sys, 'frozen', True, create=True), patch.object(sys, 'platform', 'win32'),
+                  patch.object(sys, 'executable', str(base / 'install' / 'SomnusBackend.exe')),
+                  patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True),
+                  patch('server.cli._redirect_output_when_headless'),
+                  patch('server.cli.pick_port', return_value=8765), patch('server.app.create_app') as create_app,
+                  patch('uvicorn.run')):
+                self.assertEqual(cli.main(['--no-browser']), 0)
+                self.assertEqual(create_app.call_args.kwargs['data_dir'], target)
+                self.assertEqual(Path(os.environ['DATA_AGENT_REMOTE_CA']), target / 'gateway-cert.pem')
+                self.assertEqual(cli.load_env(), target / '.env')
+                self.assertEqual((target / 'mcp.json').read_bytes(), (legacy / 'mcp.json').read_bytes())
+                with sqlite3.connect(target / 'assistant.sqlite3') as copy:
+                    self.assertEqual(copy.execute('SELECT content FROM conversations').fetchall(), [('kept',)])
+                    self.assertEqual(copy.execute('SELECT name FROM default_plugins').fetchall(), [('handoff',)])
+                copy.close()
+                (target / 'mcp.json').write_bytes(b'new data')
+                self.assertEqual(prepare_default_data_dir(), target)
+                self.assertEqual((target / 'mcp.json').read_bytes(), b'new data')
+                self.assertEqual((legacy / 'mcp.json').read_bytes(), b'{"servers":[]}')
+
+    def test_windows_migration_copy_failure_can_retry_without_partial_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / 'VVFLY' / 'RespiratoryViewer'
+            legacy.mkdir(parents=True)
+            (legacy / '.env').write_bytes(b'KEY=value')
+            with (patch.object(sys, 'frozen', True, create=True), patch.object(sys, 'platform', 'win32'),
+                  patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True)):
+                target = default_data_dir()
+                with patch('server.paths.shutil.copytree', side_effect=OSError('copy blocked')):
+                    with self.assertRaises(OSError):
+                        prepare_default_data_dir()
+                self.assertFalse(target.exists())
+                self.assertTrue((legacy / '.env').is_file())
+                self.assertEqual(prepare_default_data_dir(), target)
+                self.assertEqual((target / '.env').read_bytes(), b'KEY=value')
+
+    def test_windows_override_leaves_legacy_and_default_profiles_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            override = Path(directory) / 'explicit'
+            override.mkdir()
+            (override / '.env').write_text('AI_AGENT_DESKTOP_CONFIG=override\n', encoding='utf-8')
+            legacy = Path(directory) / 'VVFLY' / 'RespiratoryViewer'
+            legacy.mkdir(parents=True)
+            (legacy / '.env').write_text('AI_AGENT_DESKTOP_CONFIG=legacy\n', encoding='utf-8')
+            with (patch.object(sys, 'frozen', True, create=True), patch.object(sys, 'platform', 'win32'),
+                  patch.object(sys, 'executable', str(override / 'backend' / 'SomnusBackend.exe')),
+                  patch.dict(os.environ, {'LOCALAPPDATA': directory}, clear=True),
+                  patch('server.cli._redirect_output_when_headless'),
+                  patch('server.cli.pick_port', return_value=8765), patch('server.app.create_app') as create_app,
+                  patch('uvicorn.run')):
+                self.assertEqual(cli.main(['--data-dir', str(override), '--no-browser']), 0)
+                self.assertEqual(create_app.call_args.kwargs['data_dir'], override)
+                self.assertEqual(os.environ['AI_AGENT_DESKTOP_CONFIG'], 'override')
+                self.assertFalse(legacy.with_name('Somnus').exists())
 
 
 class DesktopLaunchTests(unittest.TestCase):

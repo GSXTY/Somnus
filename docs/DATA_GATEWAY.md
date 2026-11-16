@@ -36,7 +36,7 @@
 
 ## 同事的 Windows 桌面版
 
-1. 把公开的网关证书保存到 `%LOCALAPPDATA%\VVFLY\RespiratoryViewer\`。通过单独的渠道取得访问令牌。
+1. 把公开的网关证书保存到 `%LOCALAPPDATA%\VVFLY\Somnus\`。通过单独的渠道取得访问令牌。
 2. 在同一目录的 `.env` 中配置以下三项，并重启桌面程序。证书文件也可以用绝对路径指定。已有旧版的程序目录 `.env` 时，先检查该文件是否覆盖了对应配置。
 
    ```dotenv

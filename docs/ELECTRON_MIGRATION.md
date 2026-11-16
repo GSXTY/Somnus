@@ -30,7 +30,7 @@ Windows 生成 `dist/electron/Somnus-Setup-<版本>-windows-x64.exe`。使用 `p
 
 | 系统 | 默认数据与配置目录 |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\VVFLY\RespiratoryViewer` |
+| Windows | `%LOCALAPPDATA%\VVFLY\Somnus` |
 | macOS | `~/Library/Application Support/VVFLY/RespiratoryViewer` |
 
 原 Windows 桌面版的默认数据目录也在这里，已有会话、标记和扫描历史可以继续使用。旧版 `.env` 若放在 EXE 同级目录，请在本机复制到上表的数据目录，模型与数据源配置会从那里加载。安装包不含 `.env`、密钥、原始记录或本机数据库。旧的 Windows 打包脚本和 macOS 原生窗口构建脚本可继续维护已有试用环境。

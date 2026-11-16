@@ -1,7 +1,7 @@
 {
   "name": "respiratory-viewer-desktop",
   "productName": "Somnus",
-  "version": "0.3.0-beta.5",
+  "version": "0.3.0-beta.6",
   "description": "Somnus",
   "author": "VVFLY",
   "private": true,
@@ -46,6 +46,7 @@
     },
     "nsis": {
       "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "shortcutName": "Somnus"
     },

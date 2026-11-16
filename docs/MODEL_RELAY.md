@@ -32,4 +32,4 @@ AI_ASSISTANT_MODEL=deepseek-flash
 AI_ASSISTANT_API_KEY=<该朋友的邀请令牌>
 ```
 
-Windows 将 `.env` 放在 `%LOCALAPPDATA%\VVFLY\RespiratoryViewer`，macOS 放在 `~/Library/Application Support/VVFLY/RespiratoryViewer` 或该安装自定义的数据目录。域名示例需要换成已部署的中继地址。访问令牌用于中继认证，个人安装配置单独交付。
+Windows 将 `.env` 放在 `%LOCALAPPDATA%\VVFLY\Somnus`，macOS 放在 `~/Library/Application Support/VVFLY/RespiratoryViewer` 或该安装自定义的数据目录。域名示例需要换成已部署的中继地址。访问令牌用于中继认证，个人安装配置单独交付。

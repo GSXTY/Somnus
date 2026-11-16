@@ -1,4 +1,4 @@
-# Somnus 使用说明（v0.3.0-beta.4）
+# Somnus 使用说明（v0.3.0-beta.6）
 
 ## 启动桌面版
 
@@ -13,7 +13,7 @@
 
 打包版默认把 `events.sqlite3`（标记和检测批次）及 `assistant.sqlite3`（会话）保存在以下目录。`AI_AGENT_DATA_DIR` 可用于指定其他存储位置。
 
-- Windows：`%LOCALAPPDATA%\VVFLY\RespiratoryViewer\`。Somnus 沿用旧版的这个数据和配置目录，Electron 从此目录加载 `.env`。如果旧版的 `.env` 放在 EXE 同级目录，在本机复制到上述数据目录即可沿用配置。
+- Windows：`%LOCALAPPDATA%\VVFLY\Somnus\`。beta.6 首次启动时自动复制旧数据目录。全新安装可在 Windows 安装向导中选择程序目录，用户配置仍保存在此处。如果旧版的 `.env` 放在 EXE 同级目录，在本机复制到上述数据目录即可沿用配置。
 - macOS：`~/Library/Application Support/VVFLY/RespiratoryViewer/`。如需使用 `.env`，放在该目录。启动环境设置 `AI_AGENT_DATA_DIR` 时，把 `.env` 放在指定目录。
 
 应用更新时保留数据目录和本机配置。需要迁移标记时，可使用现有 JSON 导出功能备份。

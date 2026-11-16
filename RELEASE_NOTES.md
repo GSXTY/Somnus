@@ -2,6 +2,11 @@
 
 当前 Electron 源码的 Windows 本机启动入口为 `dist/electron/win-unpacked/Somnus.exe`。构建与应用更新流程见 [维护与发布](docs/MAINTAINER.md)。
 
+## v0.3.0-beta.6
+
+- Windows 安装向导支持为全新安装选择程序目录。
+- Windows 首次启动时将旧数据目录中的会话、配置和插件迁移到 `%LOCALAPPDATA%\VVFLY\Somnus`。旧目录保留供回退。
+
 ## v0.3.0-beta.5
 
 - 默认插件包含 Project Handoff。绑定本地文件夹的项目会话可读取已有的 `docs/AI-HANDOFF.md`。说「更新交接」可生成草稿，允许修改时可提交文件修改建议。

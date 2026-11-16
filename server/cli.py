@@ -9,10 +9,10 @@ import webbrowser
 from pathlib import Path
 
 from app_version import APP_VERSION
-from server.paths import ROOT, default_data_dir
+from server.paths import ROOT, default_data_dir, prepare_default_data_dir, profile_env_dir
 
 
-def load_env(path=None):
+def load_env(path=None, *, data_dir=None):
     """Load KEY=VALUE pairs from .env without overriding real environment variables.
 
     The first existing candidate wins. Values are kept as-is after trimming an
@@ -29,7 +29,7 @@ def load_env(path=None):
             # Packaged desktop build: the operator drops .env next to the exe.
             candidates.append(Path(sys.executable).resolve().parent / '.env')
             if sys.platform == 'win32':
-                candidates.append(default_data_dir() / '.env')
+                candidates.append((data_dir or profile_env_dir()) / '.env')
         candidates.extend([Path.cwd() / '.env', ROOT / '.env'])
     for candidate in candidates:
         try:
@@ -169,13 +169,22 @@ def main(argv=None):
         options.error('--shutdown-on-stdin-close 需要同时指定 --ready-file。')
     if not (0 if args.ready_file else 1) <= args.port <= 65535:
         options.error('端口必须在 1 至 65535 之间；桌面外壳可配合 --ready-file 使用 0。')
-    loaded = load_env()
+    data_dir = args.data_dir.expanduser().resolve() if args.data_dir else None
+    profile_before = profile_env_dir()
+    loaded = load_env(data_dir=data_dir)
+    if data_dir is None:
+        try:
+            data_dir = prepare_default_data_dir()
+        except OSError:
+            options.error('无法迁移 Somnus 本机配置。旧版目录仍然保留，请关闭其他 Somnus 实例后重试。')
+        if (loaded == profile_before / '.env' and profile_before != data_dir
+                and data_dir == profile_before.with_name('Somnus')):
+            loaded = data_dir / '.env'
     remote_ca = os.getenv('DATA_AGENT_REMOTE_CA', '').strip()
     if loaded and remote_ca:
         ca_path = Path(remote_ca).expanduser()
         if not ca_path.is_absolute():
             os.environ['DATA_AGENT_REMOTE_CA'] = str(loaded.resolve().parent / ca_path)
-    data_dir = args.data_dir.expanduser().resolve() if args.data_dir else None
     _redirect_output_when_headless(data_dir)
     if loaded:
         print(f'Loaded environment from {loaded}', flush=True)
