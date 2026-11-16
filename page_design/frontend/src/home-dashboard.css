@@ -1,0 +1,128 @@
+.codex-theme .home-workspace-panel {
+  background: #f5f4ef;
+  container-type: inline-size;
+}
+
+.home-dashboard {
+  display: grid;
+  gap: 16px;
+}
+
+.home-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "active hours hours"
+    "active events ahi";
+  gap: 12px;
+}
+
+.home-metric,
+.home-trend {
+  min-width: 0;
+  padding: 18px clamp(14px, 2vw, 26px);
+  border-radius: 14px;
+}
+
+.home-metric h2,
+.home-trend h2 {
+  margin: 0;
+  color: #243b35;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.home-active {
+  grid-area: active;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 8px;
+  background: radial-gradient(ellipse at 110% 120%, #fce0ce, transparent 74%), #dfefe8;
+}
+
+.home-hours { grid-area: hours; background: #fce0ce; }
+.home-events { grid-area: events; background: #e8f1fa; }
+.home-ahi { grid-area: ahi; background: #eeebfb; }
+
+.home-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: #172c29;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(23px, 3.2cqi, 35px);
+  line-height: 1.2;
+  margin-top: 4px;
+}
+
+.home-active .home-value { font-size: clamp(34px, 6cqi, 68px); }
+.home-value small { color: #405952; font-size: .48em; white-space: nowrap; }
+
+.home-delta {
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.home-weekly {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 14px;
+  width: 100%;
+  margin-top: 3px;
+  padding-top: 10px;
+  border-top: 1px solid #bcd5cb;
+  color: #405952;
+}
+
+.home-weekly b {
+  color: #172c29;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-trends {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.home-trend {
+  background: #fff;
+  box-shadow: 0 1px 2px #172c2912;
+}
+
+.home-trend-heading {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.home-trend > .ant-empty {
+  min-height: 238px;
+  margin: 0;
+  display: grid;
+  place-content: center;
+}
+
+@container (max-width: 670px) {
+  .home-trends { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container (max-width: 510px) {
+  .home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "active active"
+      "hours hours"
+      "events ahi";
+  }
+}

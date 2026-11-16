@@ -30,7 +30,8 @@ async function openDeepSeekHarness(app, shell) {
   return 'website';
 }
 
-function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token, profileDir, version, resourcesPath = process.resourcesPath }) {
+function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token, profileDir, version,
+  dshRuntimeDir = profileDir, resourcesPath = process.resourcesPath }) {
   let confirmingAuthUrl = false;
   const openAuthUrl = shell && (async (profile, target, params, isPending) => {
     const url = eligibleAuthUrl(target, params.url);
@@ -53,7 +54,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   const projectClient = token ? createProjectClient(origin, token) : undefined;
   const workflow = token && process.platform === 'win32'
     ? new ProjectWorkflow({ ipcMain, dialog, shell, window, origin, token, profileDir }) : undefined;
-  const dshMarket = new DshPluginMarket(profileDir, resourcesPath);
+  const dshMarket = new DshPluginMarket(profileDir, resourcesPath, dshRuntimeDir);
   const agents = new AcpAgents(path.join(profileDir, 'external-acp-agents.json'), version, resourcesPath,
     openAuthUrl, projectClient, workflow, dshMarket);
   const handle = (action, use) => ipcMain.handle('vvman-acp:' + action, (event, ...args) => {
@@ -91,7 +92,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   });
   handle('install-dsh-plugin', (event, id) => agents.changeDshPlugins(id, true, () => trustWorkbench(event, window, origin)));
   handle('remove-dsh-plugin', (event, id) => agents.changeDshPlugins(id, false, () => trustWorkbench(event, window, origin)));
-  handle('open-managed-dsh-settings', event => dshMarket.openSettings(shell, () => trustWorkbench(event, window, origin)));
+  handle('open-managed-dsh-terminal', event => dshMarket.openTerminal(() => trustWorkbench(event, window, origin)));
   let dshAccountState;
   const observeDshAccount = status => {
     if ((status.state === 'signed-in' || status.state === 'signed-out') && status.state !== dshAccountState) {
@@ -169,9 +170,22 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     try {
       const profile = await dshMarket.launch();
       if (!profile || !await dshMarket.profile()) throw new Error('独立的 DeepSeek Harness ACP 运行时尚未安装。');
-      const saved = (await agents.list()).find(agent => matchesLaunch(agent, profile));
+      const profiles = await agents.list();
+      const saved = profiles.find(agent => matchesLaunch(agent, profile));
+      let relocated;
+      if (!saved) {
+        const candidates = [];
+        for (const agent of profiles) {
+          if (agent.name === profile.name &&
+              agent.executable.toLowerCase().endsWith('\\resources\\agents\\codex\\node.exe') &&
+              agent.args.length === profile.args.length && agent.args.slice(1).every((arg, i) => arg === profile.args[i + 1]) &&
+              await dshMarket.ownsLaunch(agent)) candidates.push(agent);
+        }
+        if (candidates.length > 1) throw new Error('存在多条旧的托管 DSH 配置，请保留要重新连接的条目。');
+        [relocated] = candidates;
+      }
       trustWorkbench(event, window, origin);
-      const agent = saved ?? await agents.save(profile);
+      const agent = saved ?? await agents.save(relocated ? { ...profile, id: relocated.id } : profile);
       trustWorkbench(event, window, origin);
       const info = await agents.probe(agent.id);
       return { agent, info };
@@ -181,6 +195,33 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   });
   handle('remove', (_event, id) => agents.remove(id));
   handle('probe', (_event, id) => agents.probe(id));
+  handle('save-configuration-checkpoint', async (event, id, revision) => {
+    if (!token || typeof id !== 'string' || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) {
+      throw new Error('检查点验证请求无效。');
+    }
+    const profile = (await agents.list()).find(item => item.id === id);
+    if (!profile) throw new Error('ACP Agent 已移除，请重新选择。');
+    const probe = await agents.probe(id);
+    // Managed DSH reports its account state separately from the ACP session.
+    const validateSender = () => trustWorkbench(event, window, origin);
+    const dshAccountVerified = probe.authentication === 'unverified' &&
+      matchesLaunch(profile, await dshMarket.launch()) &&
+      (await dshMarket.accountStatus(validateSender)).state === 'signed-in';
+    if (probe.authentication !== 'ready' && !dshAccountVerified) {
+      throw new Error('ACP 账号尚未通过验证，请在 Agent 配置中检查登录状态。');
+    }
+    const current = (await agents.list()).find(item => item.id === id);
+    if (JSON.stringify(profile) !== JSON.stringify(current)) throw new Error('ACP 配置已变更，请重新验证。');
+    trustWorkbench(event, window, origin);
+    const response = await fetch(new URL('/api/assistant/configuration-checkpoints', origin), {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
+      headers: { 'Content-Type': 'application/json', 'X-Data-Agent-Native': token, 'X-Data-Agent-Local': '1' },
+      body: JSON.stringify({ revision, agent: { id, name: profile.name } }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error?.message || '无法保存配置检查点。');
+    return result;
+  });
   handle('authenticate', (_event, ...args) => agents.authenticate(...args));
   handle('cancel-authentication', () => agents.cancelAuthentication());
   function updateHandler(event) {
@@ -216,4 +257,3 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
 }
 
 module.exports = { registerAcpAgents, eligibleAuthUrl, openDeepSeekHarness };
-

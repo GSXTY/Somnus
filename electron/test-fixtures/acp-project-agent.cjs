@@ -29,13 +29,10 @@ createInterface({ input: process.stdin }).on('line', async line => {
     send({ id, result: { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: write }, mcpCapabilities: { http: true } } } });
   } else if (method === 'session/new') {
     assert.equal(params.cwd, process.cwd());
-    if (write) assert.deepEqual(params.mcpServers, []);
-    else {
-      assert.equal(params.mcpServers.length, 1);
-      [mcp] = params.mcpServers;
-      assert.equal(mcp.name, 'vv_man');
-      assert.equal(mcp.type, 'http');
-    }
+    assert.equal(params.mcpServers.length, 1);
+    [mcp] = params.mcpServers;
+    assert.equal(mcp.name, 'vv_man');
+    assert.equal(mcp.type, 'http');
     send({ id, result: { sessionId: 'safe-session' } });
   } else if (method === 'session/prompt') {
     turnId = id;
@@ -64,7 +61,14 @@ createInterface({ input: process.stdin }).on('line', async line => {
     if (write) {
       assert.doesNotMatch(text.text, /search_project_files/);
       assert.deepEqual(image, { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' });
+      assert.match(text.text, /propose_project_file_create.*尚未写入/);
+      const { tools } = await mcpCall('tools/list', {});
+      assert.ok(tools.some(tool => tool.name === 'propose_project_file_create'));
+      const creation = await mcpCall('tools/call', { name: 'propose_project_file_create',
+        arguments: { source: 'source_1', path: 'new.txt', new_content: 'new proposal' } });
+      assert.equal(JSON.parse(creation.content[0].text).status, 'pending');
       writeFileSync(path.join(mirror, 'source_1', 'direct.txt'), 'local mirror edit');
+      writeFileSync(path.join(mirror, 'source_1', 'scratch.txt'), 'temporary artifact');
     } else {
       assert.match(text.text, /search_project_files.*文件名.*文本内容.*超出项目临时视图/);
       assert.equal(existsSync(path.join(mirror, 'source_1', 'docs', 'outside-mirror.txt')), false);

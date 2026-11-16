@@ -1,7 +1,7 @@
 {
   "name": "respiratory-viewer-desktop",
   "productName": "Somnus",
-  "version": "0.3.0-beta.6",
+  "version": "0.3.0-beta.7",
   "description": "Somnus",
   "author": "VVFLY",
   "private": true,
@@ -42,6 +42,13 @@
       "icon": "brand/somnus.ico",
       "executableName": "Somnus",
       "signExecutable": false,
+      "publish": {
+        "provider": "github",
+        "owner": "GSXTY",
+        "repo": "Somnus-Releases",
+        "private": false,
+        "channel": "latest"
+      },
       "artifactName": "Somnus-Setup-${version}-windows-${arch}.${ext}"
     },
     "nsis": {

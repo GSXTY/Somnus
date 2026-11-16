@@ -82,4 +82,3 @@ export function SidebarResizeHandle({ width, max, onPreview, onCommit, onCancel 
       onCommit(next);
     }} />;
 }
-

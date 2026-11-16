@@ -244,6 +244,15 @@ def read_file(root, path):
     return '/'.join(parts), content, digest, _identity(info)
 
 
+def inspect_open_target(root, path):
+    parts = _parts(path)
+    if not _text_file(parts[-1]):
+        raise ProjectFileError('该文件类型不在项目文本访问范围内。')
+    with _inside(root, parts, directory=False) as target:
+        _checked(target.lstat(), directory=False)
+    return '/'.join(parts)
+
+
 def _search_blocked(name):
     return _blocked(name) or name.casefold() in SEARCH_PRIVATE_NAMES
 
@@ -363,6 +372,54 @@ def replacement(value):
     if len(raw) > MAX_TEXT_BYTES:
         raise ProjectFileError('建议内容不能超过 48 KiB。')
     return raw
+
+
+def _creation_target(path):
+    parts = _parts(path)
+    if not _text_file(parts[-1]):
+        raise ProjectFileError('该文件类型不在项目文本访问范围内。')
+    return parts
+
+
+def _existing_target():
+    return ProjectFileError('此路径已存在，请另选文件名或重新提出修改。', code='file_exists', status=409)
+
+
+def inspect_creation(root, path):
+    parts = _creation_target(path)
+    with _inside(root, parts, directory=False) as target:
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            return '/'.join(parts), _identity(target.parent.lstat())
+        raise _existing_target()
+
+
+def create_file(root, path, new_content, *, parent_identity):
+    parts = _creation_target(path)
+    raw = replacement(new_content)
+    with _inside(root, parts, directory=False) as target:
+        if _identity(target.parent.lstat()) != parent_identity:
+            raise ProjectFileError('父目录已变更，请重新生成新建建议。', code='file_changed', status=409)
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.data-agent-', delete=False) as temporary:
+            staged = Path(temporary.name)
+            try:
+                temporary.write(raw)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            except BaseException:
+                temporary.close()
+                staged.unlink(missing_ok=True)
+                raise
+        try:
+            if os.name == 'nt':
+                os.rename(staged, target)  # Windows rename fails if the destination exists.
+            else:
+                os.link(staged, target, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise _existing_target() from exc
+        finally:
+            staged.unlink(missing_ok=True)
 
 
 def apply_file(root, path, new_content, *, expected_hash, expected_identity):

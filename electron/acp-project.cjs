@@ -13,7 +13,8 @@ const SHA256 = /^[a-f0-9]{64}$/i;
 const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const READ_FILE = 'read_project_file';
 const PROPOSE_FILE = 'propose_project_file_edit';
-const FILE_TOOLS = new Set([READ_FILE, PROPOSE_FILE]);
+const CREATE_FILE = 'propose_project_file_create';
+const FILE_TOOLS = new Set([READ_FILE, PROPOSE_FILE, CREATE_FILE]);
 const pathFields = {
   source: { type: 'string', description: '项目来源，例如 source_1。' },
   path: { type: 'string', description: '相对于该项目来源的文件路径，使用 / 分隔。' },
@@ -30,6 +31,10 @@ function projectFileTools(prepared) {
     '保存现有文件的修改候选，等待用户在 Somnus 审核应用。返回待审核状态。先读取原文和 sha256。',
     { ...pathFields, expected_sha256: { type: 'string' }, new_content: { type: 'string', description: '完整的文件替换文本。' } },
     ['source', 'path', 'expected_sha256', 'new_content']));
+  if (mayPropose(prepared) && prepared.project.supports_create === true) tools.push(schema(CREATE_FILE,
+    '提交新文本文件的待审核候选。目标必须不存在，且父目录已存在。用户批准后才会在真实项目保存。',
+    { ...pathFields, new_content: { type: 'string', description: '新文件的完整 UTF-8 文本。' } },
+    ['source', 'path', 'new_content']));
   return tools;
 }
 
@@ -207,7 +212,8 @@ class AcpProjectTurn {
     for (const source of sources) await mkdir(path.join(this.root, source), { recursive: true });
     return '\n\nSomnus 项目临时视图：' + this.root +
       '\n路径格式为该目录下的 source_N/相对路径。清单中的其他文件可使用 ACP 读取。' +
-      '\n临时视图最多包含 12 个文件。对现有副本的修改会在授权允许时提交候选，实际项目文件需在 Somnus 审批。';
+      '\n临时视图最多包含 12 个文件。对现有副本的修改会在授权允许时提交候选。' +
+      '在临时目录新建的文件只存在于临时目录，结束后会清理，请勿把它描述为已保存到真实项目。';
   }
 
   key(entry) {
@@ -242,9 +248,11 @@ class AcpProjectTurn {
   }
 
   async mcpFile(name, args, signal) {
-    const allowed = name === READ_FILE ? ['source', 'path'] : ['source', 'path', 'expected_sha256', 'new_content'];
+    const allowed = ['source', 'path'];
+    if (name !== READ_FILE) allowed.push('new_content');
+    if (name === PROPOSE_FILE) allowed.push('expected_sha256');
     const entry = projectPath(args.source, args.path);
-    if (!entry || !this.prepared.project_sources?.some(item => item.source === entry.source) ||
+    if (!FILE_TOOLS.has(name) || !entry || !this.prepared.project_sources?.some(item => item.source === entry.source) ||
         Object.keys(args).some(key => !allowed.includes(key))) throw new AcpError('项目文件路径超出授权范围。');
     const result = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }], isError: false });
     if (name === READ_FILE) {
@@ -252,15 +260,22 @@ class AcpProjectTurn {
       return result({ source: entry.source, path: entry.path, content: reply.content, sha256: reply.sha256 });
     }
     if (!mayPropose(this.prepared) || typeof args.new_content !== 'string' ||
-        Buffer.byteLength(args.new_content) > PROJECT_TEXT_LIMIT ||
-        typeof args.expected_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(args.expected_sha256)) {
+        Buffer.byteLength(args.new_content) > PROJECT_TEXT_LIMIT) {
+      throw new AcpError('当前权限或文本大小不支持文件候选。');
+    }
+    const create = name === CREATE_FILE;
+    if (create && this.prepared.project?.supports_create !== true) throw new AcpError('当前项目不支持创建文件候选。');
+    if (!create && (typeof args.expected_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(args.expected_sha256))) {
       throw new AcpError('请先读取项目文件，并提交完整替换文本和对应版本。');
     }
     const work = this.queue.then(async () => {
       signal.throwIfAborted();
       if (this.proposed.has(this.key(entry))) throw new AcpError('此文件已有本轮待审批候选。');
-      this.keepProposal(await this.file('propose', entry, { content: args.new_content, expected_sha256: args.expected_sha256 }, signal), entry);
-      return result({ source: entry.source, path: entry.path, proposal_id: this.proposals.at(-1).id, status: 'pending' });
+      const fields = { content: args.new_content };
+      if (!create) fields.expected_sha256 = args.expected_sha256;
+      this.keepProposal(await this.file(create ? 'propose_create' : 'propose', entry, fields, signal), entry);
+      return result({ source: entry.source, path: entry.path, proposal_id: this.proposals.at(-1).id, status: 'pending',
+        ...(create ? { operation: 'create' } : {}) });
     });
     this.queue = work.catch(() => {});
     return work;
@@ -322,4 +337,4 @@ class AcpProjectTurn {
 }
 
 module.exports = { AcpProjectTurn, createProjectClient, mayPropose, promptBlocks, projectFileTools, projectPath,
-  FILE_TOOLS, READ_FILE, PROPOSE_FILE };
+  FILE_TOOLS, READ_FILE, PROPOSE_FILE, CREATE_FILE };

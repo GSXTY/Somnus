@@ -35,10 +35,10 @@ function statusText(state: UpdateState) {
     case 'unsupported': return '此运行方式暂不支持应用内更新。';
     case 'checking': return '正在检查更新…';
     case 'current': return '已是最新版本。';
+    case 'no-release': return '尚未发布 Windows 安装包。';
     case 'available': return `有新版本${version}可下载。`;
     case 'downloading': return `正在下载${version}…`;
     case 'downloaded': return `新版本${version}已下载。点击「重启并更新」安装。`;
-    case 'no-release': return 'GitHub 暂无可用版本。';
     case 'manual': return `新版本${version}可以手动下载。`;
     case 'idle': return '检查是否有新版本。';
     case 'error': return '更新未完成。';

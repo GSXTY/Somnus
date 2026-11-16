@@ -3,7 +3,7 @@ import { Alert, Button, Input, Modal, Segmented, Select, Space, Spin } from 'ant
 import { BranchesOutlined, CodeOutlined } from '@ant-design/icons';
 import { workspaces } from './assistantApi';
 import type { ConversationWorktree } from './assistantApi';
-import type { TestApprovalDetails } from './assistantAcp';
+import type { DevelopmentApprovalDetails } from './assistantAcp';
 import { describeError } from './errors.mjs';
 import './projectTools.css';
 
@@ -17,7 +17,9 @@ export type ProjectToolsBridge = {
   gitDiff?: (workspace: string, source: string, conversationId?: string) => Promise<GitChanges>;
   createWorktree?: (conversationId: string, source: string) => Promise<{ worktree: ConversationWorktree } | null>;
   openWorktree?: (conversationId: string) => Promise<void>;
-  prepareDevelopment?: (conversationId: string, jobId: string) => Promise<{ kind: 'complete' } | { kind: 'approval'; details: TestApprovalDetails }>;
+  worktreeLocation?: (conversationId: string) => Promise<string>;
+  openApprovedFile?: (conversationId: string, proposalId: string) => Promise<void>;
+  prepareDevelopment?: (conversationId: string, jobId: string) => Promise<{ kind: 'complete' } | { kind: 'approval'; details: DevelopmentApprovalDetails }>;
   respondDevelopment?: (conversationId: string, jobId: string, approved: boolean) => Promise<{ kind: 'complete' }>;
   cancelDevelopment?: (conversationId: string, jobId: string) => Promise<void>;
 };
@@ -73,7 +75,7 @@ export function ProjectTools({ workspace, conversationId, worktree }: { workspac
   </>;
 }
 
-function ProjectToolsPanel({ workspace, open, conversationId, worktree }: { workspace: string; open: boolean; conversationId?: string; worktree?: ConversationWorktree | null }) {
+export function ProjectToolsPanel({ workspace, open, conversationId, worktree }: { workspace: string; open: boolean; conversationId?: string; worktree?: ConversationWorktree | null }) {
   const { bridge, folders, loading, error, setError } = useProjectTools(workspace, open, false);
   const [source, setSource] = useState('source_1');
   const [busy, setBusy] = useState(false);

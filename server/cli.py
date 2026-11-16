@@ -20,6 +20,10 @@ def load_env(path=None, *, data_dir=None):
     """
     if path:
         candidates = [Path(path)]
+    elif os.getenv('SOMNUS_PROFILE_CONFIG_ONLY') == 'safe':
+        return None
+    elif os.getenv('SOMNUS_PROFILE_CONFIG_ONLY') == '1':
+        candidates = [(data_dir or profile_env_dir()) / '.env']
     elif getattr(sys, 'frozen', False) and sys.platform == 'darwin':
         # Finder can start with an unrelated working directory or translocate the bundle.
         candidates = [default_data_dir() / '.env']

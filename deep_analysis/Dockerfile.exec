@@ -1,0 +1,11 @@
+# Manually build; this image is never downloaded or built by the application.
+FROM python:3.12-slim
+RUN pip install --no-cache-dir pandas==2.2.3 numpy==2.2.6 matplotlib==3.10.3 Pillow==11.2.1 scipy==1.14.1
+# Chinese chart labels need a CJK font; the Debian archive is unreachable from
+# this network, so the font ships in the build context instead.
+COPY NotoSansCJKsc-Regular.otf /usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf
+RUN python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; plt.rcParams['font.sans-serif']=['Noto Sans CJK SC','DejaVu Sans']; plt.figure(); plt.title('字体预热'); plt.savefig('/tmp/warmup.png')"
+USER 65534:65534
+WORKDIR /work
+ENV PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/matplotlib
+CMD ["python", "-I", "/input/analysis.py"]

@@ -4,5 +4,6 @@ import 'antd/dist/reset.css';
 import './styles.css';
 import './assistant.css';
 import App from './App';
+import { TaskAttentionNotices } from './TaskAttentionNotices';
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /><TaskAttentionNotices /></React.StrictMode>);

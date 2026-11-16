@@ -133,7 +133,13 @@ class LocalSqliteStore:
     def __init__(self, path):
         self.path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        self._initialize()
+
+    def _connect(self, timeout=5):
+        return sqlite3.connect(self.path, timeout=timeout)
+
+    def _initialize(self):
+        with closing(self._connect()) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS records (file_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, events TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS scans (run_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS changes (file_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(file_id,revision))')
@@ -168,12 +174,12 @@ class LocalSqliteStore:
         """Record that a CSV was opened, so the file list survives restarts."""
         file_id=meta.get('file_id') if isinstance(meta,dict) else None
         if not isinstance(file_id,str) or not file_id:return
-        with closing(sqlite3.connect(self.path)) as db,db:
+        with closing(self._connect()) as db,db:
             self._remember(db,file_id,meta)
 
     def records(self,limit=200):
         """Return opened recordings with batch counts, newest first."""
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             rows=db.execute('SELECT file_id,name,size_bytes,raw_duration,sample_count,created_at,last_seen FROM record_meta ORDER BY last_seen DESC LIMIT ?',(limit,)).fetchall()
             batches={}
             for file_id,summary,created in db.execute('SELECT file_id,summary,created_at FROM scan_info ORDER BY created_at').fetchall():
@@ -207,7 +213,7 @@ class LocalSqliteStore:
         return dict(json.loads(row[0]),title=row[1],archived=bool(row[2]))
 
     def read(self, file_id):
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(self._connect()) as db, db:
             row = db.execute('SELECT revision, events FROM records WHERE file_id=?', (file_id,)).fetchone()
         return dict(file_id=file_id, revision=row[0] if row else 0, events=json.loads(row[1]) if row else [])
 
@@ -217,7 +223,7 @@ class LocalSqliteStore:
         checked = [validate_event(e, meta) for e in events]
         if len({e['id'] for e in checked}) != len(checked):
             raise ValueError('重复事件编号')
-        with closing(sqlite3.connect(self.path, timeout=10)) as db, db:
+        with closing(self._connect(timeout=10)) as db, db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT revision,events FROM records WHERE file_id=?', (meta['file_id'],)).fetchone()
             current = row[0] if row else 0
@@ -239,7 +245,7 @@ class LocalSqliteStore:
         return dict(file_id=meta['file_id'], revision=current + 1, events=checked,run_id=run_id)
 
     def scans(self, file_id):
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             rows=db.execute('SELECT summary,title,archived FROM scan_info WHERE file_id=? ORDER BY created_at DESC,rowid DESC',(file_id,)).fetchall()
         return [self._scan_info(row) for row in rows]
 
@@ -252,7 +258,7 @@ class LocalSqliteStore:
         if query.strip():
             pattern='%'+query.strip().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
             where+=" AND (title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')";args.extend([pattern,pattern])
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             total=db.execute('SELECT COUNT(*) FROM scan_info WHERE '+where,args).fetchone()[0]
             rows=db.execute('SELECT summary,title,archived FROM scan_info WHERE '+where+' ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?',args+[limit,offset]).fetchall()
             chosen=db.execute('SELECT summary,title,archived FROM scan_info WHERE file_id=? AND run_id=?',(file_id,selected)).fetchone() if selected else None
@@ -262,20 +268,20 @@ class LocalSqliteStore:
         if title is None and archived is None:raise ValueError('未指定批次修改')
         if title is not None and (not isinstance(title,str) or not title.strip() or len(title)>100):raise ValueError('批次名称需为1～100字')
         if archived is not None and not isinstance(archived,bool):raise ValueError('归档状态无效')
-        with closing(sqlite3.connect(self.path)) as db,db:
+        with closing(self._connect()) as db,db:
             row=db.execute('SELECT summary,title,archived FROM scan_info WHERE file_id=? AND run_id=?',(file_id,run_id)).fetchone()
             if not row:raise ValueError('未找到当前文件对应的批次')
             db.execute('UPDATE scan_info SET title=?,archived=? WHERE file_id=? AND run_id=?',(title.strip() if title is not None else row[1],int(archived) if archived is not None else row[2],file_id,run_id))
             return self._scan_info((row[0],title.strip() if title is not None else row[1],int(archived) if archived is not None else row[2]))
 
     def matching_scan(self,file_id,start,end,settings):
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             row=db.execute('SELECT summary,title,archived FROM scan_info WHERE file_id=? AND fingerprint=? ORDER BY created_at DESC,rowid DESC LIMIT 1',(file_id,scan_fingerprint(start,end,settings))).fetchone()
         return self._scan_info(row) if row else None
 
     def feedback(self, meta, run_id, kind, reviewer='', reviewed_range=None):
         if kind not in ('automatic','reviewed'):raise ValueError('反馈类型无效')
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(self._connect()) as db, db:
             row=db.execute('SELECT payload FROM scans WHERE run_id=? AND file_id=?',(run_id,meta['file_id'])).fetchone()
             if not row:raise ValueError('未找到对应扫描，请先自动检测')
             snapshot=json.loads(row[0])
@@ -290,6 +296,30 @@ class LocalSqliteStore:
                     events=json.loads(current[1]) if current else [],revision=current[0] if current else 0,
                     automatic=snapshot,history=history,
                     note='已检查范围由校验人声明；仍为candidate的事件尚未确认，不能作为正常或已完成复核的依据')
+
+
+class SessionSqliteStore(LocalSqliteStore):
+    """A private in-memory store for one desktop runtime."""
+
+    session_only = True
+
+    def __init__(self, data_dir):
+        # The configured data directory is still the destination for explicit exports.
+        self.path = str(Path(data_dir) / 'events.sqlite3')
+        self._uri = f'file:waveform-{uuid.uuid4().hex}?mode=memory&cache=shared'
+        # Keep the database alive between transactions while the runtime exists.
+        self._anchor = self._connect()
+        self._initialize()
+
+    def _connect(self, timeout=5):
+        db = sqlite3.connect(self._uri, uri=True, timeout=timeout)
+        db.execute('PRAGMA temp_store = MEMORY')
+        return db
+
+    def forget_record(self, file_id):
+        with closing(self._connect()) as db, db:
+            for table in ('records', 'scans', 'changes', 'scan_info', 'record_meta'):
+                db.execute(f'DELETE FROM {table} WHERE file_id=?', (file_id,))
 
 
 # Backwards-compatible name for existing imports and tests.

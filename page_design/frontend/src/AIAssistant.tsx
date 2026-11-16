@@ -1,10 +1,13 @@
 import { SomnusMark } from './SomnusMark';
+import { DocumentPicker } from './DocumentLibrary';
+import { documentBridge, readDocumentFile } from './documentLibraryBridge';
 import { DshRecommendationCards } from './DshRecommendationCards';
 import { ActionApproval, ExecutionDetails } from './ExecutionDetails';
 import { DelegationOutcome, DelegationReview } from './DelegationReview';
+import { DOT_PROMPT_LIMIT, DotTaskCards, useDotTasks } from './DotTasks';
 import type { PendingDelegation } from './DelegationReview';
 import type { AcpPermission } from './assistantAcp';
-import type { ContextUsage, DshRecommendation, ExecutionStep, ExecutionSummary, McpApprovalBlocked, ReplyUsage } from './assistantApi';
+import type { ContextUsage, DshRecommendation, ExecutionApproval, ExecutionStep, ExecutionSummary, McpApprovalBlocked, ReplyUsage } from './assistantApi';
 import { mainChatBridge } from './assistantAcp';
 import type { ExternalReasoning, ExternalSelection } from './assistantAcp';
 import { ModelSwitch } from './ModelSwitch';
@@ -14,14 +17,18 @@ import type { InstalledPlugin } from './assistantApi';
 import { SkillChips, SkillPicker } from './SkillPicker';
 import type { Skill } from './assistantApi';
 import { PermissionSwitch } from './PermissionSwitch';
-import { ChatWorktree, ProjectTools } from './ProjectTools';
+import { ChatWorktree } from './ProjectTools';
+import { ChatProjectContext } from './ChatProjectContext';
+import { ChatWorkspacePanel } from './ChatWorkspacePanel';
+import { ConversationTraceButton } from './ConversationTrace';
 import { associateFileProposals, FileChangeCards, FileProposalReview, useFileProposals } from './FileProposalReview';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RecentSessions } from './RecentSessions';
-import { Alert, Button, Input, Modal, Skeleton, Space, Spin, Tag, Tooltip } from 'antd';
-import { DeleteOutlined, ArrowDownOutlined, FileTextOutlined, LoadingOutlined, PaperClipOutlined, CloseOutlined, EditOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, SettingOutlined, StopOutlined } from '@ant-design/icons';
+import { Alert, Button, Dropdown, Input, Modal, Skeleton, Space, Spin, Tag, Tooltip } from 'antd';
+import { DatabaseOutlined, DownOutlined, ArrowDownOutlined, FileTextOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, PaperClipOutlined, CloseOutlined, LayoutOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, StopOutlined, SwapOutlined } from '@ant-design/icons';
 import { assistantStatus, beginExternalTurn, finishExternalTurn, cancelConversation, conversation, conversations, createConversation, deleteConversation, renameConversation, respondToDelegation, respondToMcpApproval, sendMessage } from './assistantApi';
+import { linkedConversation, reportConversationFinished, watchAnalysisTask } from './taskAttention';
 import type { DelegationResult } from './assistantApi';
 import type { AssistantStatus, ChatEvent, ChatMessage, ChatAttachment, Conversation, FileProposal } from './assistantApi';
 
@@ -31,7 +38,39 @@ import { formatDateTime } from './format.mjs';
 import { describeError } from './errors.mjs';
 
 const tokenFormat = new Intl.NumberFormat('zh-CN');
+const compactTokenFormat = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 const ratioFormat = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 });
+
+function conversationUsage(messages: ChatMessage[]) {
+  let input = 0, output = 0, cached = 0, cacheInputs = 0;
+  let counted = false, incomplete = false;
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue;
+    const usage = message.reply_meta?.usage;
+    if (!usage) {
+      incomplete ||= message.status === 'complete' || Boolean(message.reply_meta?.usage_unavailable);
+      continue;
+    }
+    counted = true;
+    input += usage.input_tokens;
+    output += usage.output_tokens;
+    incomplete ||= Boolean(usage.partial);
+    if (typeof usage.cached_input_tokens === 'number') {
+      cached += usage.cached_input_tokens;
+      cacheInputs += usage.input_tokens;
+    }
+  }
+  if (!counted && !incomplete) return;
+  const cacheRatio = cacheInputs > 0 ? ratioFormat.format(cached / cacheInputs) : undefined;
+  const summary = counted ? compactTokenFormat.format(input + output) + ' tok' : '用量未返回';
+  const details = counted ? [
+    '共 ' + tokenFormat.format(input + output) + ' tokens',
+    '输入 ' + tokenFormat.format(input) + ' · 输出 ' + tokenFormat.format(output),
+    ...(cacheRatio ? ['缓存命中 ' + cacheRatio + '（按已报告缓存的输入 token 计算）'] : []),
+    ...(incomplete ? ['部分回复的用量未完整返回'] : []),
+  ] : [summary];
+  return { summary, details };
+}
 
 function contextFraction(context?: ContextUsage) {
   if (!context || !Number.isFinite(context.used_tokens) || context.used_tokens < 0 ||
@@ -71,9 +110,17 @@ type RunningTurn = {
   controller?: AbortController; stopping: boolean; error?: string; toolNote?: string;
   contextUsage?: ContextUsage; permission?: PendingApproval; development?: string; developmentJobs?: Set<string>; execution?: { assistantId: string; data: ExecutionSummary };
   delegation?: PendingDelegation;
+  traceApprovals?: Map<string, ExecutionApproval>;
+  approvalResponse?: Promise<void>;
 };
 
+function recordAcpDecision(turn: RunningTurn, id: string, status: ExecutionApproval['status']) {
+  const event = turn.traceApprovals?.get(id);
+  if (event) { event.status = status; event.at = Date.now() / 1000; }
+}
+
 type Props = {
+  windowsDesktop?: boolean;
   allowLocalAnalysisUpload?: boolean;
   onModelConfig?: () => void;
   workspace: string;
@@ -85,7 +132,7 @@ type Props = {
   onOpenDshPlugin?: (id: string) => void;
 };
 
-export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLockedChange, onOpenChat, onModelConfig, onOpenDshPlugin, allowLocalAnalysisUpload = true }: Props) {
+export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLockedChange, onOpenChat, onModelConfig, onOpenDshPlugin, allowLocalAnalysisUpload = true, windowsDesktop = false }: Props) {
   const [chosenModel, setChosenModel] = useState<{ id?: string; effort?: ReasoningEffort }>(() => {
     try { return JSON.parse(localStorage.getItem('vvman.chat-model') || '{}') || {}; } catch { return {}; }
   });
@@ -111,6 +158,8 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [items, setItems] = useState<Conversation[]>([]), [active, setActive] = useState<Conversation | null>(null);
   const [history, setMessages] = useState<ChatMessage[]>([]), [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
+  const [notificationConversation, setNotificationConversation] = useState(linkedConversation);
+  const dot = useDotTasks(loading ? undefined : active?.id, windowsDesktop && visible && !loading);
   const selectedTurn = active ? turns.current.get(active.id) : undefined;
   const messages = selectedTurn?.messages || history;
   const busy = Boolean(selectedTurn);
@@ -123,10 +172,16 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [dataUploading, setDataUploading] = useState(false);
   const [docFile, setDocFile] = useState<{ id: string; name: string; kind: string; chars: number; note?: string } | null>(null);
   const [docUploading, setDocUploading] = useState(false);
+  const [attachmentLibraryOpen, setAttachmentLibraryOpen] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const libraryLock = useRef(false);
+  useEffect(() => { setAttachmentLibraryOpen(false); }, [visible, workspace]);
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null), [deleteBusy, setDeleteBusy] = useState(false), [deleteError, setDeleteError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null), imageLock = useRef(false), deleteLock = useRef(false), listToken = useRef(0);
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null), [name, setName] = useState(''), [renameError, setRenameError] = useState(''), [renameBusy, setRenameBusy] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [projectContextOpen, setProjectContextOpen] = useState(false);
+  const [workspacePanelChat, setWorkspacePanelChat] = useState<string>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   useEffect(() => {
@@ -148,6 +203,11 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const visibleError = error || selectedTurn?.error || (active && turnErrors.current.get(active.id));
   const [mcpBlocked, setMcpBlocked] = useState<Record<string, McpApprovalBlocked>>({});
   const alive = useRef(true), activeId = useRef<string | null>(null), historyToken = useRef(0), log = useRef<HTMLDivElement>(null);
+  const [dotSelection, setDotSelection] = useState<number>();
+  const dotMode = dotSelection === historyToken.current;
+  const dotReady = Boolean(dot.availability?.enabled && dot.availability.ready && !dot.availability.paused);
+  const dotLimitExceeded = dotMode && Array.from(text.trim()).length > DOT_PROMPT_LIMIT;
+  const dotHasExtras = dotMode && Boolean(attachments.length || dataFile || docFile || skills.length || plugins.length);
   const [atBottom, setAtBottom] = useState(true);
   const stick = useRef(true);
   const canChat = Boolean(external ? externalBridge : !statusLoading && status?.configured && status.capabilities.chat);
@@ -162,6 +222,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     (chosenModel.id ? lastReply?.provider_id === chosenModel.id : lastReply?.model === status?.model);
   const savedContext = lastReplyMatches ? lastReply?.context : undefined;
   const activeContext = selectedTurn ? selectedTurn.contextUsage : savedContext;
+  const tokenUsage = !loading && conversationUsage(messages);
   const reasoningModelId = external?.modelId;
   const reasoningKey = reasoningAgentId && JSON.stringify([reasoningAgentId, reasoningModelId]);
   const reasoningSettings = reasoningKey && reasoning?.key === reasoningKey ? reasoning.settings : undefined;
@@ -183,7 +244,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [permissionSaving, setPermissionSaving] = useState(false);
   const worktreeLock = useRef(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
-  const navigationLocked = worktreeBusy || permissionSaving || creatingTurn.current || loading || deleteBusy || renameBusy || imageLoading || dataUploading || docUploading;
+  const navigationLocked = worktreeBusy || permissionSaving || creatingTurn.current || loading || deleteBusy || renameBusy || imageLoading || dataUploading || docUploading || libraryLoading;
   const locked = navigationLocked || busy;
   useEffect(() => onLockedChange(navigationLocked), [navigationLocked, onLockedChange]);
   const imageBlocked = !external && attachments.length > 0 && !status?.capabilities.vision;
@@ -271,7 +332,8 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   }, [workspace]);
 
   useEffect(() => { if (visible) void loadStatus(); }, [visible, chosenModel.id]);
-  useEffect(() => { if (stick.current) log.current?.scrollTo({ top: messages.length ? log.current.scrollHeight : 0, behavior: 'auto' }); }, [messages, busy]);
+  useEffect(() => { if (stick.current) log.current?.scrollTo({ top: log.current.scrollHeight, behavior: 'auto' }); },
+    [messages, busy, dot.snapshot?.tasks, liveExecution, permissionRequest, selectedTurn?.delegation, toolNote]);
   function followLog() {
     const element = log.current;
     if (!element) return;
@@ -323,6 +385,19 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     setAtBottom(true);
     void openHistory(id);
   }
+  useEffect(() => {
+    const sync = () => setNotificationConversation(linkedConversation());
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  useEffect(() => {
+    if (!visible || navigationLocked || !notificationConversation) return;
+    if (linkedConversation() === notificationConversation) {
+      selectHistory(notificationConversation);
+      window.history.replaceState(window.history.state, '', '#assistant');
+    }
+    setNotificationConversation(undefined);
+  }, [visible, navigationLocked, notificationConversation]);
   async function newChat() {
     if (navigationLocked || deleteLock.current) return;
     saveCurrentDraft();
@@ -385,6 +460,30 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     if (!other) return;
     if (/\.(csv|xlsx|xlsm)$/i.test(other.name)) void addDataFile(other);
     else void addDocument(other);
+  }
+
+  async function addLibraryFile(path: string) {
+    if (locked || libraryLock.current) return;
+    const conversationId = activeId.current;
+    libraryLock.current = true;
+    setLibraryLoading(true);
+    setError('');
+    try {
+      const result = await readDocumentFile('private', path);
+      if (!alive.current || activeId.current !== conversationId || workspaceRef.current !== workspace) return;
+      if (!Number.isSafeInteger(result.size) || result.size < 0 || result.size > 10 * 1024 * 1024) {
+        throw new Error('文件不能超过 10 MB。');
+      }
+      const bytes = atob(result.dataBase64);
+      if (bytes.length !== result.size) throw new Error('文件内容读取不完整。');
+      const buffer = new Uint8Array(bytes.length);
+      for (let index = 0; index < bytes.length; index++) buffer[index] = bytes.charCodeAt(index);
+      addAnyFiles([new File([buffer], result.name, { type: result.mimeType })]);
+    } catch (failure) { if (alive.current && activeId.current === conversationId && workspaceRef.current === workspace) setError(failureText(failure)); }
+    finally {
+      libraryLock.current = false;
+      if (alive.current) setLibraryLoading(false);
+    }
   }
 
   async function addDocument(file: File) {
@@ -547,7 +646,17 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         if (update.agentId !== selection.agentId || update.conversationId !== id) return;
         if (update.acpPermission && bridge.respondPermission) {
           turn.permission = { conversationId: id, request: update.acpPermission };
+          const { requestId, kind } = update.acpPermission;
+          if (kind === 'mcp' || kind === 'edit' || kind === 'test') {
+            const approvals = turn.traceApprovals ??= new Map();
+            if (approvals.size < 40 && !approvals.has(requestId)) {
+              approvals.set(requestId, { id: requestId, kind, status: 'pending', at: Date.now() / 1000 });
+            }
+          }
           refreshTurns();
+        }
+        if (update.acpPermissionClosed && turn.traceApprovals?.get(update.acpPermissionClosed.requestId)?.status === 'pending') {
+          recordAcpDecision(turn, update.acpPermissionClosed.requestId, 'closed');
         }
         if (update.acpPermissionClosed && turn.permission?.request.requestId === update.acpPermissionClosed.requestId) {
           turn.permission = undefined;
@@ -578,7 +687,10 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           const title = status === 'error' && message ? name + ' · ' + message : name;
           updateStep({ id: stepId, title, kind: 'tool', status: status === 'running' ? 'in_progress' : status === 'error' ? 'failed' : 'completed' });
           publishExecution();
-          if (status === 'complete' && taskId && /^[a-f0-9]{32}$/.test(taskId)) analysisTasks.add(taskId);
+          if (status === 'complete' && taskId && /^[a-f0-9]{32}$/.test(taskId)) {
+            analysisTasks.add(taskId);
+            watchAnalysisTask(taskId);
+          }
           turn.toolNote = message || (status === 'running' ? name + ' 正在运行…' : status === 'error' ? name + ' 执行失败' : '');
           refreshTurns();
           return;
@@ -615,9 +727,17 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       refreshTurns();
       if (turnId) {
         try {
-          const saved = await finishExternalTurn(id, turnId, { content: partial, status: endStatus, model: resultModel, usage, context: turn.contextUsage, recommendations, ...(execution.steps.length || execution.plan.length || execution.truncated ? { execution } : {}) });
+          await turn.approvalResponse?.catch(() => {});
+          if (turn.traceApprovals?.size) {
+            const approvals = [...turn.traceApprovals.values()];
+            execution = { ...execution, approvals };
+          }
+          const saved = await finishExternalTurn(id, turnId, { content: partial, status: endStatus, model: resultModel, usage, context: turn.contextUsage, recommendations, ...(execution.steps.length || execution.plan.length || execution.truncated || execution.approvals?.length ? { execution } : {}) });
           updateTurnConversation(turn, saved.conversation);
           turn.messages = turn.messages.map(item => item.id === saved.message.id ? saved.message : item);
+          if (!turn.stopping && (saved.message.status === 'complete' || saved.message.status === 'error')) {
+            reportConversationFinished(id, saved.message.id, saved.message.status);
+          }
         } catch (failure) {
           turn.messages = turn.messages.map(item => item.id === assistantId ? {
             ...item, content: partial, status: endStatus,
@@ -629,6 +749,38 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       if (responseError && !turn.stopping && !turn.error) turn.error = failureText(responseError);
       finishTurn(turn, turn.error ? draft : undefined);
     }
+  }
+  async function sendDot() {
+    if (locked || creatingTurn.current || deleteLock.current || !dotReady || dot.submitting ||
+      dotHasExtras || dotLimitExceeded || !text.trim()) return;
+    const draft = text;
+    const selection = historyToken.current;
+    let item = active;
+    if (!item) {
+      creatingTurn.current = true;
+      refreshTurns();
+      try {
+        item = await createConversation(workspace);
+        if (!alive.current || workspaceRef.current !== workspace) return;
+        choose(item);
+        updateItem(item);
+      } catch (failure) {
+        if (alive.current) setError(failureText(failure));
+        return;
+      } finally { creatingTurn.current = false; refreshTurns(); }
+    }
+    const id = item.id;
+    const accepted = await dot.dispatch(id, draft);
+    if (!accepted || !alive.current) return;
+    const stored = drafts.current.get(id);
+    if (stored?.text === draft) drafts.current.set(id, { ...stored, text: '' });
+    if (workspaceRef.current === workspace && activeId.current === id && historyToken.current === selection) {
+      setText(current => current === draft ? '' : current);
+    }
+  }
+  async function sendSelected() {
+    if (dotMode) await sendDot();
+    else await send();
   }
   async function send() {
     if (locked || worktreeLock.current || creatingTurn.current || (activeId.current && turns.current.has(activeId.current)) || deleteLock.current || !canChat || imageBlocked || (!text.trim() && !attachments.length)) return;
@@ -686,8 +838,10 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       const result = await bridge.prepareDevelopment(id, job);
       if (turn.development !== job || turn.stopping) return;
       if (result.kind === 'approval') {
+        const shell = result.details.kind === 'powershell';
         turn.permission = { conversationId: id, development: true, request: {
-          requestId: job, kind: 'test', title: '允许运行项目测试？', details: result.details,
+          requestId: job, kind: shell ? 'powershell' : 'test',
+          title: shell ? '允许运行 PowerShell？' : '允许运行项目测试？', details: result.details,
           options: [{ id: 'allow_once', kind: 'allow_once', name: '继续' }, { id: 'reject_once', kind: 'reject_once', name: '取消' }],
         } };
       } else turn.development = undefined;
@@ -706,6 +860,10 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     const dataMeta = dataFile ? { name: dataFile.name, row_count: dataFile.row_count, columns: dataFile.columns.slice(0, 60) } : null;
     let complete = false;
     let assistantId: string | undefined;
+    const steps: ExecutionStep[] = [];
+    function updateInternalExecution() {
+      if (assistantId) turn.execution = { assistantId, data: { steps: [...steps], plan: [] } };
+    }
     try {
       const delegationAgents = externalBridge?.runDelegation
         ? await externalBridge.listDelegationAgents?.().catch(() => []) || []
@@ -752,15 +910,31 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           const proposal = { ...data.proposal, assistant_message_id: data.proposal.assistant_message_id || assistantId };
           setFileProposals(current => ({ ...current, [target]: [...(current[target] || []).filter(item => item.id !== proposal.id), proposal] }));
         } else if (event.type === 'tool_call') {
+          if (data.name && steps.length < 40) {
+            steps.push({ id: 'internal-' + steps.length, title: data.name, kind: 'tool', status: 'in_progress' });
+            updateInternalExecution();
+          }
           turn.toolNote = data.name === 'query_database' ? '正在查询数据库…' :
             data.name === 'list_database_schema' ? '正在读取表结构…' : undefined;
         } else if (event.type === 'tool_result') {
+          const step = [...steps].reverse().find(item => item.title === data.name && item.status === 'in_progress');
+          if (step) {
+            step.status = data.ok ? 'completed' : 'failed';
+            updateInternalExecution();
+          }
           turn.toolNote = typeof data.summary === 'string' && data.summary ? data.summary : undefined;
         } else if (['done', 'cancelled', 'error'].includes(event.type)) {
           turn.toolNote = undefined;
           turn.permission = undefined;
           const message = typeof data.message === 'object' ? data.message : data.assistant_message;
-          if (message) turn.messages = turn.messages.some(value => value.id === message.id) ? turn.messages.map(value => value.id === message.id ? message : value) : [...turn.messages, message];
+          if (message) {
+            const saved = message.reply_meta && !message.reply_meta.execution && turn.execution?.assistantId === message.id
+              ? { ...message, reply_meta: { ...message.reply_meta, execution: turn.execution.data } } : message;
+            turn.messages = turn.messages.some(value => value.id === saved.id) ? turn.messages.map(value => value.id === saved.id ? saved : value) : [...turn.messages, saved];
+            if (!turn.stopping && (saved.status === 'complete' || saved.status === 'error')) {
+              reportConversationFinished(target, saved.id, saved.status);
+            }
+          }
           if (data.conversation) updateTurnConversation(turn, data.conversation);
           if (event.type === 'done') complete = true;
           if (event.type === 'error') turn.error = typeof data.message === 'string' ? data.message : '模型请求失败。会话已保存，可重试。';
@@ -805,9 +979,12 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     if (!messageLog || !chat || typeof ResizeObserver === 'undefined') return;
     const row = messageLog.querySelector('.assistant-column-measure');
     if (!row) return;
-    const observer = new ResizeObserver(() => {
-      const width = row.getBoundingClientRect().width;
-      if (width > 0) chat.style.setProperty('--conversation-measured-width', width + 'px');
+    let measuredWidth = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry?.contentRect.width || 0);
+      if (width <= 0 || width === measuredWidth) return;
+      measuredWidth = width;
+      chat.style.setProperty('--conversation-measured-width', width + 'px');
     });
     observer.observe(row);
     return () => {
@@ -822,9 +999,9 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     const turn = turns.current.get(pending.conversationId);
     if (pending.development) {
       const respond = window.vvmanProjects?.respondDevelopment;
-      if (!turn || turn.permission !== pending || !respond) throw new Error('此项目测试确认已结束');
+      if (!turn || turn.permission !== pending || !respond) throw new Error('本次运行确认已结束');
       turn.permission = undefined;
-      if (option === 'allow_once') turn.toolNote = '正在运行项目测试…';
+      if (option === 'allow_once') turn.toolNote = pending.request.kind === 'powershell' ? '正在运行 PowerShell…' : '正在运行项目测试…';
       refreshTurns();
       try { await respond(pending.conversationId, pending.request.requestId, option === 'allow_once'); }
       catch (failure) {
@@ -842,7 +1019,13 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     if (pending.localMcp) {
       await respondToMcpApproval(pending.conversationId, pending.request.requestId, option === 'approve' ? 'approve' : 'reject');
     } else if (bridge?.respondPermission) {
-      await bridge.respondPermission(pending.conversationId, pending.request.requestId, option);
+      const response = bridge.respondPermission(pending.conversationId, pending.request.requestId, option).then(() => {
+        const selection = pending.request.options.find(item => item.id === option);
+        if (turn) recordAcpDecision(turn, pending.request.requestId, selection?.kind === 'allow_once' ? 'approved' :
+          selection?.kind === 'reject_once' ? 'rejected' : 'closed');
+      });
+      if (turn) turn.approvalResponse = response;
+      await response;
     } else throw new Error('当前桌面连接无法确认操作');
     if (turn?.permission?.request.requestId === pending.request.requestId) {
       turn.permission = undefined;
@@ -850,6 +1033,25 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }
   }
   const restoredIncomplete = !busy && messages.some(message => message.status === 'streaming' || message.status === 'error');
+  const hasDocumentLibrary = Boolean(documentBridge());
+  const attachmentButton = <Button type="text" size="small" icon={<PaperClipOutlined />} disabled={locked}
+    loading={imageLoading || dataUploading || docUploading || libraryLoading}
+    aria-label="添加文件" title="添加文件"
+    onClick={hasDocumentLibrary ? undefined : () => fileInput.current?.click()} />;
+  const runningReply = messages.find(message => message.role === 'assistant' && message.status === 'streaming');
+  const terminalApproval = permissionRequest?.request.details?.kind === 'powershell' ? permissionRequest.request.details : undefined;
+  const lastTool = liveExecution?.data.steps[liveExecution.data.steps.length - 1];
+  const liveTaskCards = <>
+    {permissionRequest && permissionRequest.conversationId === active?.id &&
+      <ActionApproval key={permissionRequest.conversationId + ':' + permissionRequest.request.requestId} request={permissionRequest.request} onRespond={respondToAcpPermission} />}
+    {selectedTurn?.delegation && <DelegationReview key={selectedTurn.delegation.id} request={selectedTurn.delegation} stopping={stopping}
+      onRespond={agentId => void handleDelegation(selectedTurn, agentId)} />}
+    {toolNote && <div className="assistant-tool-note" role="status">
+      {lastTool?.status === 'failed' ? <CloseCircleOutlined /> :
+        lastTool?.status === 'completed' ? <CheckCircleOutlined /> : <LoadingOutlined />} {toolNote}
+    </div>}
+  </>;
+
   return <><div className="assistant-page">
     {sidebar && createPortal(<RecentSessions items={items} activeId={visible ? active?.id : undefined}
       locked={navigationLocked} runningIds={turns.current} loading={loading} onOpen={id => { onOpenChat(); selectHistory(id); }}
@@ -857,32 +1059,48 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     {!external && statusError && <Alert type="warning" showIcon className="assistant-error" message="暂时无法读取模型状态" description={statusError} />}
     <div className="assistant-layout">
       <aside className="assistant-history" aria-label="AI会话历史"><div className="assistant-history-head"><strong>会话历史</strong><Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => void newChat()} disabled={navigationLocked}>新建会话</Button></div><div className="assistant-history-list">{loading && !items.length ? <div className="assistant-loading"><Spin size="small" />读取历史…</div> : items.length ? items.map(item => <button type="button" className={`assistant-history-item ${active?.id === item.id ? 'active' : ''}`} key={item.id} onClick={() => selectHistory(item.id)} disabled={navigationLocked} title={item.title} aria-pressed={active?.id === item.id}><MessageOutlined /><span><strong>{item.title || '新会话'}</strong><small>{item.message_count} 条消息 · {formatDateTime(item.updated_at)}</small></span></button>) : <div className="assistant-history-empty">暂无会话</div>}</div><div className="assistant-history-foot">会话保存在本机。</div></aside>
-      <section className="assistant-chat" aria-label="会话"><header className="assistant-chat-head">
-        <div className="assistant-chat-heading"><h1>{active?.title || '新会话'}</h1></div>
-        <Space size={4} wrap><ProjectTools key={workspace + ':' + (active?.id || 'new') + ':' + (active?.worktree?.commit || '')}
-          workspace={workspace} conversationId={active?.id} worktree={active?.worktree} />
-        <Button type="text" size="small" aria-label="模型连接设置" title="模型连接设置" icon={<SettingOutlined />}
-        loading={statusLoading} onClick={() => setConfigOpen(true)} />
-        {active && <><Button type="text" size="small" icon={<EditOutlined />} disabled={locked} onClick={() => requestRename(active)}>重命名</Button><Button type="text" danger size="small" icon={<DeleteOutlined />} disabled={locked} onClick={() => requestDelete(active)}>删除</Button></>}</Space></header>
+      <section className="assistant-chat" aria-label="会话"><header className="assistant-chat-head assistant-chat-head-compact">
+        <div className="assistant-chat-heading"><h1><Dropdown trigger={['click']} menu={{
+          items: [
+            ...(active ? [{ key: 'rename', label: '重命名', disabled: locked }] : []),
+            { key: 'project', label: '项目与文件权限' },
+            { key: 'model', label: '模型连接设置' },
+            ...(active ? [{ key: 'delete', label: '删除会话', disabled: locked, danger: true }] : []),
+          ],
+          onClick: ({ key }) => {
+            if (key === 'rename' && active) requestRename(active);
+            if (key === 'delete' && active) requestDelete(active);
+            if (key === 'project') setProjectContextOpen(true);
+            if (key === 'model') setConfigOpen(true);
+          },
+        }}>
+          <button type="button" className="assistant-chat-title-button" aria-label={'会话菜单 · ' + (active?.title || '新会话')}>
+            <span>{active?.title || '新会话'}</span><DownOutlined aria-hidden="true" />
+          </button>
+        </Dropdown></h1></div>
+        {active && !loading && window.vvmanProjects && <Space className="assistant-chat-head-actions" size={4}>
+          <ConversationTraceButton key={active.id} conversationId={active.id} />
+          <Button type="text" size="small" icon={<LayoutOutlined />} aria-label="工作区" title="工作区"
+            aria-expanded={workspacePanelChat === active.id} onClick={() => setWorkspacePanelChat(value => value === active.id ? undefined : active.id)} />
+        </Space>}
+      </header>
         {visibleError && <Alert className="assistant-error" type="error" showIcon message={visibleError} action={<Button size="small" onClick={() => void loadList(true)} disabled={locked}>重新加载历史</Button>} />}
         {restoredIncomplete && <div className="assistant-incomplete">部分历史回答在完成前中断。</div>}
         <div className="assistant-message-log" ref={log} onScroll={followLog} role="log" aria-live="polite" aria-label="会话消息"><div className="assistant-column-measure" aria-hidden="true" />{loading ? <div className="skeleton-list">{[0, 1, 2].map(index => <Skeleton key={index} active title={false} paragraph={{ rows: 2, width: ['92%', '68%'] }} />)}</div> : messages.length ? messages.map(message => {
           const notice = message.reply_meta?.mcp_approval_blocked || mcpBlocked[message.id];
-          const usage = message.reply_meta?.usage;
           return <article key={message.id} className={`assistant-message ${message.role}`}><div className="assistant-message-main">{message.role === 'assistant' && message.status !== 'complete' && <div className="assistant-message-label"><small>{statusText[message.status]}</small></div>}{message.role === 'assistant' && (message.reply_meta?.execution || liveExecution?.assistantId === message.id) &&
-          <ExecutionDetails execution={message.reply_meta?.execution || liveExecution!.data} />}
+          <ExecutionDetails execution={message.reply_meta?.execution || liveExecution!.data} active={runningReply?.id === message.id} />}
+          {runningReply?.id === message.id && liveTaskCards}
           {notice && <Alert type="warning" showIcon message={notice.reason} description={notice.tool_name} />}
           <div className="assistant-message-content">{message.content ? (message.role === 'assistant' ? <Markdown text={message.content} /> : message.content) : (message.status === 'streaming' ? '正在思考…' : message.attachments?.length ? '' : '未返回回答内容')}{message.attachments?.length ? <div className="assistant-message-images">{message.attachments.filter(image => isLocalImage(image.data_url)).map((image, index) => <img key={index} src={image.data_url} alt={image.name || '会话图片'} loading="lazy" />)}</div> : null}</div>{message.role === 'assistant' && message.reply_meta?.delegation && <DelegationOutcome result={message.reply_meta.delegation} />}{message.role === 'assistant' && message.reply_meta && <div className="assistant-reply-metadata">
       <span>{message.reply_meta.model}</span>{typeof message.reply_meta.elapsed_ms === 'number' && <span>{(message.reply_meta.elapsed_ms / 1000).toFixed(1)} 秒</span>}
-      {usage ? <span>
-        输入 {tokenFormat.format(usage.input_tokens)} · 输出 {tokenFormat.format(usage.output_tokens)} tokens{usage.input_tokens > 0 && typeof usage.cached_input_tokens === 'number' ?
-          ' · 缓存命中 ' + ratioFormat.format(usage.cached_input_tokens / usage.input_tokens) : ''}{usage.partial ? ' · 用量不完整' : ''}
-      </span> : message.reply_meta.usage_unavailable && <span>用量未返回</span>}
       </div>}
       {message.role === 'assistant' && <DshRecommendationCards cards={message.reply_meta?.recommendations} onOpenPlugin={onOpenDshPlugin} />}
       {message.role === 'assistant' && <FileChangeCards items={proposalReplies.get(message.id) || []} onPreview={previewProposal} />}
       </div></article>;
-        }) : <div className="assistant-welcome"><SomnusMark className="assistant-welcome-mark" /><h2>这个项目想做什么？</h2></div>}{busy && !messages.some(message => message.status === 'streaming') && <div className="assistant-loading"><Spin size="small" />正在连接模型…</div>}</div>
+        }) : !dot.snapshot?.tasks.length && <div className="assistant-welcome"><SomnusMark className="assistant-welcome-mark" /><h2>这个项目想做什么？</h2></div>}
+        {busy && !runningReply && <div className="assistant-live-tasks">{liveTaskCards}<div className="assistant-loading"><Spin size="small" />正在连接模型…</div></div>}
+        {!loading && dot.snapshot && <DotTaskCards tasks={dot.snapshot.tasks} />}</div>
         <div className="assistant-project-actions">
           {active && <ChatWorktree key={active.id} workspace={workspace} conversationId={active.id} worktree={active.worktree}
             disabled={locked} onBusy={value => { worktreeLock.current = value; setWorktreeBusy(value); }}
@@ -900,16 +1118,52 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
             key={proposalPreview.item.id} conversationId={proposalConversation} preview={proposalPreview.item}
             onClose={() => setProposalPreview(undefined)} onDecision={proposals.record} />}
         </div>
-        {permissionRequest && permissionRequest.conversationId === active?.id &&
-          <ActionApproval key={permissionRequest.conversationId + ':' + permissionRequest.request.requestId} request={permissionRequest.request} onRespond={respondToAcpPermission} />}
-        {selectedTurn?.delegation && <DelegationReview key={selectedTurn.delegation.id} request={selectedTurn.delegation} stopping={stopping}
-          onRespond={agentId => void handleDelegation(selectedTurn, agentId)} />}
-        {toolNote && <div className="assistant-tool-note"><LoadingOutlined /> {toolNote}</div>}
-        <div className="assistant-composer">{!atBottom && <button type="button" className="assistant-jump-bottom" onClick={scrollToBottom} aria-label="回到底部" title="回到底部"><ArrowDownOutlined /></button>}{attachments.length > 0 && <div className="assistant-image-drafts" aria-label="待发送图片">{attachments.map((image, index) => <div className="assistant-image-draft" key={index}><img src={image.data_url} alt={image.name} /><button type="button" aria-label={'移除图片 ' + image.name} disabled={locked} onClick={() => setAttachments(old => old.filter((_, current) => current !== index))}><CloseOutlined /></button><small>{image.name}</small></div>)}</div>}{imageBlocked && <div className="assistant-image-notice">发送图片时请选择支持图片的模型，或移除图片以发送文字。</div>}{dataFile && <div className="assistant-data-chip" aria-label="待分析 CSV"><FileTextOutlined /><span><strong>{dataFile.name}</strong><small>{dataFile.row_count} 行 · {dataFile.columns.length} 列 · {external ? '随消息提供给 Agent' : '可交给深度分析'}</small></span><button type="button" aria-label="移除 CSV" disabled={locked} onClick={() => setDataFile(null)}><CloseOutlined /></button></div>}{docFile && <div className="assistant-data-chip" aria-label="已读取的文档"><FileTextOutlined /><span><strong>{docFile.name}</strong><small>已读取 {docFile.chars.toLocaleString()} 字{docFile.note ? ` · ${docFile.note}` : ''} · 内容会随问题发送给模型</small></span><button type="button" aria-label="移除文档" disabled={locked} onClick={() => setDocFile(null)}><CloseOutlined /></button></div>}<input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,.csv,.xlsx,text/csv,.pdf,.docx,.txt,.md,.markdown,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.java,.c,.cpp,.h,.go,.rs,.sql,.sh,.bat,.ps1,.ini,.toml,.conf,.html,.htm,.xml" onChange={event => { void addAnyFiles(Array.from(event.target.files || [])); event.target.value = ''; }} /><Input.TextArea aria-label="发送消息" placeholder={canChat ? '输入消息…' : '配置模型后即可发送'} value={text} onPaste={event => { const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => Boolean(file)); if (files.length) { event.preventDefault(); void addImages(files); } }} onChange={event => setText(event.target.value)} autoSize={{ minRows: 1, maxRows: 5 }} maxLength={12000} disabled={locked} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />{window.vvmanProjects && <><SkillChips selected={skills} onChange={setSkills} disabled={locked} /><PluginChips selected={plugins} onChange={setPlugins} disabled={locked} /></>}<div className="assistant-composer-actions"><div className="assistant-composer-tools"><Button type="text" size="small" icon={<PaperClipOutlined />} disabled={locked} loading={imageLoading || dataUploading || docUploading} onClick={() => fileInput.current?.click()} aria-label="添加文件" title="添加文件" />{window.vvmanProjects && <><SkillPicker selected={skills} onChange={setSkills} disabled={locked} /><PluginPicker selected={plugins} onChange={setPlugins} disabled={locked} /></>}{onModelConfig && <span className="assistant-model-inline"><ModelSwitch modelId={chosenModel.id} effort={chosenModel.effort}
-      onChange={chooseModel} external={external} agentReasoning={agentReasoning} onExternal={setExternal} onConfig={onModelConfig} disabled={locked} /></span>}<PermissionSwitch key={active?.id || 'new'} conversationId={active?.id} permission={active?.permission_mode} external={Boolean(external)}
-        disabled={locked} onBusyChange={setPermissionSaving} onChange={permission => setActive(item => item?.id === active?.id && item ? { ...item, permission_mode: permission } : item)} /><ContextMeter context={activeContext} /></div>{busy ? <Button className="assistant-send-button" shape="circle" aria-label="停止生成" title="停止生成" icon={<StopOutlined />} loading={stopping} onClick={() => void stop()} /> : <Button className="assistant-send-button" type="primary" aria-label="发送" title="发送" icon={<ArrowUpOutlined />} disabled={!canChat || locked || imageBlocked || (!text.trim() && !attachments.length)} onClick={() => void send()} />}</div></div>
+        {dotMode && (!dotReady || dotHasExtras || dotLimitExceeded) && <div className="assistant-dot-mode-notice" role="status">
+          {!dotReady ? (dot.availability?.paused ? 'dot 已停用。' : 'dot 连接不可用。') : dotHasExtras ?
+            'dot 只接收文字，请先移除附件和扩展。' : 'dot 任务最多 4000 字符。'}
+          {!dotReady && <Button type="link" size="small" onClick={() => setDotSelection(undefined)}>切回 Agent</Button>}
+        </div>}
+        {dot.error && <Alert className="assistant-error" type="error" showIcon message={dot.error} />}
+        <div className="assistant-composer">{!atBottom && <button type="button" className="assistant-jump-bottom" onClick={scrollToBottom} aria-label="回到底部" title="回到底部"><ArrowDownOutlined /></button>}{attachments.length > 0 && <div className="assistant-image-drafts" aria-label="待发送图片">{attachments.map((image, index) => <div className="assistant-image-draft" key={index}><img src={image.data_url} alt={image.name} /><button type="button" aria-label={'移除图片 ' + image.name} disabled={locked} onClick={() => setAttachments(old => old.filter((_, current) => current !== index))}><CloseOutlined /></button><small>{image.name}</small></div>)}</div>}{imageBlocked && <div className="assistant-image-notice">发送图片时请选择支持图片的模型，或移除图片以发送文字。</div>}{dataFile && <div className="assistant-data-chip" aria-label="待分析 CSV"><FileTextOutlined /><span><strong>{dataFile.name}</strong><small>{dataFile.row_count} 行 · {dataFile.columns.length} 列 · {external ? '随消息提供给 Agent' : '可交给深度分析'}</small></span><button type="button" aria-label="移除 CSV" disabled={locked} onClick={() => setDataFile(null)}><CloseOutlined /></button></div>}{docFile && <div className="assistant-data-chip" aria-label="已读取的文档"><FileTextOutlined /><span><strong>{docFile.name}</strong><small>已读取 {docFile.chars.toLocaleString()} 字{docFile.note ? ` · ${docFile.note}` : ''} · 内容会随问题发送给模型</small></span><button type="button" aria-label="移除文档" disabled={locked} onClick={() => setDocFile(null)}><CloseOutlined /></button></div>}<input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,.csv,.xlsx,text/csv,.pdf,.docx,.txt,.md,.markdown,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.java,.c,.cpp,.h,.go,.rs,.sql,.sh,.bat,.ps1,.ini,.toml,.conf,.html,.htm,.xml" onChange={event => { void addAnyFiles(Array.from(event.target.files || [])); event.target.value = ''; }} /><Input.TextArea aria-label="发送消息" placeholder={dotMode ? '输入 dot 任务…' : canChat ? '输入消息…' : '配置模型后即可发送'} value={text} onPaste={event => { const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => Boolean(file)); if (files.length) { event.preventDefault(); void addImages(files); } }} onChange={event => setText(event.target.value)} autoSize={{ minRows: 1, maxRows: 5 }} maxLength={12000} disabled={locked} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendSelected(); } }} />{window.vvmanProjects && <><SkillChips selected={skills} onChange={setSkills} disabled={locked} /><PluginChips selected={plugins} onChange={setPlugins} disabled={locked} /></>}<div className="assistant-composer-actions"><div className="assistant-composer-tools">{hasDocumentLibrary ?
+          <Dropdown trigger={['click']} disabled={locked} menu={{
+            items: [{ key: 'computer', label: '从本机选择' }, { key: 'library', label: '从个人文档选择' }],
+            onClick: ({ key }) => {
+              if (key === 'computer') fileInput.current?.click();
+              if (key === 'library') setAttachmentLibraryOpen(true);
+            },
+          }}>{attachmentButton}</Dropdown> : attachmentButton}{window.vvmanProjects && <><SkillPicker selected={skills} onChange={setSkills} disabled={locked} /><PluginPicker selected={plugins} onChange={setPlugins} disabled={locked} /></>}{onModelConfig && <span className="assistant-model-inline"><ModelSwitch modelId={chosenModel.id} effort={chosenModel.effort}
+      onChange={chooseModel} external={external} agentReasoning={agentReasoning} onExternal={setExternal} onConfig={onModelConfig} disabled={locked} /></span>}<PermissionSwitch key={active?.id || 'new'} conversationId={active?.id} permission={active?.permission_mode} external={Boolean(external)} allowFullAccess={windowsDesktop}
+        disabled={locked} onBusyChange={setPermissionSaving} onChange={permission => setActive(item => item?.id === active?.id && item ? { ...item, permission_mode: permission } : item)} />{dotReady && <Dropdown trigger={['click']} disabled={locked || dot.submitting} menu={{
+        items: [{ key: 'agent', label: '当前 Agent' }, { key: 'dot', label: 'dot' }],
+        selectedKeys: [dotMode ? 'dot' : 'agent'],
+        onClick: ({ key }) => setDotSelection(key === 'dot' ? historyToken.current : undefined),
+      }}>
+        <Button size="small" type="text" icon={<SwapOutlined />} aria-label="发送对象" title="发送对象"
+          disabled={locked || dot.submitting}>{dotMode ? 'dot' : '当前 Agent'}</Button>
+      </Dropdown>}{tokenUsage && <Tooltip title={<>{tokenUsage.details.map(detail => <div key={detail}>{detail}</div>)}</>} trigger={['hover', 'focus']}>
+        <button type="button" className="assistant-token-usage" aria-label={'会话用量，' + tokenUsage.details.join(', ')}>
+          <DatabaseOutlined aria-hidden="true" /> {tokenUsage.summary}
+        </button>
+      </Tooltip>}<ContextMeter context={activeContext} /></div>{busy ? <Button className="assistant-send-button" shape="circle" aria-label="停止生成" title="停止生成" icon={<StopOutlined />} loading={stopping} onClick={() => void stop()} /> : <Button className="assistant-send-button" type="primary" aria-label="发送" title="发送" icon={<ArrowUpOutlined />} loading={dotMode && dot.submitting} disabled={locked || (dotMode ? !dotReady || dot.submitting || dotHasExtras || dotLimitExceeded || !text.trim() : !canChat || imageBlocked || (!text.trim() && !attachments.length))} onClick={() => void sendSelected()} />}</div></div>
       </section>
+      {visible && active && !loading && workspacePanelChat === active.id && <ChatWorkspacePanel key={active.id}
+        conversationId={active.id} workspace={workspace} worktree={active.worktree} running={busy} terminalApproval={terminalApproval}
+        onRequestCommand={command => {
+          if (locked) return;
+          setDotSelection(undefined);
+          setText(current => [current, '请在当前项目使用 PowerShell 运行以下命令，并在运行前让我确认。', command].filter(Boolean).join('\n\n'));
+        }}
+        proposals={proposals.items} onDecision={proposals.record} onClose={() => setWorkspacePanelChat(undefined)} />}
     </div>
+    <DocumentPicker open={visible && attachmentLibraryOpen} kind="file" title="从个人文档添加附件"
+      onClose={() => setAttachmentLibraryOpen(false)} onPick={(scope, entry) => {
+        setAttachmentLibraryOpen(false);
+        if (scope === 'private' && entry.kind === 'file') void addLibraryFile(entry.path);
+      }} />
+    <Modal title="项目与文件权限" open={visible && projectContextOpen} onCancel={() => setProjectContextOpen(false)}
+      footer={<Button onClick={() => setProjectContextOpen(false)}>关闭</Button>}>
+      {projectContextOpen && <ChatProjectContext workspace={workspace} conversation={loading ? null : active} visible={visible} />}
+    </Modal>
     <Modal title="搜索会话" open={searchOpen} onCancel={() => setSearchOpen(false)} footer={null} destroyOnHidden>
       <Input autoFocus aria-label="按标题搜索会话" placeholder="搜索当前项目的会话" value={searchQuery}
         onChange={event => setSearchQuery(event.target.value)} allowClear />

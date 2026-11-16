@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Alert, Button, Dropdown, Input, Modal, Popconfirm, Segmented, Select, Spin, Switch, Tag } from 'antd';
-import { AppstoreOutlined, ControlOutlined, DownOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
-import { importPlugin, listDefaultPlugins, listInstalledPlugins, listSkills, publishDefaultPlugin, removeDefaultPlugin, removePlugin, setPluginEnabled } from './assistantApi';
+import { Alert, Button, Dropdown, Input, Modal, Popconfirm, Segmented, Select, Spin, Tag } from 'antd';
+import { AppstoreOutlined, ControlOutlined, DownOutlined, LinkOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { dotTaskSetup, importPlugin, isPortablePluginPackage, listDefaultPlugins, listInstalledPlugins, listSkills, publishDefaultPlugin, removeDefaultPlugin, removePlugin, setDotTaskEnabled, setPluginEnabled } from './assistantApi';
 import type { DefaultPlugin, InstalledPlugin, PluginManifest } from './assistantApi';
 import { describeError } from './errors.mjs';
 import { DshPluginMarket } from './DshPluginMarket';
+import { DotConnectionGuide } from './DotConnectionGuide';
+import { PluginDevelopment } from './PluginDevelopment';
 import type { InstalledDshPlugin } from './DshPluginMarket';
 import './models.css';
 import './plugin-management.css';
@@ -26,7 +28,7 @@ function dshSource(plugin: InstalledDshPlugin) {
   return plugin.source === 'official' ? 'DSH 官方市场' : 'DSH 社区市场';
 }
 
-export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: string }) {
+export function PluginConfiguration({ suggestedPlugin, windowsDesktop }: { suggestedPlugin?: string; windowsDesktop?: boolean }) {
   const bridge = window.vvmanAcp;
   const [revision, setRevision] = useState(0);
   const [marketRevision, setMarketRevision] = useState(0);
@@ -47,6 +49,12 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
   const [error, setError] = useState('');
   const [importError, setImportError] = useState('');
   const [showImport, setShowImport] = useState(false);
+  const [developmentDraft, setDevelopmentDraft] = useState<string>();
+  const [showDotGuide, setShowDotGuide] = useState(false);
+  const [dotInstalled, setDotInstalled] = useState<{ ready: boolean; paused: boolean }>();
+  const [dotChanging, setDotChanging] = useState(false);
+  const [dotError, setDotError] = useState('');
+  const dotOperation = useRef(0);
   const [manifest, setManifest] = useState('');
   const [mode, setMode] = useState<'create' | 'json'>('create');
   const [name, setName] = useState('');
@@ -78,6 +86,26 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
   }, [revision]);
 
   useEffect(() => {
+    if (!windowsDesktop || showDotGuide || dotChanging) return;
+    const controller = new AbortController();
+    const operation = dotOperation.current;
+    void dotTaskSetup(controller.signal).then(setup => {
+      if (controller.signal.aborted || operation !== dotOperation.current) return;
+      if (setup.mode === 'hosted' && setup.error) {
+        setDotInstalled(previous => previous && { ...previous, ready: false });
+        return;
+      }
+      const configured = setup.mode === 'hosted' ? setup.paired : setup.port !== null && setup.secret_path !== null;
+      setDotInstalled(configured ? { ready: setup.enabled && setup.ready, paused: setup.paused } : undefined);
+    }).catch(() => {
+      if (!controller.signal.aborted && operation === dotOperation.current) {
+        setDotInstalled(previous => previous && { ...previous, ready: false });
+      }
+    });
+    return () => controller.abort();
+  }, [windowsDesktop, revision, showDotGuide, dotChanging]);
+
+  useEffect(() => {
     if (!bridge?.dshInstalledPlugins && !bridge?.dshPluginMarket) return;
     let active = true;
     setDshLoading(true);
@@ -98,12 +126,31 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
   const imported = installed.filter(item => item.name.toLowerCase().includes(term));
   const visibleDsh = dshInstalled.filter(item =>
     [item.name, item.id, item.description, dshSource(item)].some(value => value.toLowerCase().includes(term)));
-  const hasPersonal = Boolean(installed.length || dshInstalled.length);
+  const personalDot = windowsDesktop ? dotInstalled : undefined;
+  const dotDetail = selected === 'dot:personal' ? personalDot : undefined;
+  const dotLabel = personalDot?.paused ? '已停用' : personalDot?.ready ? '已连接' : '待连接';
+  const visibleDot = personalDot && 'somnus dot 个人连接'.includes(term);
+  const hasPersonal = Boolean(installed.length || dshInstalled.length || personalDot);
   const personal = installed.find(item => 'personal:' + item.id === selected);
   const dshPlugin = dshInstalled.find(item => 'dsh:' + item.id === selected);
   const sharedPlugin = defaults.find(item => 'default:' + item.id === selected);
   const addon = personal || sharedPlugin;
   const builtin = builtins.find(item => 'builtin:' + item.key === selected);
+
+  async function changeDotEnabled(enabled: boolean) {
+    if (dotChanging) return;
+    dotOperation.current++;
+    setDotChanging(true);
+    setDotError('');
+    try {
+      const setup = await setDotTaskEnabled(enabled);
+      setDotInstalled({ ready: setup.enabled && setup.ready, paused: setup.paused });
+    } catch (failure) {
+      setDotError(describeError(failure, enabled ? '无法启用 dot' : '无法停用 dot'));
+    } finally {
+      setDotChanging(false);
+    }
+  }
 
   async function changeDefault(id: string, operation: 'publish' | 'remove') {
     if (!owner || busy) return;
@@ -130,7 +177,7 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
     if (!file) return;
     setImportError('');
     try {
-      if (file.size > 64 * 1024) throw new Error('JSON 文件不能超过 64 KB。');
+      if (file.size > 2 * 1024 * 1024) throw new Error('插件包不能超过 2 MiB。');
       setManifest((await file.text()).replace(/^\uFEFF/, ''));
     } catch (failure) { setImportError(describeError(failure, '无法读取 JSON 文件')); }
   }
@@ -142,6 +189,11 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
       let data: PluginManifest = { name: name.trim(), description: description.trim(), skill_ids: skillIds, mcp_ids: mcpIds };
       if (mode === 'json') {
         try { data = JSON.parse(manifest); } catch { throw new Error('请输入有效的 JSON。'); }
+        if (isPortablePluginPackage(data)) {
+          setDevelopmentDraft(manifest);
+          closeImport();
+          return;
+        }
       }
       const plugin = await importPlugin(data);
       setInstalled(items => [...items.filter(item => item.id !== plugin.id), plugin]);
@@ -184,16 +236,16 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
         {missing.includes(id) ? <Tag color="error">已移除</Tag> : inactive.includes(id) ? <Tag>已停用</Tag> : <Tag color="green">可用</Tag>}
       </li>)}</ul> : <span>无</span>}</div>;
   }
-  function entry(id: string, name: string, detail: string, personal = false, controls?: ReactNode) {
+  function entry(id: string, name: string, detail: string, personal = false, status?: ReactNode) {
     return <div key={id} className="plugin-row">
       <button className="plugin-row-link" type="button" onClick={() => select(id)}>
         <span className={'plugin-symbol' + (personal ? ' plugin-symbol-personal' : '')} aria-hidden="true">
           {personal ? <AppstoreOutlined /> : <ControlOutlined />}
         </span>
         <span className="plugin-row-copy"><strong>{name}</strong><small>{detail}</small></span>
+        {status && <span className="plugin-row-status">{status}</span>}
         <RightOutlined className="plugin-row-arrow" aria-hidden="true" />
       </button>
-      {controls}
     </div>;
   }
 
@@ -203,6 +255,7 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
       <div className="plugin-page-actions">
         <Button type="text" className="plugin-refresh" icon={<ReloadOutlined />} aria-label="刷新插件" title="刷新插件"
           loading={loading} disabled={busy} onClick={() => setRevision(value => value + 1)} />
+        {windowsDesktop && <Button onClick={() => setDevelopmentDraft('')} disabled={loading || busy}>插件开发</Button>}
         <Dropdown trigger={['click']} disabled={loading || busy} menu={{ items: [
           { key: 'create', label: '创建插件' }, { key: 'json', label: '导入 JSON' },
         ], onClick: ({ key }) => { setMode(key === 'json' ? 'json' : 'create'); setShowImport(true); } }}>
@@ -210,9 +263,27 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
         </Dropdown>
       </div>
     </header>
+    {developmentDraft !== undefined && <PluginDevelopment owner={owner} skills={skills} mcp={mcp}
+      initialManifest={developmentDraft} onClose={() => setDevelopmentDraft(undefined)}
+      onInstalled={plugin => {
+        setInstalled(items => [...items.filter(item => item.id !== plugin.id), plugin]);
+        setQuery('');
+      }} />}
     <DshPluginMarket revision={revision + marketRevision} suggestedPlugin={suggestedPlugin}
       onChanged={() => setDshRevision(value => value + 1)} />
     {error && <Alert type="error" showIcon message={error} />}
+    {windowsDesktop && <section className="plugin-section" aria-labelledby="plugin-recommendations-title">
+      <h3 id="plugin-recommendations-title">作者推荐</h3>
+      <article className="plugin-recommendation">
+        <span className="plugin-symbol" aria-hidden="true"><LinkOutlined /></span>
+        <div className="plugin-row-copy">
+          <strong>Somnus × dot</strong>
+          <small>把会话输入框中的文字交给 dot，结果会返回同一会话。</small>
+        </div>
+        <Button onClick={() => setShowDotGuide(true)}>查看个人接入教程</Button>
+      </article>
+      {showDotGuide && <DotConnectionGuide onClose={() => setShowDotGuide(false)} />}
+    </section>}
     <section className="plugin-section" aria-labelledby="plugin-defaults-title">
       <h3 id="plugin-defaults-title">内置与默认插件</h3>
       <div className="plugin-rows">
@@ -228,19 +299,35 @@ export function PluginConfiguration({ suggestedPlugin }: { suggestedPlugin?: str
       </div>
       {dshError && <Alert type="error" showIcon message={dshError} />}
       {(loading || dshLoading) && !hasPersonal && <Spin size="small" />}
-      {Boolean(imported.length || visibleDsh.length) && <div className="plugin-rows">
-        {imported.map(item => entry('personal:' + item.id, item.name, item.description || (item.enabled ? '已启用' : '已停用'), true,
-          <Switch checked={item.enabled} disabled={busy || loading} aria-label={'启用 ' + item.name}
-            onChange={() => void change(item, 'toggle')} />))}
+      {Boolean(imported.length || visibleDsh.length || visibleDot) && <div className="plugin-rows">
+        {visibleDot && entry('dot:personal', 'Somnus × dot', '个人连接', true,
+          <Tag color={personalDot.ready ? 'green' : undefined}>{dotLabel}</Tag>)}
+        {imported.map(item => entry('personal:' + item.id, item.name, item.description || 'Skill 与 MCP', true,
+          <Tag color={item.enabled ? 'green' : undefined}>{item.enabled ? '已启用' : '已停用'}</Tag>))}
         {visibleDsh.map(item => entry('dsh:' + item.id, item.name, dshSource(item), true,
           <Tag color={item.enabled ? 'green' : undefined}>{item.enabled ? '已启用' : '已停用'}</Tag>))}
       </div>}
-      {!loading && !dshLoading && !imported.length && !visibleDsh.length && (!dshError || hasPersonal) &&
+      {!loading && !dshLoading && !imported.length && !visibleDsh.length && !visibleDot && (!dshError || hasPersonal) &&
         <p className="plugin-empty">{term && hasPersonal ? '没有匹配的个人插件' : '暂无个人插件'}</p>}
     </section>
-    <Modal title={addon?.name || builtin?.name || dshPlugin?.name} open={Boolean(addon || builtin || dshPlugin)} onCancel={() => select('')}
+    <Modal title={dotDetail ? 'Somnus × dot' : addon?.name || builtin?.name || dshPlugin?.name}
+      open={Boolean(dotDetail || addon || builtin || dshPlugin)} onCancel={() => select('')}
       footer={<Button onClick={() => select('')}>关闭</Button>}>
-        {addon ? <>
+        {dotDetail ? <>
+          <div className="provider-detail-head">
+            <div>将消息交给 dot，结果会回到发起任务的会话。</div>
+            <Tag color={dotDetail.ready ? 'green' : undefined}>{dotLabel}</Tag>
+          </div>
+          <div className="provider-model-actions">
+            <Button disabled={dotChanging} onClick={() => { select(''); setShowDotGuide(true); }}>
+              {dotDetail.ready || dotDetail.paused ? '管理连接' : '重新连接'}
+            </Button>
+            <Button loading={dotChanging} onClick={() => void changeDotEnabled(dotDetail.paused)}>
+              {dotDetail.paused ? '启用' : '停用'}
+            </Button>
+          </div>
+          {dotError && <Alert type="error" showIcon message={dotError} />}
+        </> : addon ? <>
           <div className="provider-detail-head"><div>{addon.description || '组合已配置的 Skill 和 MCP。'}</div>
             <Tag>{sharedPlugin ? '默认' : addon.enabled ? '已启用' : '已停用'}</Tag></div>
           <dl className="provider-credentials"><div><dt>版本</dt><dd>{addon.version || '—'}</dd></div></dl>

@@ -78,4 +78,3 @@ export function ManagedDshAccount({ connected, disabled }: { connected: boolean;
     {error && <Alert type="error" showIcon message={error} />}
   </section>;
 }
-

@@ -112,6 +112,7 @@ class ProjectTests(unittest.TestCase):
         names = {spec['function']['name'] for spec in model['tools']}
         self.assertTrue({'list_project_files', 'read_project_file'} <= names)
         self.assertNotIn(tool, names)
+        self.assertNotIn('propose_project_file_create', names)
         self.assertIn('notes.md', reply)
         self.assertNotIn('.env', reply)
         self.assertIn('批准并成功应用后再报告文件已修改', model['messages'][0]['content'])
@@ -131,6 +132,91 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), b'After\r\n')
         self.assertEqual(approval.json()['proposal']['status'], 'applied')
         self.assertEqual(self.client.post(route, json={}, headers=self.headers).status_code, 200)
+
+    def test_desktop_workspace_file_listing_is_read_only_and_bounds_paths(self):
+        path = self.conversation(self.create_project()) + '/workspace-files'
+        docs = self.root / 'docs'
+        docs.mkdir()
+        (docs / 'guide.md').write_text('Guide', encoding='utf-8')
+        (docs / 'raw.bin').write_bytes(b'raw')
+        self.assertEqual(self.client.get(path).status_code, 403)
+        listed = self.client.get(path, headers=self.headers)
+        self.assertEqual(listed.headers['cache-control'], 'no-store')
+        self.assertEqual(listed.json(), {
+            'entries': [{'name': 'docs', 'path': 'docs', 'kind': 'folder'},
+                        {'name': 'notes.md', 'path': 'notes.md', 'kind': 'file'}],
+            'folders': [{'source': 'source_1', 'label': 'project'}],
+            'folder': '', 'source': 'source_1', 'truncated': False,
+        })
+        nested = self.client.get(path, headers=self.headers, params={'folder': 'docs'}).json()
+        self.assertEqual(nested['entries'], [{'name': 'guide.md', 'path': 'docs/guide.md', 'kind': 'file'}])
+        preview = self.client.get(path, headers=self.headers, params={'file': 'docs/guide.md'}).json()
+        self.assertEqual(preview['file'], {'name': 'guide.md', 'path': 'docs/guide.md', 'content': 'Guide'})
+        self.assertEqual(self.client.get(path, headers=self.headers, params={'file': '../notes.md'}).status_code, 403)
+        self.assertEqual(self.client.get(path, headers=self.headers, params={'file': '.env'}).status_code, 403)
+        self.assertEqual(self.client.get(path, headers=self.headers, params={'file': 'docs/raw.bin'}).status_code, 400)
+        self.assertEqual(self.client.get(path, headers=self.headers, params={'source': 'source_8'}).status_code, 409)
+        self.assertEqual(self.client.get(path, headers=self.headers, params={'folder': '', 'file': 'notes.md'}).status_code, 400)
+        self.assertEqual(self.client.get(path + '?folder=&folder=docs', headers=self.headers).status_code, 400)
+        self.assertIn(self.client.post(path, headers=self.headers, json={}).status_code, (404, 405))
+
+    def test_create_proposals_review_new_files_and_preserve_conflicting_disk_contents(self):
+        project = self.create_project()
+        path = self.conversation(project)
+        cid = path.rsplit('/', 1)[-1]
+        self.service.set_permission(cid, 'workspace_write')
+        directory = self.root / 'docs'
+        directory.mkdir()
+        target = directory / 'new.md'
+        tool = 'propose_project_file_create'
+        fields = {'path': 'docs/new.md', 'new_content': '新文件\r\n'}
+        packets, model, _ = self.send(path, tool, fields)
+        self.assertIn(tool, {spec['function']['name'] for spec in model['tools']})
+        proposal = packets['file_proposal']['proposal']
+        self.assertEqual((proposal['operation'], proposal['old_content']), ('create', ''))
+        self.assertFalse(target.exists())
+        approve = path + '/file-proposals/' + proposal['id'] + '/approve'
+        open_target = path + '/file-proposals/' + proposal['id'] + '/open-target'
+        self.assertEqual(self.client.post(open_target, json={}, headers=self.native).status_code, 409)
+        denied = self.client.post(approve, json={})
+        self.assertEqual(denied.status_code, 403)
+        target.write_bytes(b'Existing')
+        conflict = self.client.post(approve, json={}, headers=self.headers)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()['error']['code'], 'file_exists')
+        self.assertEqual(target.read_bytes(), b'Existing')
+        self.assertEqual(self.service.file_proposals(cid)[0]['status'], 'pending')
+        self.service.decide_file_proposal(cid, proposal['id'], 'reject')
+        for blocked_path in ('docs/new.md', '.env', '../escape.md', 'missing/new.md', 'docs/photo.png'):
+            packets, _, _ = self.send(path, tool, {**fields, 'path': blocked_path})
+            self.assertFalse(packets['tool_result']['ok'], blocked_path)
+        target.unlink()
+        agent = '12345678-1234-1234-1234-123456789012'
+        turn = self.service.begin_external_turn(cid, 'Create sample', agent, 'Codex')
+        self.assertTrue(self.service.prepare_external_turn(cid, turn['turn_id'], agent)['project']['supports_create'])
+        native = path + '/external-turns/' + turn['turn_id'] + '/project-file'
+        result = self.client.post(native, headers=self.native, json={
+            'source': 'source_1', 'action': 'propose_create', 'agent_id': agent,
+            'path': 'docs/new.md', 'content': fields['new_content'],
+        })
+        self.assertEqual(result.status_code, 200, result.text)
+        proposal = result.json()['proposal']
+        self.assertFalse(target.exists())
+        self.assertEqual(proposal['operation'], 'create')
+        applied = self.service.decide_file_proposal(cid, proposal['id'], 'approve')
+        self.assertEqual(applied['status'], 'applied')
+        self.assertEqual(target.read_bytes(), fields['new_content'].encode())
+        self.assertEqual(self.service.decide_file_proposal(cid, proposal['id'], 'approve'), applied)
+        open_target = path + '/file-proposals/' + proposal['id'] + '/open-target'
+        self.assertEqual(self.client.post(open_target, json={}, headers=self.headers).status_code, 403)
+        opened = self.client.post(open_target, json={}, headers=self.native)
+        self.assertEqual(opened.json(), {'root_path': str(self.root), 'relative_path': 'docs/new.md'})
+        self.assertEqual(opened.headers['cache-control'], 'no-store')
+        forged = self.client.post(open_target, json={'path': 'notes.md'}, headers=self.native)
+        self.assertEqual(forged.status_code, 400)
+        target.unlink()
+        missing = self.client.post(open_target, json={}, headers=self.native)
+        self.assertEqual(missing.status_code, 409)
 
     def test_builtin_project_tool_waits_for_native_job_and_rechecks_target(self):
         project = self.create_project()
@@ -175,6 +261,61 @@ class ProjectTests(unittest.TestCase):
             followup = json.loads(upstream.call_args.args[0].data)
             self.assertEqual(followup['messages'][-1]['content'], 'Fixture test passed')
             self.assertEqual(action('target', {'source': 'source_1'}).status_code, 409)
+
+    def test_powershell_requires_explicit_desktop_full_and_live_project_authorization(self):
+        path = self.conversation(self.create_project())
+        cid = path.rsplit('/', 1)[1]
+        command = "Write-Output 'fixture'"
+        tool = 'run_powershell'
+        with self.service.db() as db:
+            db.execute("UPDATE conversations SET permission_mode='full' WHERE id=?", (cid,))
+        self.assertEqual(self.service.get(cid)['conversation']['permission_mode'], 'workspace_write')
+        self.assertEqual(self.client.post(path + '/permission', json={'mode': 'full'}).status_code, 403)
+        _, reduced, _ = self.send(path, 'list_project_files', {})
+        self.assertNotIn(tool, {spec['function']['name'] for spec in reduced['tools']})
+        self.assertEqual(self.client.post(path + '/permission', headers=self.headers,
+                                          json={'mode': 'full'}).json()['permission_mode'], 'full')
+        self.assertEqual(self.client.post(path + '/development-target', headers=self.native,
+                                          json={'name': tool}).status_code, 403)
+
+        agent = '12345678-1234-1234-1234-123456789012'
+        turn = self.service.begin_external_turn(cid, 'PowerShell fixture', agent, 'Codex')
+        turn_path = f"{path}/external-turns/{turn['turn_id']}"
+        prepared = self.client.post(turn_path + '/prepare', headers=self.native, json={'agent_id': agent}).json()
+        shell = next(item for item in prepared['tools'] if item['name'] == tool)
+        self.assertTrue(shell['requires_confirmation'])
+        location = {'agent_id': agent, 'name': tool}
+        self.assertEqual(self.client.post(turn_path + '/project-root', headers=self.headers, json=location).status_code, 403)
+        accepted = self.client.post(turn_path + '/project-root', headers=self.native, json=location)
+        self.assertEqual(accepted.json()['root_path'], str(self.root))
+        self.service.set_permission(cid, 'workspace_write')
+        self.assertEqual(self.client.post(turn_path + '/project-root', headers=self.native, json=location).status_code, 403)
+        self.service.finish_external_turn(cid, turn['turn_id'], '', 'cancelled')
+        self.service.set_permission(cid, 'full')
+
+        call = {'id': 'ps-fixture', 'index': 0, 'function': {'name': tool, 'arguments': json.dumps({'command': command})}}
+        packet = json.dumps({'choices': [{'delta': {'tool_calls': [call]}}]})
+        streams = [Upstream(f'data: {packet}\n\ndata: [DONE]\n\n'.encode()),
+                   Upstream(b'data: {"choices":[{"delta":{"content":"complete"}}]}\n\ndata: [DONE]\n\n')]
+        with patch('ai_assistant.service.urlopen', side_effect=streams):
+            stream = self.service.stream(cid, *self.service.begin(cid, 'Run fixture', tool_context={'project_desktop': True}))
+            self.assertEqual(next(stream)[0], 'start')
+            self.assertEqual(next(stream)[0], 'tool_call')
+            event, job = next(stream)
+            self.assertEqual((event, job['name']), ('project_development', tool))
+            job_route = f"{path}/development-jobs/{job['id']}"
+            claim = self.client.post(job_route + '/claim', headers=self.native, json={})
+            self.assertEqual(claim.json()['arguments'], {'command': command})
+            wrong = self.client.post(job_route + '/target', headers=self.native, json={'source': 'source_2'})
+            self.assertEqual(wrong.status_code, 400)
+            allowed = self.client.post(job_route + '/target', headers=self.native, json={})
+            self.assertEqual(allowed.json()['root_path'], str(self.root))
+            self.service.set_permission(cid, 'workspace_write')
+            self.assertEqual(self.client.post(job_route + '/target', headers=self.native, json={}).status_code, 403)
+            self.service.set_permission(cid, 'full')
+            complete = {'result': {'content': [{'type': 'text', 'text': 'fixture'}], 'isError': False}}
+            self.assertEqual(self.client.post(job_route + '/complete', headers=self.native, json=complete).status_code, 200)
+            self.assertEqual(list(stream)[-1][0], 'done')
 
     @unittest.skipUnless(shutil.which('git'), 'Git is required for linked worktree integration')
     def test_chat_worktree_binding_isolated_tools_native_targets_and_history(self):
@@ -231,6 +372,12 @@ class ProjectTests(unittest.TestCase):
                          {'root_path': str(root)})
 
         (root / 'notes.md').write_text('Worktree marker', encoding='utf-8')
+        files = self.client.get(path + '/workspace-files', headers=self.headers, params={'file': 'notes.md'}).json()
+        self.assertEqual(files['file']['content'], 'Worktree marker')
+        base_files = self.client.get(sibling + '/workspace-files', headers=self.headers, params={'file': 'notes.md'}).json()
+        self.assertEqual(base_files['file']['content'], 'Original\r\n')
+        self.assertEqual(self.client.get(path + '/workspace-files', headers=self.headers,
+                                         params={'source': 'source_2'}).status_code, 409)
         _, _, text = self.send(path, 'search_project_files', {'query': 'Worktree marker', 'mode': 'content'})
         self.assertEqual(json.loads(text)['matches'][0]['path'], 'notes.md')
         _, _, text = self.send(sibling, 'read_project_file', {'path': 'notes.md'})

@@ -67,6 +67,16 @@
       }
     }
   ],
+  "workspace_entries": [
+    {
+      "id": "analysis",
+      "title": "波形分析",
+      "slot": "sidebar",
+      "path": "/events",
+      "mode": "embedded",
+      "access": "selected-record"
+    }
+  ],
   "routes": [
     {
       "path": "respiratory",

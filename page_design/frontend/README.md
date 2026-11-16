@@ -2,7 +2,7 @@
 
 React 18 + TypeScript + Ant Design 5 + ECharts 5；全部依赖本地打包，不使用外部 CDN。业务接口与口径以 `../../docs/WORKBENCH_IMPLEMENTATION_CONTRACT.md` 为准。
 
-在本目录使用 pnpm 安装、`pnpm test`、`pnpm build`。构建输出 `../web`，静态前缀 `/workbench-assets/`；HTTP 宿主由事件检测 agent 维护，主 agent 只负责分派和验收。
+在本目录运行 `pnpm install --frozen-lockfile` 安装依赖，使用 `pnpm test` 运行测试，使用 `pnpm build` 构建。产物输出到 `../web`，静态资源路径前缀为 `/workbench-assets/`。
 
 若环境的 pnpm 版本管理器试图重查依赖，可在已安装后直接运行 `node node_modules/typescript/bin/tsc --noEmit`、`node node_modules/vite/bin/vite.js build` 和 `node --test tests/*.test.mjs`。API测试利用Node 24原生TypeScript读取能力；不额外引入测试框架。
 

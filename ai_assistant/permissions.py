@@ -4,6 +4,7 @@ from __future__ import annotations
 READ_ONLY = 'read_only'
 WORKSPACE_WRITE = 'workspace_write'
 FULL = 'full'
+POWERSHELL = 'run_powershell'
 
 MODES = [
     dict(id=READ_ONLY, label='Read Only', hint='只读：不能写入或执行'),
@@ -23,6 +24,8 @@ def normalize(mode):
 
 
 def category(name, mcp_policy=None):
+    if name == POWERSHELL:
+        return 'full'
     if name in READ_TOOLS:
         return 'read'
     if name in WRITE_TOOLS:
@@ -44,6 +47,8 @@ def allowed(mode, name, mcp_policy=None):
 
 def blocked_reason(mode, name):
     mode = normalize(mode)
+    if name == POWERSHELL:
+        return 'PowerShell 需要当前聊天开启完全访问。'
     if mode == READ_ONLY:
         return f'当前为只读模式。使用 {name} 需要修改权限。'
     return f'使用 {name} 需要该工具的授权。'

@@ -6,11 +6,11 @@ const { AcpStdio, AcpError } = require('./acp-stdio.cjs');
 const { detectManagedCodex, detectManagedCodeBuddy, matchesLaunch } = require('./acp-discovery.cjs');
 const { modelSummary, reasoningCatalog, sessionModels, setSessionModel, setSessionReasoning, updateSessionConfig,
   validEffort, validId } = require('./acp-models.cjs');
-const { AcpProjectTurn, mayPropose, promptBlocks, projectFileTools, FILE_TOOLS, READ_FILE, PROPOSE_FILE } = require('./acp-project.cjs');
+const { AcpProjectTurn, mayPropose, promptBlocks, projectFileTools, FILE_TOOLS, READ_FILE, PROPOSE_FILE, CREATE_FILE } = require('./acp-project.cjs');
 const { SessionMcp, toolCatalog, catalogSignature, MAX_CALLS } = require('./acp-mcp.cjs');
 const { AcpLive, permissionOptions, priorTranscript, APPROVAL_QUEUE_LIMIT } = require('./acp-live.cjs');
 const { AcpDeadline } = require('./acp-deadline.cjs');
-const { TEST_TOOL, DIFF_TOOL } = require('./acp-project-workflow.cjs');
+const { TEST_TOOL, DIFF_TOOL, POWERSHELL_TOOL } = require('./acp-project-workflow.cjs');
 const { DshRecommendation, RECOMMENDATIONS } = require('./acp-dsh-recommendations.cjs');
 const { AGENT_ID: COMPANY_AGENT_ID, companyProfile, removeCompanyProfile } = require('./acp-company.cjs');
 
@@ -22,8 +22,9 @@ const MAX_CONVERSATIONS = 8;
 const MAX_CONCURRENT_TURNS = 4;
 const DELEGATION_TIMEOUT = 55_000;
 const MAX_DELEGATION_REPLY = 12_000;
-const EXTERNAL_WORKSPACE_POLICY = '\n\nSomnus 不会批准任意终端或 Shell 命令。请使用本轮获授权的项目文件工具，并通过修改候选提交对原文件的更改。';
-const PROJECT_PREFLIGHT_TOOLS = new Set([TEST_TOOL, DIFF_TOOL, READ_FILE, PROPOSE_FILE, 'search_project_files']);
+const EXTERNAL_WORKSPACE_POLICY = '\n\nSomnus 不会批准任意终端或 Shell 命令。请使用本轮获授权的项目文件工具，并通过文件候选提交更改。临时工作目录的文件不属于真实项目，请勿把临时文件报告为已保存或提供其路径作交付。';
+const DEVELOPMENT_TOOLS = new Set([TEST_TOOL, DIFF_TOOL, POWERSHELL_TOOL]);
+const PROJECT_PREFLIGHT_TOOLS = new Set([...DEVELOPMENT_TOOLS, ...FILE_TOOLS, 'search_project_files']);
 
 const tokenCount = value => Number.isSafeInteger(value) && value >= 0;
 
@@ -322,7 +323,7 @@ class AcpAgents {
       };
       const mcp = new SessionMcp(openingTurn.tools, owner, (turn, params, signal) => {
         if (FILE_TOOLS.has(params.name)) return turn.project.mcpFile(params.name, params.arguments, signal);
-        if ([TEST_TOOL, DIFF_TOOL].includes(params.name)) return this.workflow.tool(turn, this.projectClient, params, signal);
+        if (DEVELOPMENT_TOOLS.has(params.name)) return this.workflow.tool(turn, this.projectClient, params, signal);
         return this.projectClient.tool(turn, params, signal);
       }, openingTurn.signal);
       current.mcp = mcp;
@@ -728,7 +729,7 @@ class AcpAgents {
       turn.tools = toolCatalog([...projectFileTools(prepared), ...(prepared?.tools || [])]);
       turn.tools = this.workflow
         ? await this.workflow.prepareTools(turn.project?.prepared, turn.tools)
-        : turn.tools.filter(tool => ![TEST_TOOL, DIFF_TOOL].includes(tool.name));
+        : turn.tools.filter(tool => !DEVELOPMENT_TOOLS.has(tool.name));
       if (turn.cancelled) return resultWith('cancelled');
       const toolSignature = catalogSignature(turn.tools);
       const projectAccess = Boolean(turn.project?.prepared.project?.available);
@@ -775,6 +776,9 @@ class AcpAgents {
       if (turn.tools.some(tool => tool.name === TEST_TOOL)) {
         prompt[0].text += `\n\n需要运行项目测试或检查时，使用 ${current.mcpName} 的 run_project_tests 选择已配置的运行器。每次调用由用户在当前聊天中确认。测试读取实际项目目录，待审批的修改候选尚未应用。`;
       }
+      if (turn.tools.some(tool => tool.name === POWERSHELL_TOOL)) {
+        prompt[0].text += `\n\n此会话已启用完全访问。使用 ${current.mcpName} 的 run_powershell 提出需要执行的 Windows PowerShell 命令。每条命令由用户确认后，以当前 Windows 用户权限在绑定项目中运行。使用工具返回的输出与退出码报告结果。`;
+      }
       if (turn.tools.some(tool => tool.name === DIFF_TOOL)) {
         prompt[0].text += `\n\n使用 ${current.mcpName} 的 project_git_diff 查看授权项目内已暂存和未暂存的 Git 差异。仅查看指定文件时，请传入精确的仓库相对路径 path。`;
       }
@@ -786,6 +790,9 @@ class AcpAgents {
       }
       if (turn.tools.some(tool => tool.name === PROPOSE_FILE)) {
         prompt[0].text += `\n\n修改现有文件时，使用 ${current.mcpName} 的 propose_project_file_edit，传入读取返回的 sha256 和新文件全文。候选创建后请告知用户在 Somnus 审核应用。用户应用前，原文件、Git 差异和测试仍反映磁盘旧内容。`;
+      }
+      if (turn.tools.some(tool => tool.name === CREATE_FILE)) {
+        prompt[0].text += `\n\n新建真实项目文件时，使用 ${current.mcpName} 的 propose_project_file_create。选择已授权的来源、其现有目录下的相对路径和完整文本，勿在临时目录创建交付文件。工具返回 pending 时，请说明新建候选已提交，等待用户在 Somnus 审批，文件尚未写入。请勿提供临时路径作为成品链接。`;
       }
       if (!current.hasPrompted) {
         const prepared = turn.project?.prepared;

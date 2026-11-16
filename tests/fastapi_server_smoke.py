@@ -60,7 +60,11 @@ def main():
                     html = request('/')
                     for asset in re.findall(r'(?:src|href)="(/workbench-assets/[^\"]+)"', html):
                         assert request(asset)
-                    assert '<h1>数据分析</h1>' in request('/events?embedded=1')
+                    plugins = request('/api/plugins')['plugins']
+                    analysis, = next(plugin for plugin in plugins if plugin['key'] == 'respiratory')['workspace_entries']
+                    assert analysis['path'] == '/events' and analysis['access'] == 'selected-record'
+                    assert '<h1>波形分析</h1>' in request(analysis['path'] + '?embedded=1')
+                    assert 'href="/" class="events-return-link"' in request(analysis['path'])
                     assert request('/api/workbench?source=live')['data_quality']['loss_rate'] is None
                     assert not request('/api/assistant/status')['configured']
                     created = request('/api/assistant/conversations', packet={'title': 'synthetic smoke'})['conversation']

@@ -3,40 +3,74 @@ import { fetchDashboard } from './api';
 import { createLatestGate } from './logic.mjs';
 import type { Dashboard, Source } from './types';
 
+const refreshIntervalMs = 60 * 60 * 1000;
+
+type Snapshot = { data: Dashboard; receivedAt: number };
+type RequestStatus = { key: string; loading: boolean; error: string; finishedAt?: number };
+
 export function useWorkbench(source: Source, model: string, auto: boolean) {
-  const [data, setData] = useState<Dashboard | null>(null);
-  const [dataKey, setDataKey] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const key = `${source}|${model}`;
+  const snapshots = useRef(new Map<string, Snapshot>());
+  const [request, setRequest] = useState<RequestStatus>();
   const [visible, setVisible] = useState(!document.hidden);
   const controller = useRef<AbortController>();
-  const inFlight = useRef(false);
   const gate = useRef(createLatestGate());
-  const reload = useCallback(async () => {
+
+  const load = useCallback(async (force: boolean) => {
+    const cached = snapshots.current.get(key);
+    if (!force && cached && Date.now() - cached.receivedAt < refreshIntervalMs) {
+      setRequest(current => current?.key === key ? undefined : current);
+      return;
+    }
+
     controller.current?.abort();
     const token = gate.current.next(), abort = new AbortController();
-    controller.current = abort; inFlight.current = true; setLoading(true); setError('');
+    controller.current = abort;
+    setRequest({ key, loading: true, error: '' });
     try {
-      const result = await fetchDashboard(source, model, abort.signal);
-      if (gate.current.current(token)) { setDataKey(`${source}|${model}`); setData(previous => JSON.stringify(previous) === JSON.stringify(result) ? previous : result); }
+      const data = await fetchDashboard(source, model, abort.signal);
+      if (!gate.current.current(token)) return;
+      const receivedAt = Date.now();
+      snapshots.current.set(key, { data, receivedAt });
+      setRequest({ key, loading: false, error: '', finishedAt: receivedAt });
     } catch (failure) {
-      if (gate.current.current(token) && !abort.signal.aborted) { setData(null); setError(failure instanceof Error ? failure.message : '请求失败'); }
-    } finally { if (gate.current.current(token)) { inFlight.current = false; setLoading(false); } }
-  }, [source, model]);
+      if (!gate.current.current(token) || abort.signal.aborted) return;
+      snapshots.current.delete(key);
+      setRequest({ key, loading: false, error: failure instanceof Error ? failure.message : '请求失败', finishedAt: Date.now() });
+    }
+  }, [key, source, model]);
+
+  const reload = useCallback(() => load(true), [load]);
+  const cancel = useCallback(() => {
+    gate.current.invalidate();
+    controller.current?.abort();
+  }, []);
+
   useEffect(() => {
-    setData(null);
-    if (!document.hidden) void reload(); else setLoading(false);
-    return () => { controller.current?.abort(); inFlight.current = false; gate.current.invalidate(); };
-  }, [reload]);
+    if (!document.hidden) void load(false);
+    return cancel;
+  }, [load, cancel]);
   useEffect(() => {
-    const onVisibility = () => { setVisible(!document.hidden); if (document.hidden) { controller.current?.abort(); inFlight.current = false; gate.current.invalidate(); setLoading(false); } else void reload(); };
+    const onVisibility = () => {
+      setVisible(!document.hidden);
+      if (document.hidden) {
+        cancel();
+        setRequest(current => current?.loading ? { ...current, loading: false } : current);
+      } else void load(false);
+    };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [reload]);
+  }, [load, cancel]);
+
+  const snapshot = snapshots.current.get(key);
+  const status = request?.key === key ? request : undefined;
+  const loading = status?.loading ?? (!snapshot && visible);
+  const lastRead = snapshot?.receivedAt ?? status?.finishedAt;
   useEffect(() => {
-    if (!auto || !visible) return;
-    const timer = window.setInterval(() => { if (!document.hidden && !inFlight.current) void reload(); }, 3600000);
-    return () => window.clearInterval(timer);
-  }, [auto, visible, reload]);
-  return { data: dataKey === `${source}|${model}` ? data : null, error, loading, visible, reload };
+    if (!auto || !visible || loading) return;
+    const delay = lastRead === undefined ? refreshIntervalMs : Math.max(0, refreshIntervalMs - (Date.now() - lastRead));
+    const timer = window.setTimeout(() => { if (!document.hidden) void reload(); }, delay);
+    return () => window.clearTimeout(timer);
+  }, [auto, visible, loading, lastRead, reload]);
+  return { data: snapshot?.data ?? null, error: status?.error ?? '', loading, visible, reload };
 }

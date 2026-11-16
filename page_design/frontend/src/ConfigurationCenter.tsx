@@ -1,7 +1,8 @@
 import { SomnusMark } from './SomnusMark';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Input, Modal, Space, Tabs, Tag } from 'antd';
-import { ApiOutlined, AppstoreOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
+import { Alert, Button, Input, Modal, Space, Tabs, Tag } from 'antd';
+import { ApiOutlined, AppstoreOutlined, DatabaseOutlined, DownloadOutlined, PlusOutlined, RobotOutlined, SafetyOutlined, SettingOutlined } from '@ant-design/icons';
+import type { ReactNode } from 'react';
 import { Models } from './Models';
 import { McpServers } from './McpServers';
 import type { DshCommunityMarket, DshMarket, InstalledDshPlugin, InstalledDshPlugins } from './DshPluginMarket';
@@ -9,15 +10,57 @@ import { PluginConfiguration } from './PluginConfiguration';
 import { PersonalSkills } from './PersonalSkills';
 import { assistantStatus } from './assistantApi';
 import type { AssistantStatus } from './assistantApi';
+import type { ConfigurationCheckpoint } from './assistantApi';
 import { ManagedDshAccount } from './ManagedDshAccount';
+import { ConfigurationCheckpoints } from './ConfigurationCheckpoints';
 import type { ManagedDshAccountStatus } from './ManagedDshAccount';
+import './agentConfiguration.css';
+import icon0 from './agent-icons/antigravity-acp.svg';
+import icon1 from './agent-icons/claude-acp.svg';
+import icon2 from './agent-icons/cline.svg';
+import icon3 from './agent-icons/codebuddy-code.svg';
+import icon4 from './agent-icons/codex-acp.svg';
+import icon5 from './agent-icons/cursor.svg';
+import icon6 from './agent-icons/deepseek.svg';
+import icon7 from './agent-icons/devin.svg';
+import icon8 from './agent-icons/gemini.svg';
+import icon9 from './agent-icons/github-copilot-cli.svg';
 
 type AdapterProvider = 'codex' | 'deepseek-harness-native' | 'codebuddy';
-const setupPresets: Array<{ provider: AdapterProvider; label: string; packageName?: string; binary?: string; args?: string; guide: string; account: string }> = [
-  { provider: 'codex', label: 'Codex', packageName: '@agentclientprotocol/codex-acp', binary: 'dist/index.js', guide: 'https://github.com/agentclientprotocol/codex-acp', account: '可使用适配器提供的 ChatGPT 浏览器登录。' },
-  { provider: 'deepseek-harness-native', label: 'DeepSeek Harness · 官方 DSH', args: '--profile acp', guide: 'https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md', account: '登录个人 DeepSeek 账号，并连接官方 DSH 运行时。' },
-  { provider: 'codebuddy', label: 'CodeBuddy Code', guide: 'https://cloud.tencent.com/document/product/1831/137021', args: '--acp', account: '连接后在「账户」中刷新状态，再选择 CodeBuddy 提供的登录方式。' },
+type AgentPreset = { provider?: AdapterProvider; label: string; icon: string; aliases?: string[]; packageName?: string; binary?: string; args?: string; launch?: string; guide: string; account?: string };
+const setupPresets: AgentPreset[] = [
+  { provider: 'codex', label: 'Codex', icon: 'codex-acp', packageName: '@agentclientprotocol/codex-acp', binary: 'dist/index.js', guide: 'https://github.com/agentclientprotocol/codex-acp', account: '使用 ChatGPT 账号登录 Codex。' },
+  { provider: 'deepseek-harness-native', label: 'DeepSeek Harness · 官方 DSH', icon: 'deepseek', aliases: ['DeepSeek Harness 官方 ACP', 'DSH 插件运行时'], args: '--profile\nacp', guide: 'https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md', account: '使用个人 DeepSeek 账号登录官方 DSH。' },
+  { label: 'Claude Code', aliases: ['Claude Agent'], icon: 'claude-acp', guide: 'https://github.com/agentclientprotocol/claude-agent-acp' },
+  { label: 'Cline', icon: 'cline', args: '--acp', launch: 'cline --acp', guide: 'https://github.com/cline/cline' },
+  { provider: 'codebuddy', label: 'CodeBuddy Code', icon: 'codebuddy-code', guide: 'https://cloud.tencent.com/document/product/1831/137021', args: '--acp', launch: 'codebuddy --acp' },
+  { label: 'Cursor', icon: 'cursor', args: 'acp', launch: 'agent acp', guide: 'https://cursor.com/docs/cli/acp' },
+  { label: 'Devin CLI', aliases: ['Devin'], icon: 'devin', args: 'acp', launch: 'devin acp', guide: 'https://docs.devin.ai/cli' },
+  { label: 'Gemini CLI', icon: 'gemini', args: '--acp', launch: 'gemini --acp', guide: 'https://github.com/google-gemini/gemini-cli' },
+  { label: 'GitHub Copilot', icon: 'github-copilot-cli', args: '--acp', launch: 'copilot --acp', guide: 'https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server' },
+  { label: 'Google Antigravity', icon: 'antigravity-acp', guide: 'https://antigravity.google/docs/ide/extensions' },
 ];
+// Vendor artwork from the ACP Registry and Lobe Icons, bundled for offline use.
+const agentIcons: Record<string, string> = { 'antigravity-acp': icon0, 'claude-acp': icon1, 'cline': icon2, 'codebuddy-code': icon3, 'codex-acp': icon4, 'cursor': icon5, 'deepseek': icon6, 'devin': icon7, 'gemini': icon8, 'github-copilot-cli': icon9 };
+
+function presetForAgent(name: string) {
+  return setupPresets.find(item => [item.label, ...(item.aliases ?? [])].some(label => label.toLowerCase() === name.toLowerCase()));
+}
+
+function AgentIcon({ preset, builtin }: { preset?: AgentPreset; builtin?: boolean }) {
+  const icon = preset && agentIcons[preset.icon];
+  return <span className="configuration-brand-icon" aria-hidden="true">
+    {builtin ? <SomnusMark /> : icon ? <img src={icon} alt="" /> : <RobotOutlined />}
+  </span>;
+}
+
+function AgentSection({ title, description, icon, children }: { title: string; description?: string; icon: ReactNode; children: ReactNode }) {
+  return <section className="configuration-detail-section" aria-label={title}>
+    <header><span className="configuration-section-icon" aria-hidden="true">{icon}</span>
+      <div><h3>{title}</h3>{description && <p>{description}</p>}</div></header>
+    {children}
+  </section>;
+}
 type Agent = { id: string; name: string; executable: string; args: string[] };
 type LoginMethod = { id: string; name: string; kind: 'browser' | 'api-key' | 'terminal' | 'agent'; description?: string; providerRoute?: string };
 type AgentInfo = {
@@ -29,7 +72,7 @@ declare global {
   interface Window {
     vvmanAcp?: {
       list: () => Promise<Agent[]>;
-      openManagedDshSettings?: () => Promise<void>;
+      openManagedDshTerminal?: () => Promise<void>;
       managedDshAccountStatus?: () => Promise<ManagedDshAccountStatus>;
       signInManagedDshAccount?: () => Promise<ManagedDshAccountStatus>;
       connectManagedDsh?: () => Promise<{ agent: Agent; info: AgentInfo }>;
@@ -46,6 +89,7 @@ declare global {
       save: (data: { id?: string; name: string; executable: string; args: string[] }) => Promise<Agent>;
       remove: (id: string) => Promise<void>;
       probe: (id: string) => Promise<AgentInfo>;
+      saveConfigurationCheckpoint?: (id: string, revision: string) => Promise<ConfigurationCheckpoint>;
       authenticate?: (id: string, methodId: string) => Promise<AgentInfo>;
       cancelAuthentication?: () => Promise<void>;
       prompt: (id: string, text: string) => Promise<{ text: string; stopReason?: string }>;
@@ -55,7 +99,7 @@ declare global {
   }
 }
 
-function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
+function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => void; restoredAgentId?: string }) {
   const bridge = window.vvmanAcp;
   const [status, setStatus] = useState<AssistantStatus>();
   const [managedReady, setManagedReady] = useState(false);
@@ -82,11 +126,15 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
     void bridge?.dshPluginMarket?.().then(result => {
       if (!controller.signal.aborted) setManagedReady(result.runtime.installed);
     }).catch(() => {});
-    void bridge?.list().then(items => { if (!controller.signal.aborted) setAgents(items); }).catch(error => {
+    void bridge?.list().then(items => {
+      if (controller.signal.aborted) return;
+      setAgents(items);
+      if (restoredAgentId) setActive(items.find(item => item.id === restoredAgentId));
+    }).catch(error => {
       if (!controller.signal.aborted) setError(String(error));
     });
     return () => controller.abort();
-  }, [bridge]);
+  }, [bridge, restoredAgentId]);
   useEffect(() => () => { if (prompting.current) void bridge?.cancel().catch(() => {}); }, [bridge]);
   useEffect(() => bridge?.onUpdate(update => {
     if (prompting.current && update.agentId === active?.id) setReply(text => text + update.text);
@@ -145,8 +193,14 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
   const canLogin = Boolean(bridge?.authenticate);
   const loginInProgress = busy || authenticating || running;
   const matches = (label: string) => label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const listedAgents = agents.filter(agent => matches(agent.name));
-  const listedPresets = setupPresets.filter(preset => matches(preset.label));
+  const catalogRows = setupPresets.flatMap<{ name: string; agent?: Agent; preset: AgentPreset }>(item => {
+    const connected = agents.filter(agent => presetForAgent(agent.name) === item);
+    return connected.length ? connected.map(agent => ({ name: agent.name, agent, preset: item }))
+      : [{ name: item.label, agent: undefined, preset: item }];
+  });
+  const customRows = agents.filter(agent => !presetForAgent(agent.name)).map(agent => ({ name: agent.name, agent, preset: undefined }));
+  const listedRows = [...catalogRows, ...customRows].filter(row =>
+    matches(row.name) || Boolean(row.preset && matches(row.preset.label)));
   const showBuiltin = matches('Somnus 内置');
   const preset = setupPresets.find(item => item.label === directory);
   const directCodex = preset?.provider === 'codex' && Boolean(bridge?.connectCodex);
@@ -154,7 +208,7 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
   const managedPreset = preset?.provider === 'deepseek-harness-native';
   const managedActive = Boolean(active && (managedProfileId === active.id || ['DeepSeek Harness 官方 ACP', 'DSH 插件运行时'].includes(active.name)));
   const methods = managedActive || probe?.provider === 'deepseek-harness' ? [] :
-    (probe?.loginMethods || []).filter(method => (method.kind === 'browser' || method.kind === 'terminal') &&
+    (probe?.loginMethods || []).filter(method => (method.kind === 'browser' || method.kind === 'terminal' || method.kind === 'agent') &&
       !/^api-key(?::|$)/i.test(method.id) && !method.providerRoute);
   const managedAccount = <ManagedDshAccount connected={managedActive} disabled={loginInProgress} />;
   function connectManagedDsh() {
@@ -194,36 +248,43 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
     <div className="configuration-agent-list">
       <Input.Search aria-label="搜索 Agent" placeholder="搜索 Agent" value={query}
         onChange={event => setQuery(event.target.value)} allowClear />
-      {showBuiltin && <button type="button" className="builtin-tool" disabled={loginInProgress}
+      {showBuiltin && <button type="button" className="configuration-agent-row" disabled={loginInProgress}
         aria-pressed={!active && !preset} onClick={() => selectAgent()}>
-        <span className="configuration-somnus-label"><SomnusMark /><span><strong>Somnus</strong><small>内置 Agent</small></span></span>
+        <AgentIcon builtin /><span><strong>Somnus</strong><small>内置 Agent</small></span>
       </button>}
-      {listedAgents.length > 0 && <h3>已接入</h3>}
-      {listedAgents.map(agent => <button type="button" className="builtin-tool" disabled={loginInProgress}
-        aria-pressed={active?.id === agent.id} key={agent.id} onClick={() => selectAgent(agent)}>
-        <span><strong>{agent.name}</strong><small>本地 ACP</small></span>
+      {listedRows.map(row => <button type="button" className="configuration-agent-row" disabled={loginInProgress}
+        aria-pressed={row.agent ? active?.id === row.agent.id : directory === row.name}
+        key={row.agent?.id ?? row.name} onClick={() => row.agent ? selectAgent(row.agent) : selectAgent(undefined, row.name)}>
+        <AgentIcon preset={row.preset} />
+        <span><strong>{row.name}</strong><small>{row.agent ? '本地 ACP · 已接入' : '本地 ACP'}</small></span>
+        <span className={row.agent ? 'configuration-connected' : 'configuration-agent-add'} aria-hidden="true">{row.agent ? '' : <PlusOutlined />}</span>
       </button>)}
-      {listedPresets.length > 0 && <h3>适配器目录</h3>}
-      {listedPresets.map(item => <button type="button" className="builtin-tool" disabled={loginInProgress}
-        aria-pressed={directory === item.label} key={item.label} onClick={() => selectAgent(undefined, item.label)}>
-        <span><strong>{item.label}</strong><small>本地 ACP</small></span>
-      </button>)}
-      {!showBuiltin && !listedAgents.length && !listedPresets.length && <p>没有匹配的 Agent</p>}
+      {!showBuiltin && !listedRows.length && <p>没有匹配的 Agent</p>}
       {bridge && <Button disabled={loginInProgress} onClick={() => addAgent()}>添加自定义 ACP</Button>}
     </div>
-    <Card className="panel-card" title={active?.name || preset?.label || 'Somnus'} extra={!active && !preset && <Tag>内置</Tag>}>
+    <div className="configuration-agent-detail">
+      <header className="configuration-agent-profile">
+        <AgentIcon preset={active ? presetForAgent(active.name) : preset} builtin={!active && !preset} />
+        <div><h2>{active?.name || preset?.label || 'Somnus'}</h2>
+          <p>{active || preset ? '本地 Agent · Agent Client Protocol' : 'Somnus 内置 Agent'}</p></div>
+        <Tag color={active ? 'success' : undefined}>{active ? '已接入' : preset ? '未接入' : '内置'}</Tag>
+      </header>
       {error && <Alert type="error" showIcon message={error} />}
       {active && bridge ? <>
-        <Space wrap>{!managedActive && <Button disabled={loginInProgress} onClick={checkAccount}>刷新账号状态</Button>}
+        <AgentSection title="Agent 安装" icon={<DownloadOutlined />}>
+          <div className="configuration-detail-actions"><Tag>已接入</Tag>{probe?.version && <small>{probe.version}</small>}</div>
+          <Space wrap>
           <Button disabled={loginInProgress} onClick={() => { setEditorError(''); setEdit({ ...active, args: active.args.join('\n') }); }}>编辑</Button>
           <Button danger disabled={loginInProgress} onClick={() => setRemove(active)}>移除</Button></Space>
-        {managedActive && managedAccount}
-        <section aria-label="Agent 账户" className="configuration-agent-account">
-          <h3>{managedActive ? 'ACP 会话' : '账户'}</h3>
-          {managedActive && <Button disabled={loginInProgress} onClick={checkAccount}>验证 ACP 会话</Button>}
+        </AgentSection>
+        <AgentSection title="原生凭证" icon={<SafetyOutlined />} description="使用 Agent 提供的账号登录方式。">
+          {managedActive && managedAccount}
+          <div className="configuration-detail-actions">
           <Tag color={accountReady ? 'success' : undefined}>
             {accountReady ? '会话已验证' : probe?.authentication === 'required' ? '需要登录' : probe?.authentication === 'unverified' ? '已连接 · 账号待验证' : '账号状态待检查'}
           </Tag>
+          <Button disabled={loginInProgress} onClick={checkAccount}>{managedActive ? '验证 ACP 会话' : '刷新账号状态'}</Button>
+          </div>
           {probe?.authentication === 'unverified' && <p>Agent 未报告账号状态，可通过试聊检查模型配置。</p>}
           {probe && <p>{probe.name}{probe.version ? ' · ' + probe.version : ''}</p>}
           {probe?.provider === 'custom' && probe.authentication === 'required' && !methods.length &&
@@ -236,8 +297,12 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
           {authenticating && <p role="status">等待 Agent 完成登录… {bridge.cancelAuthentication && <Button type="link"
             onClick={() => void bridge.cancelAuthentication?.().catch(failure => setLoginError(String(failure)))}>取消登录</Button>}</p>}
           {loginError && <Alert type="error" showIcon message={loginError} />}
-        </section>
-        <h3>试聊</h3><p>此处只向 ACP 进程发送输入的文本。</p>
+        </AgentSection>
+        <AgentSection title="模型供应商配置" icon={<DatabaseOutlined />} description="管理 Somnus 的模型供应商和 API Key。">
+          <Button onClick={() => onOpen('models')}>管理 Provider</Button>
+        </AgentSection>
+        <details className="configuration-agent-test"><summary>试聊</summary>
+        <p>此处只向 ACP 进程发送输入的文本。</p>
         <Input.TextArea aria-label="发送给 ACP Agent 的消息" value={question} disabled={running} rows={3} onChange={event => setQuestion(event.target.value)} />
         <div className="configuration-agent-compose">
           {running ? <Button onClick={() => void bridge.cancel().catch(error => setError(String(error)))}>停止</Button>
@@ -250,40 +315,43 @@ function AgentConfig({ onOpen }: { onOpen: (view: string) => void }) {
             }}>发送</Button>}
         </div>
         {reply && <pre className="configuration-agent-reply">{reply}</pre>}
+        </details>
       </> : <>
-        {preset ? <div className="configuration-agent-setup">
-          <p>{preset.account}</p>
-          {managedPreset && managedAccount}
+        {preset && <AgentSection title="Agent 安装" icon={<DownloadOutlined />}>
+          <div className="configuration-agent-setup">
+          <div className="configuration-detail-actions"><Tag>{managedPreset && managedReady ? '运行时已安装' : '等待接入'}</Tag></div>
           {managedPreset && managedReady && bridge?.connectManagedDsh &&
             <Button loading={busy} disabled={loginInProgress} onClick={connectManagedDsh}>连接 DSH 插件运行时</Button>}
           {preset.provider === 'codebuddy' && bridge?.detectAdapter && <Button type="primary" loading={busy}
             onClick={() => detectAgent('codebuddy')}>连接 CodeBuddy Code</Button>}
-          {directCodex && <>
-            <Button type="primary" loading={authenticating} disabled={loginInProgress && !authenticating}
-              onClick={() => void connectCodex()}>使用 ChatGPT 登录</Button>
-            {authenticating && <p role="status">正在连接 Codex。若浏览器打开，请在浏览器完成授权。
-              {bridge?.cancelAuthentication && <Button type="link"
-                onClick={() => void bridge.cancelAuthentication?.().catch(failure => setError(String(failure)))}>取消登录</Button>}
-            </p>}
-          </>}
-          <details open={!directCodex && !(managedPreset && managedReady) && preset.provider !== 'codebuddy' || undefined}>
+          <details open={!preset.provider || (!directCodex && !(managedPreset && managedReady) && preset.provider !== 'codebuddy') || undefined}>
           <summary>{directCodex || preset.provider === 'codebuddy' ? '手动安装与接入' : '安装与接入'}</summary>
           {preset.packageName ? <><p>在 PowerShell 中运行下面两行，安装适配器并找到启动脚本。</p>
           <pre>{'npm install -g ' + preset.packageName}{'\n'}{'Join-Path (npm root -g) "' + preset.packageName + '/' + preset.binary + '"'}</pre>
-          <p>添加时选择 <code>node.exe</code>，将脚本路径单独填为一行启动参数。</p></> : managedPreset ? <p>如已有官方 DSH CLI，可检测本机安装或手动选择启动程序，将 <code>--profile</code> 和 <code>acp</code> 分行填写为启动参数。</p> : <><p>按官方说明安装 Windows 原生版，再选择 codebuddy.exe。接入后可刷新账号状态。</p><pre>codebuddy --acp</pre></>}
+          <p>添加时选择 <code>node.exe</code>，将脚本路径单独填为一行启动参数。</p></> : managedPreset ? <p>如已有官方 DSH CLI，可检测本机安装或手动选择启动程序，将 <code>--profile</code> 和 <code>acp</code> 分行填写为启动参数。</p> :
+          <><p>按官方说明安装支持 ACP 的运行时，选择其可执行程序并保存。</p>{preset.launch && <pre>{preset.launch}</pre>}</>}
           <Space wrap>
-            {bridge?.detectAdapter && preset.provider !== 'codebuddy' && <Button type={directCodex ? 'default' : 'primary'} disabled={authenticating} loading={busy} onClick={() => detectAgent(preset.provider)}>检测本机安装</Button>}
+            {bridge?.detectAdapter && preset.provider !== 'codebuddy' && preset.provider && <Button type={directCodex ? 'default' : 'primary'} disabled={loginInProgress} loading={busy} onClick={() => preset.provider && detectAgent(preset.provider)}>检测本机安装</Button>}
             <Button type={bridge?.detectAdapter ? 'default' : 'primary'} disabled={!bridge || loginInProgress} onClick={() => addAgent(preset.label)}>手动接入</Button>
-            <Button href={preset.guide} target="_blank" rel="noopener">适配器文档</Button>{preset.args === '--acp' && <Button href="https://www.codebuddy.ai/docs/cli/quickstart" target="_blank" rel="noopener">Windows 安装指南</Button>}
+            <Button href={preset.guide} target="_blank" rel="noopener">适配器文档</Button>{preset.provider === 'codebuddy' && <Button href="https://www.codebuddy.ai/docs/cli/quickstart" target="_blank" rel="noopener">Windows 安装指南</Button>}
           </Space>
           </details>
-        </div> : <>
-        <p>Somnus 自研 Agent，可在会话中处理项目工作，并按配置查询公司数据。</p>
-        <p>{status ? status.configured ? '模型已配置' : '模型尚未配置' : '模型状态待确认'}{status?.model ? ' · ' + status.model : ''}</p>
-        <Button onClick={() => onOpen('models')}>管理 Provider</Button>
-        </>}
+        </div></AgentSection>}
+        {preset && <AgentSection title="原生凭证" icon={<SafetyOutlined />} description={preset.account || '接入后刷新账号状态，查看 Agent 提供的登录方式。'}>
+          {managedPreset && managedAccount}
+          {directCodex && <Button type="primary" loading={authenticating} disabled={loginInProgress}
+            onClick={() => void connectCodex()}>使用 ChatGPT 登录</Button>}
+          {directCodex && authenticating && <p role="status">请在浏览器完成 ChatGPT 授权。
+            {bridge?.cancelAuthentication && <Button type="link"
+              onClick={() => void bridge.cancelAuthentication?.().catch(failure => setError(String(failure)))}>取消登录</Button>}
+          </p>}
+        </AgentSection>}
+        <AgentSection title="模型供应商配置" icon={<DatabaseOutlined />} description="管理 Somnus 的模型供应商和 API Key。">
+          {!preset && <p>{status ? status.configured ? '模型已配置' : '模型尚未配置' : '模型状态待确认'}{status?.model ? ' · ' + status.model : ''}</p>}
+          <Button onClick={() => onOpen('models')}>管理 Provider</Button>
+        </AgentSection>
       </>}
-    </Card>
+    </div>
     <Modal title={edit?.id ? '编辑 ACP Agent' : '添加 ACP Agent'} open={Boolean(edit)} confirmLoading={busy}
       okText="保存" cancelText="取消" maskClosable={!busy} closable={!busy} keyboard={!busy}
       okButtonProps={{ disabled: !edit?.name.trim() || !edit?.executable }}
@@ -329,20 +397,30 @@ export const configurationSections = [
   { key: 'plugin-config', label: '插件', icon: <AppstoreOutlined /> },
 ];
 
-export function ConfigurationCenter({ view, onOpen, suggestedPlugin, sidebarNavigation = false }: {
-  view: string; onOpen: (view: string) => void; suggestedPlugin?: string; sidebarNavigation?: boolean;
+export function ConfigurationCenter({ view, onOpen, suggestedPlugin, sidebarNavigation = false, windowsDesktop }: {
+  view: string; onOpen: (view: string) => void; suggestedPlugin?: string; sidebarNavigation?: boolean; windowsDesktop?: boolean;
 }) {
+  const [checkpointsOpen, setCheckpointsOpen] = useState(false);
+  const [configurationRevision, setConfigurationRevision] = useState(0);
+  const [restoredAgentId, setRestoredAgentId] = useState<string>();
+  function onRestore(agentId?: string) {
+    setRestoredAgentId(agentId);
+    setConfigurationRevision(value => value + 1);
+    if (agentId) onOpen('config');
+  }
   const sections = [
-    <AgentConfig key="config" onOpen={onOpen} />, <Models key="models" />, <McpServers key="mcp" />,
-    <PersonalSkills key="skills" />, <PluginConfiguration key="plugin-config" suggestedPlugin={suggestedPlugin} />,
+    <AgentConfig key="config" onOpen={onOpen} restoredAgentId={restoredAgentId} />, <Models key="models" />, <McpServers key="mcp" />,
+    <PersonalSkills key="skills" />, <PluginConfiguration key="plugin-config" suggestedPlugin={suggestedPlugin} windowsDesktop={windowsDesktop} />,
   ];
   const items = configurationSections.map((section, index) => ({ ...section, children: sections[index] }));
   return <div className="configuration-center">
     <header className="configuration-heading">
       <h1 className="tools-heading">配置中心</h1>
       <p>管理账号、模型供应商和工具接入。</p>
+      {windowsDesktop && <Button icon={<SafetyOutlined />} onClick={() => setCheckpointsOpen(true)}>验证与恢复</Button>}
     </header>
-    <Tabs activeKey={view} onChange={onOpen} items={items} renderTabBar={sidebarNavigation
+    {windowsDesktop && <ConfigurationCheckpoints open={checkpointsOpen} onClose={() => setCheckpointsOpen(false)} onRestore={onRestore} />}
+    <Tabs key={configurationRevision} activeKey={view} onChange={onOpen} items={items} renderTabBar={sidebarNavigation
       ? () => <div className="configuration-section-title"><span>{configurationSections.find(section => section.key === view)?.label}</span></div>
       : undefined} />
   </div>;

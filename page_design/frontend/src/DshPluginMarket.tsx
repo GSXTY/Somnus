@@ -103,12 +103,13 @@ export function DshPluginMarket({ revision, suggestedPlugin, onChanged }: {
     finally { setOperation(''); }
   }
 
-  async function openSettings() {
-    if (!bridge?.openManagedDshSettings || operation) return;
-    setOperation('settings');
+  async function openTerminal() {
+    const action = bridge?.openManagedDshTerminal;
+    if (!action || operation) return;
+    setOperation('terminal');
     setError('');
-    try { await bridge.openManagedDshSettings(); }
-    catch (failure) { setError(describeError(failure, '无法打开官方 DSH 设置')); }
+    try { await action(); }
+    catch (failure) { setError(describeError(failure, '无法打开 DSH 终端')); }
     finally { setOperation(''); }
   }
 
@@ -125,8 +126,8 @@ export function DshPluginMarket({ revision, suggestedPlugin, onChanged }: {
   return <section className="plugin-section" aria-labelledby="plugin-market-title">
     <div className="plugin-section-heading">
       <h3 id="plugin-market-title">插件市场</h3>
-      {ready && bridge?.openManagedDshSettings && <Button loading={operation === 'settings'} disabled={Boolean(operation)}
-        onClick={() => void openSettings()}>打开官方 DSH 设置</Button>}
+      {ready && bridge?.openManagedDshTerminal && <Button loading={operation === 'terminal'} disabled={Boolean(operation)}
+        onClick={() => void openTerminal()}>打开 DSH 终端</Button>}
     </div>
     <div className="plugin-market-sources">
       {sources.map(source => <button key={source.key} className="plugin-market-card" type="button"

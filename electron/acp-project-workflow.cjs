@@ -8,6 +8,7 @@ const { projectPath } = require('./acp-project.cjs');
 
 const TEST_TOOL = 'run_project_tests';
 const DIFF_TOOL = 'project_git_diff';
+const POWERSHELL_TOOL = 'run_powershell';
 const LIST_RUNNERS = 'list_project_test_runners';
 const MAX_DEVELOPMENT_JOBS = 4;
 const DEVELOPMENT_ID = /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/;
@@ -19,6 +20,7 @@ const SHELL_PROGRAM = /^(?:cmd|powershell|powershell_ise|pwsh|bash|sh|wsl|wscrip
 const MAX_OUTPUT = 64 * 1024;
 const APPROVAL_TIMEOUT = 60_000;
 const TEST_TIMEOUT = 90_000;
+const POWERSHELL_TIMEOUT = 45_000;
 const GIT_TIMEOUT = 8000;
 const CHECKOUT_TIMEOUT = 90_000;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -64,15 +66,23 @@ async function runnerExecutable(executable) {
   return { canonical, identity: [dev, ino, size, mtimeMs].join(':') };
 }
 
-function projectEnvironment(executableDirectory) {
+function projectEnvironment(executableDirectory, inheritPath = false) {
   const env = process.env;
   const allowed = ['ALLUSERSPROFILE', 'APPDATA', 'COMSPEC', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
     'NUMBER_OF_PROCESSORS', 'OS', 'PROCESSOR_ARCHITECTURE', 'PROGRAMDATA', 'PROGRAMFILES',
     'SYSTEMDRIVE', 'SYSTEMROOT', 'TEMP', 'TMP', 'USERPROFILE', 'WINDIR'];
   const result = Object.fromEntries(Object.entries(env).filter(([key]) => allowed.includes(key.toUpperCase())));
   const system = env.SystemRoot || env.WINDIR || 'C:\\Windows';
-  result.PATH = [executableDirectory, path.join(system, 'System32'), system].filter(Boolean).join(path.delimiter);
+  const userPath = inheritPath ? Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] : undefined;
+  result.PATH = [executableDirectory, path.join(system, 'System32'), system, userPath].filter(Boolean).join(path.delimiter);
   return result;
+}
+
+async function systemPowerShell() {
+  const system = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+  const executable = await localEntry(path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), 'file');
+  if (!executable) throw new Error('未找到系统 Windows PowerShell。');
+  return executable;
 }
 
 function runProcess(executable, args, { cwd, signal, timeout, env, outputLimit = MAX_OUTPUT, mergeError = true }) {
@@ -510,6 +520,9 @@ class ProjectWorkflow {
   }
 
   async prepareTools(prepared, tools) {
+    if (prepared?.permission_mode !== 'full') tools = tools.filter(tool => tool.name !== POWERSHELL_TOOL);
+    const powershell = tools.find(tool => tool.name === POWERSHELL_TOOL);
+    if (powershell) delete powershell.requires_confirmation;
     const diff = tools.find(tool => tool.name === DIFF_TOOL);
     if (diff) {
       diff.description += ' 仅查看一个文件时，提供精确的仓库相对路径 path。';
@@ -613,10 +626,15 @@ class ProjectWorkflow {
     const workspaceId = turn.project?.prepared.workspace_id;
     const resolveTarget = async (tool, scope) => this.checkTarget(
       await client.projectRoot(turn, { name: tool, ...scope }, signal), workspaceId);
-    if (name === TEST_TOOL) {
+    if (name === POWERSHELL_TOOL && turn.project?.prepared.permission_mode !== 'full') {
+      throw new Error('PowerShell 仅在此会话的完全访问模式下可用。');
+    }
+    if (name === TEST_TOOL || name === POWERSHELL_TOOL) {
+      const powershell = name === POWERSHELL_TOOL;
       const approve = async details => {
         const decision = await turn.live?.requestDecision({
-          title: '允许运行项目测试？', kind: 'test', details,
+          title: powershell ? '允许运行 PowerShell 命令？' : '允许运行项目测试？',
+          kind: powershell ? 'powershell' : 'test', details,
           options: [{ id: 'allow_once', kind: 'allow_once', name: '继续' },
             { id: 'reject_once', kind: 'reject_once', name: '取消' }],
         }, signal);
@@ -628,12 +646,54 @@ class ProjectWorkflow {
     return this.developmentTool(workspaceId, name, args, resolveTarget, signal);
   }
 
+  async runPowerShell(args, resolveTarget, signal, approve) {
+    const { source, command } = args;
+    if (typeof command !== 'string' || !command.trim() || command.length > 4000 ||
+        /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(command) ||
+        Object.keys(args).some(key => key !== 'command' && key !== 'source') ||
+        (source !== undefined && (typeof source !== 'string' || !SOURCE.test(source)))) {
+      throw new Error('请指定有效的 PowerShell 命令和项目来源。');
+    }
+    const scope = source === undefined ? {} : { source };
+    const target = await resolveTarget(POWERSHELL_TOOL, scope);
+    const cwd = target.root;
+    if (this.running.has(target.rootKey)) return noRun(command, cwd, 'approval_busy');
+    this.running.add(target.rootKey);
+    try {
+      const executable = await systemPowerShell();
+      const details = { kind: 'powershell', command, cwd, timeoutSeconds: POWERSHELL_TIMEOUT / 1000 };
+      const confirmation = await approve(details);
+      if (signal.aborted) return noRun(command, cwd, 'request_ended');
+      if (!confirmation.approved) return noRun(command, cwd, confirmation.reason);
+      const verified = await resolveTarget(POWERSHELL_TOOL, scope);
+      if (verified.root !== cwd || verified.rootKey !== target.rootKey || verified.source !== target.source ||
+          await systemPowerShell() !== executable) throw new Error('项目或 PowerShell 已变更，请重新确认。');
+      // Encoding the exact approved text avoids another shell interpreting its arguments.
+      const script = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
+        '$OutputEncoding = [Console]::OutputEncoding; $ProgressPreference = "SilentlyContinue";\n' + command;
+      const encoded = Buffer.from(script, 'utf16le').toString('base64');
+      const start = performance.now();
+      const result = await runProcess(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        { cwd, signal, timeout: POWERSHELL_TIMEOUT, env: projectEnvironment(path.dirname(executable), true) });
+      return { ...result, ...(result.status === 'cancelled' ? { reason: 'request_ended' } : {}),
+        elapsedMs: Math.round(performance.now() - start) };
+    } finally {
+      this.running.delete(target.rootKey);
+    }
+  }
+
   async developmentTool(workspaceId, name, args, resolveTarget, signal, approve) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('项目工具参数无效。');
     if (name === TEST_TOOL) {
       if (Object.keys(args).some(key => key !== 'preset_id')) throw new Error('测试工具只接受已保存的运行器。');
       const { command, cwd, ...result } = await this.runTests(workspaceId, args.preset_id, resolveTarget, signal, approve);
       const message = TEST_MESSAGES[result.reason];
+      return { ...toolResult({ ...result, ...(message ? { message } : {}) }, result.status !== 'passed'), message };
+    }
+    if (name === POWERSHELL_TOOL) {
+      if (typeof approve !== 'function') throw new Error('PowerShell 请求需要在会话中确认。');
+      const { command, cwd, ...result } = await this.runPowerShell(args, resolveTarget, signal, approve);
+      const message = result.reason && result.status === 'cancelled' ? 'PowerShell 命令未运行或已结束。' : undefined;
       return { ...toolResult({ ...result, ...(message ? { message } : {}) }, result.status !== 'passed'), message };
     }
     if (name === LIST_RUNNERS) {
@@ -757,12 +817,18 @@ class ProjectWorkflow {
       return readGitDiff(root, signal, undefined, baseRoot);
     });
     handle('create-worktree', (signal, conversationId, source) => this.createWorktree(conversationId, source, signal));
-    handle('open-worktree', async (signal, conversationId) => {
+    const worktreeLocation = async (signal, conversationId) => {
       const endpoint = this.conversationPath(conversationId);
       const location = await nativeRequest(this.origin, this.token, endpoint + '/worktree-location', {}, signal);
       const directory = await localEntry(location?.root_path, 'directory');
       signal.throwIfAborted();
-      if (!directory || !this.shell || await this.shell.openPath(directory)) throw new Error('无法打开此聊天的工作树。');
+      if (!directory) throw new Error('无法找到此聊天的工作树。');
+      return directory;
+    };
+    handle('worktree-location', worktreeLocation);
+    handle('open-worktree', async (signal, conversationId) => {
+      const directory = await worktreeLocation(signal, conversationId);
+      if (!this.shell || await this.shell.openPath(directory)) throw new Error('无法打开此聊天的工作树。');
     });
     handle('prepare-development', (signal, conversationId, id) => this.prepareDevelopment(conversationId, id, signal));
     handle('respond-development', (_signal, conversationId, id, approved) => this.respondDevelopment(conversationId, id, approved));
@@ -772,4 +838,4 @@ class ProjectWorkflow {
   }
 }
 
-module.exports = { ProjectWorkflow, TEST_TOOL, DIFF_TOOL };
+module.exports = { ProjectWorkflow, TEST_TOOL, DIFF_TOOL, POWERSHELL_TOOL };

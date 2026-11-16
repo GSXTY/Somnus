@@ -5,7 +5,7 @@
 export const navigation = [
   {
     key: 'overview', label: '概览',
-    items: [{ key: 'dashboard', label: '数据大盘', icon: 'dashboard', hint: '总体趋势与巡检总览' }],
+    items: [{ key: 'dashboard', label: '主页', icon: 'dashboard', hint: '昨日数据与近7天趋势' }],
   },
   {
     key: 'data', label: '数据',
@@ -13,6 +13,10 @@ export const navigation = [
       { key: 'users', label: '用户目录', icon: 'team', hint: '用户与设备关联' },
       { key: 'devices', label: '设备目录', icon: 'cloud', hint: '设备型号与状态' },
     ],
+  },
+  {
+    key: 'documents', label: '文档',
+    items: [{ key: 'documents', label: '文档', icon: 'documents', hint: '管理个人文档并浏览共享文档' }],
   },
   {
     key: 'analysis', label: '分析',
@@ -46,7 +50,8 @@ export const navigationItems = navigation.flatMap(group =>
 
 const railViews = [
   ['assistant', '会话', 'chat'],
-  ['dashboard', '数据', 'dashboard'],
+  ['dashboard', '主页', 'dashboard'],
+  ['documents', '文档', 'documents'],
   ['config', '配置', 'robot'],
   ['plugins', '工具区', 'plugin'],
 ];

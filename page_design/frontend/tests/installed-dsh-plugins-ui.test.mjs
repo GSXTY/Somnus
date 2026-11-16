@@ -28,6 +28,8 @@ const community = {
 
 test('personal inventory shows installed plugins from both DSH markets, independently of market search and enablement', async () => {
   let installed = [badge, community, { ...badge, source: 'community' }];
+  let dotSetup = { enabled: false, ready: false, paused: false, port: null, secret_path: null };
+  const dotChanges = [];
   let reads = 0;
   const changes = [];
   const vvmanAcp = {
@@ -66,8 +68,16 @@ test('personal inventory shows installed plugins from both DSH markets, independ
       if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
       if (name === 'antd' || name === '@ant-design/icons') return names;
       if (name === './DshPluginMarket') return { DshPluginMarket: 'DshPluginMarket' };
+      if (name === './DotConnectionGuide') return { DotConnectionGuide: 'DotConnectionGuide' };
+      if (name === './PluginDevelopment') return { PluginDevelopment: 'PluginDevelopment' };
       if (name === './errors.mjs') return { describeError: error => error.message };
       if (name === './assistantApi') return {
+        dotTaskSetup: async () => dotSetup,
+        setDotTaskEnabled: async enabled => {
+          dotChanges.push(enabled);
+          dotSetup = { ...dotSetup, ready: enabled, paused: !enabled };
+          return dotSetup;
+        },
         listInstalledPlugins: async () => [],
         listDefaultPlugins: async () => ({ plugins: [{ id: 'company', name: '公司默认' }] }),
         listSkills: async () => [],
@@ -78,7 +88,7 @@ test('personal inventory shows installed plugins from both DSH markets, independ
     AbortController,
     fetch: async () => ({ ok: true, json: async () => ({}) }),
   });
-  const render = () => { hook = 0; return elements(exports.PluginConfiguration({})); };
+  const render = (windowsDesktop = false) => { hook = 0; return elements(exports.PluginConfiguration({ windowsDesktop })); };
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const section = (nodes, id) => elements(nodes.find(node => node.props['aria-labelledby'] === id));
   const buttons = nodes => nodes.filter(node => node.props.className === 'plugin-row-link');
@@ -112,5 +122,48 @@ test('personal inventory shows installed plugins from both DSH markets, independ
   personal.find(node => node.type === 'Input').props.onChange({ target: { value: '' } });
   assert.equal(buttons(section(render(), 'plugin-personal-title')).length, 3);
   assert.equal(reads, 3);
-});
 
+  assert(!render().some(node => node.props['aria-labelledby'] === 'plugin-recommendations-title'));
+  const windows = render(true);
+  windows.find(node => node.type === 'Button' && node.props.children === '插件开发').props.onClick();
+  const development = render(true).find(node => node.type === 'PluginDevelopment');
+  assert(development);
+  development.props.onClose();
+  const recommended = section(windows, 'plugin-recommendations-title');
+  assert(recommended.some(node => node.type === 'strong' && node.props.children === 'Somnus × dot'));
+  assert(!section(windows, 'plugin-personal-title').some(node => node.props.children === 'Somnus × dot'));
+  recommended.find(node => node.type === 'Button' && node.props.children === '查看个人接入教程').props.onClick();
+  const guide = () => render(true).find(node => node.type === 'DotConnectionGuide');
+  assert(guide());
+  dotSetup = { enabled: true, ready: false, paused: false, port: 4567, secret_path: 'sample-connection-test-key' };
+  guide().props.onClose();
+  assert.equal(guide(), undefined);
+  await settle();
+  personal = section(render(true), 'plugin-personal-title');
+  assert.equal(buttons(personal).length, 4);
+  const dotRow = () => elements(section(render(true), 'plugin-personal-title')
+    .find(node => node.props.className === 'plugin-row' &&
+      elements(node).some(child => child.type === 'strong' && child.props.children === 'Somnus × dot')));
+  const dotDetail = () => elements(render(true).find(node => node.type === 'Modal' && node.props.title === 'Somnus × dot'));
+  const openDotDetail = () => dotRow().find(node => node.props.className === 'plugin-row-link').props.onClick();
+  assert(dotRow().some(node => node.type === 'Tag' && node.props.children === '待连接'));
+  assert(!dotRow().some(node => node.type === 'Button'));
+  openDotDetail();
+  const reconnect = dotDetail().find(node => node.type === 'Button' && node.props.children === '重新连接');
+  reconnect.props.onClick();
+  assert(guide());
+  dotSetup = { ...dotSetup, ready: true };
+  guide().props.onClose();
+  render(true);
+  await settle();
+  assert(dotRow().some(node => node.type === 'Tag' && node.props.children === '已连接'));
+  openDotDetail();
+  dotDetail().find(node => node.type === 'Button' && node.props.children === '停用').props.onClick();
+  await settle();
+  assert(dotRow().some(node => node.type === 'Tag' && node.props.children === '已停用'));
+  dotDetail().find(node => node.type === 'Button' && node.props.children === '启用').props.onClick();
+  await settle();
+  assert.deepEqual(dotChanges, [false, true]);
+  assert(dotRow().some(node => node.type === 'Tag' && node.props.children === '已连接'));
+  assert.equal(dotSetup.port, 4567);
+});

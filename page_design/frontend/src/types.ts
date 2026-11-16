@@ -19,7 +19,8 @@ export type DataQuality = { expected_records: number | null; received_records: n
 export type Dashboard = {
   schema_version: 1; source: SourceInfo; generated_at: string;
   period: { start_date: string; end_date: string; kpi_date: string; time_zone: 'Asia/Shanghai'; date_basis: string };
-  model_scope: string[]; data_quality: DataQuality; kpis: { active_users: Metric; treatment_hours: Metric; reported_events: Metric; online_rate: Metric };
+  model_scope: string[]; model_options?: { value: string; label: string }[];
+  data_quality: DataQuality; kpis: { active_users: Metric; treatment_hours: Metric; reported_events: Metric; online_rate: Metric; avg_ahi?: Metric };
   daily: { date: string; active_users: number; treatment_hours: number; event_count: number; online_rate: number }[];
   fleet: { online: number | null; total: number | null; in_therapy: number | null; offline: number | null; latency_seconds: null };
   users: UserRow[]; alerts: AlertItem[]; alert_distribution: { name: string; value: number }[];

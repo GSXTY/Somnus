@@ -41,7 +41,7 @@ export function DataConnectionSettings({ status }: { status: DataConnection }) {
     <Descriptions column={1} size="small" items={[
       { key: 'mode', label: '连接方式', children: <Tag>{dataConnectionLabel(status)}</Tag> },
       ...(status.url ? [{ key: 'url', label: '网关地址', children: status.url }] : []),
-      { key: 'scope', label: '适用功能', children: '数据大盘、数据查询和已获准的深度分析。CSV 波形分析仍由本机处理。' },
+      { key: 'scope', label: '适用功能', children: '主页、数据查询和已获准的深度分析。CSV 波形分析仍由本机处理。' },
     ]} />
     {status.mode === 'remote' && <p className="small-note">使用远程网关时，网关可记录访问账号、客户端版本与最近连接时间。</p>}
     <p className="small-note">

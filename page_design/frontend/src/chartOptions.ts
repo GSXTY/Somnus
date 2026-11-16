@@ -1,5 +1,5 @@
 import type { EChartsCoreOption } from 'echarts/core';
-import type { Dashboard, Metric, Waveform, Candidate, DataQuality } from './types';
+import type { Dashboard, Waveform, Candidate, DataQuality } from './types';
 import { candidateAreas, formatOffset } from './logic.mjs';
 
 const blue = '#1e6fff', green = '#00a887', purple = '#8b7fc7';
@@ -7,26 +7,28 @@ const textStyle = { fontFamily: 'Inter, Microsoft YaHei, sans-serif', color: '#6
 const axisLine = { lineStyle: { color: '#e5ecf3' } };
 const splitLine = { lineStyle: { color: '#edf2f7' } };
 const animation = { animationDuration: 0, animationDurationUpdate: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250 };
-export function sparkline(metric: Metric): EChartsCoreOption {
-  return { ...animation, grid: { left: 0, right: 0, top: 4, bottom: 3 }, xAxis: { type: 'category', show: false, data: metric.trend.map((_, i) => i) }, yAxis: { type: 'value', show: false, min: 0 }, tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value ?? '—'} ${metric.unit}` }, series: [{ type: 'line', data: metric.trend, symbol: 'none', smooth: false, connectNulls: false, lineStyle: { color: blue, width: 2 }, areaStyle: { color: '#edf4ff' } }] };
-}
-export function activityOption(daily: Dashboard['daily']): EChartsCoreOption {
-  return { ...animation, textStyle, tooltip: { trigger: 'axis' }, legend: { data: ['治疗时长（小时）', '活跃用户（人）'], bottom: 0, itemWidth: 12, itemHeight: 8, textStyle }, grid: { left: 46, right: 42, top: 28, bottom: 48 }, xAxis: { type: 'category', data: daily.map(d => d.date.slice(5)), axisLine, axisTick: { show: false } }, yAxis: [{ type: 'value', name: '小时', min: 0, splitLine, axisLabel: { color: '#697d93' } }, { type: 'value', name: '人', min: 0, splitLine: { show: false }, axisLabel: { color: '#697d93' } }], series: [{ name: '治疗时长（小时）', type: 'bar', data: daily.map(d => d.treatment_hours), barMaxWidth: 23, itemStyle: { color: blue, borderRadius: [4, 4, 0, 0] } }, { name: '活跃用户（人）', type: 'line', yAxisIndex: 1, data: daily.map(d => d.active_users), smooth: false, symbolSize: 5, lineStyle: { color: green, width: 2 }, itemStyle: { color: green } }] };
-}
-export function eventsOption(daily: Dashboard['daily']): EChartsCoreOption {
+function dailyBars(daily: Dashboard['daily'], key: 'active_users' | 'treatment_hours' | 'event_count',
+  label: string, unit: string, color: string): EChartsCoreOption {
   return {
     ...animation,
     textStyle,
     tooltip: { trigger: 'axis' },
-    grid: { left: 46, right: 20, top: 30, bottom: 30 },
+    grid: { left: 8, right: 12, top: 26, bottom: 4, containLabel: true },
     xAxis: { type: 'category', data: daily.map(d => d.date.slice(5)), axisLine, axisTick: { show: false } },
-    yAxis: { name: '事件次数', type: 'value', min: 0, splitLine },
+    yAxis: { name: unit, type: 'value', min: 0, splitLine },
     series: [{
-      type: 'line', name: '事件次数', data: daily.map(d => d.event_count), smooth: false,
-      connectNulls: false, symbolSize: 4, itemStyle: { color: purple },
-      markPoint: { symbolSize: 32, label: { fontSize: 10 }, data: [{ type: 'max', name: '最高' }, { type: 'min', name: '最低' }] },
+      type: 'bar', name: label, data: daily.map(day => day[key]), barMaxWidth: 30,
+      itemStyle: { color, borderRadius: [5, 5, 0, 0] },
     }],
   };
+}
+export function activityOption(daily: Dashboard['daily'], key: 'active_users' | 'treatment_hours'): EChartsCoreOption {
+  return key === 'active_users'
+    ? dailyBars(daily, key, '活跃人数', '人', '#287c6d')
+    : dailyBars(daily, key, '治疗时长', '小时', '#287c6d');
+}
+export function eventsOption(daily: Dashboard['daily']): EChartsCoreOption {
+  return dailyBars(daily, 'event_count', '设备上报事件', '次', purple);
 }
 export function distributionOption(values: Dashboard['alert_distribution']): EChartsCoreOption {
   return { ...animation, tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle, itemWidth: 10 }, series: [{ type: 'pie', stillShowZeroSum: false, radius: ['45%', '67%'], center: ['50%', '42%'], label: { show: false }, data: values, color: ['#7196dc', '#efb96c', '#a49acd', '#7bbeb0'] }] };

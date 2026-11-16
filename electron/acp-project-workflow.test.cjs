@@ -445,6 +445,7 @@ test('worktree creation checks out the confirmed commit and binds only the selec
   assert.equal(report.status, 'passed');
   assert.equal(report.cwd, checkout);
   assert.equal(report.output.trim(), 'changed only in worktree');
+  assert.equal(await handle('worktree-location', conversationId), binding.root_path);
   await handle('open-worktree', conversationId);
   assert.deepEqual(opened, [checkout]);
   await rename(markerPath, path.join(checkout, '.git.original'));

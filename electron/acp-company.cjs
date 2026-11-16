@@ -8,6 +8,7 @@ const SHIPPED = new Set([
   '@deepseek-ai/dsh-experimental-badge-skill-bundle', '@deepseek-ai/dsh-personalized-recommendations',
 ]);
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const DEEPSEEK_FLASH_MODELS = new Set(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']);
 
 async function companyProfile(cwd, profile, config, endpoint) {
   if (!profile || !config || typeof config.model !== 'string' ||
@@ -49,7 +50,7 @@ async function companyProfile(cwd, profile, config, endpoint) {
     { id: 'llm-pi-ai', config: { providers: { 'vvman-company': {
       displayName: 'Somnus 公司默认', apiKeyEnv: 'VVMAN_COMPANY_MODEL_TOKEN', api: 'openai-completions',
       baseURL: endpoint, retryPolicy: { mode: 'normal', maxRetries: 0 },
-      models: [{ id: config.model, contextWindow: 64000, maxTokens: 16384,
+      models: [{ id: config.model, contextWindow: DEEPSEEK_FLASH_MODELS.has(config.model) ? 1_000_000 : 64_000, maxTokens: 16384,
         input: config.vision ? ['text', 'image'] : ['text'] }],
     } } } },
     { id: 'acp', config: { provider: 'vvman-company', model: config.model } },

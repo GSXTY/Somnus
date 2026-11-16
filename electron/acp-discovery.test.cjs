@@ -7,6 +7,61 @@ const test = require('node:test');
 const { detectAdapter, detectManagedCodex } = require('./acp-discovery.cjs');
 const { registerAcpAgents } = require('./acp-ipc.cjs');
 
+test('managed DSH reconnect keeps its ID and checkpoint verifies separate account state', { skip: process.platform !== 'win32' }, async t => {
+  const profileDir = await mkdtemp(path.join(os.tmpdir(), 'somnus-dsh-checkpoint-'));
+  const origin = 'http://127.0.0.1:8765';
+  const frame = { url: origin + '/' };
+  const window = new EventEmitter();
+  window.isDestroyed = () => false;
+  window.webContents = Object.assign(new EventEmitter(), { mainFrame: frame });
+  const event = { sender: window.webContents, senderFrame: frame };
+  const handlers = new Map();
+  const agents = registerAcpAgents({
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    window, origin, profileDir, resourcesPath: profileDir, token: 'test-native-token', version: '1.0.0',
+  });
+  t.after(async () => {
+    window.emit('closed');
+    await rm(profileDir, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const args = [path.join(profileDir, 'managed-dsh.cjs'), '--profile', 'acp'];
+  const launch = { name: 'DeepSeek Harness 官方 ACP', executable: await realpath(process.execPath), args };
+  const old = { ...launch, id: 'existing-dsh', executable: path.join(profileDir, 'old', 'resources', 'agents', 'codex', 'node.exe') };
+  const custom = { ...old, id: 'custom-acp', executable: launch.executable, args: [args[0], '--custom'] };
+  await writeFile(agents.file, JSON.stringify([old, custom]));
+  t.mock.method(agents.dshMarket, 'launch', async () => launch);
+  t.mock.method(agents.dshMarket, 'profile', async () => ({ bundles: [] }));
+  t.mock.method(agents.dshMarket, 'ownsLaunch', async agent => agent.args[0] === args[0]);
+  const probe = t.mock.method(agents, 'probe', async () => ({ authentication: 'unverified' }));
+  let state = 'signed-out';
+  const account = t.mock.method(agents.dshMarket, 'accountStatus', async validateSender => {
+    validateSender();
+    return { state };
+  });
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url.href, origin + '/api/assistant/configuration-checkpoints');
+    assert.deepEqual(JSON.parse(options.body), {
+      revision: 'a'.repeat(64), agent: { id: old.id, name: old.name },
+    });
+    return new Response('{"id":"checkpoint"}', { status: 201 });
+  });
+  const connect = handlers.get('vvman-acp:connect-managed-dsh');
+  const first = await connect(event);
+  assert.equal(first.agent.id, old.id);
+  assert.equal(first.agent.executable, launch.executable);
+  assert.equal((await connect(event)).agent.id, old.id);
+  assert.deepEqual((await agents.list()).map(item => item.id), [old.id, custom.id]);
+  const save = handlers.get('vvman-acp:save-configuration-checkpoint');
+  await assert.rejects(save(event, old.id, 'a'.repeat(64)), /账号尚未通过验证/);
+  await assert.rejects(save(event, custom.id, 'a'.repeat(64)), /账号尚未通过验证/);
+  assert.equal(account.mock.callCount(), 1);
+  assert.equal(fetch.mock.callCount(), 0);
+  state = 'signed-in';
+  assert.deepEqual(await save(event, old.id, 'a'.repeat(64)), { id: 'checkpoint' });
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(probe.mock.callCount(), 5);
+});
+
 test('detect installed Windows ACP adapters using their known entries', { skip: process.platform !== 'win32' }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vvman-acp-discovery-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -12,6 +12,39 @@ from server.paths import default_data_dir, prepare_default_data_dir
 
 
 class DesktopPathsTests(unittest.TestCase):
+    def test_named_profile_does_not_fall_back_to_default_env_models_or_mcp(self):
+        from ai_assistant.models import ModelStore
+        from mcp_connectors.registry import Registry
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / 'install'
+            named = root / 'named'
+            install.mkdir()
+            named.mkdir()
+            (install / '.env').write_text('SOMNUS_TEST_SETTING=old', encoding='utf-8')
+            config = named / '.env'
+            config.write_text('SOMNUS_TEST_SETTING=named', encoding='utf-8')
+            with (patch.object(sys, 'platform', 'win32'), patch.object(sys, 'frozen', True, create=True),
+                  patch.object(sys, 'executable', str(install / 'SomnusBackend.exe')),
+                  patch.dict(os.environ, {'SOMNUS_PROFILE_CONFIG_ONLY': '1',
+                                          'MCP_CONFIG': str(root / 'shared-mcp.json')}, clear=True)):
+                self.assertEqual(cli.load_env(data_dir=named), config)
+                self.assertEqual(os.environ.pop('SOMNUS_TEST_SETTING'), 'named')
+                model_store = ModelStore(named)
+                self.assertIsNone(model_store.legacy)
+                self.assertEqual(model_store._load()['providers'], [])
+                registry = Registry(named)
+                self.assertIsNone(registry.legacy)
+                self.assertEqual(registry.path, named / 'mcp.json')
+                config.unlink()
+                self.assertIsNone(cli.load_env(data_dir=named))
+                self.assertNotIn('SOMNUS_TEST_SETTING', os.environ)
+                config.write_text('SOMNUS_TEST_SETTING=named', encoding='utf-8')
+                os.environ['SOMNUS_PROFILE_CONFIG_ONLY'] = 'safe'
+                self.assertIsNone(cli.load_env(data_dir=named))
+                self.assertNotIn('SOMNUS_TEST_SETTING', os.environ)
+
     def test_frozen_mac_defaults_and_config_do_not_depend_on_bundle_location(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

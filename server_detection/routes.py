@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response, JSONResponse
 
 from event_detection import viewer
-from event_detection.event_store import create_store
+from event_detection.event_store import SessionSqliteStore, create_store
 from event_detection.recording_cache import RecordingCache
 
 
@@ -90,7 +90,8 @@ class MemoryHandler(viewer.Handler):
 class DetectionRuntime:
     def __init__(self, data_dir, initial_file=None, *, max_sessions=None,
                  session_ttl_seconds=None, max_upload_bytes=None,
-                 max_total_bytes=None, session_mode='isolated', clock=time.monotonic):
+                 max_total_bytes=None, session_mode='isolated', clock=time.monotonic,
+                 session_events=False):
         if session_mode not in ('isolated', 'shared'):
             raise ValueError('检测会话模式必须是 isolated 或 shared。')
         max_sessions = _configured_limit(max_sessions, 'AI_AGENT_MAX_SESSIONS', 16, 256)
@@ -99,7 +100,7 @@ class DetectionRuntime:
         max_total_bytes = _configured_limit(max_total_bytes, 'AI_AGENT_MAX_MEMORY_MB', 512*1024**2, 65536*1024**2, 1024**2)
         self.session_mode = session_mode
         viewer.session_mode = session_mode
-        self.store = create_store(data_dir)
+        self.store = SessionSqliteStore(data_dir) if session_events else create_store(data_dir)
         self.contexts = OrderedDict()
         self.max_sessions = max_sessions
         self.session_ttl_seconds = session_ttl_seconds
@@ -185,8 +186,8 @@ def _same_origin(request):
     return (supplied.scheme, supplied.netloc) == (request.url.scheme, request.headers.get('host', '')) and not supplied.path and not supplied.query and not supplied.fragment
 
 
-def install_routes(app, data_dir, initial_file=None, *, session_mode='isolated'):
-    runtime = DetectionRuntime(data_dir, initial_file, session_mode=session_mode)
+def install_routes(app, data_dir, initial_file=None, *, session_mode='isolated', session_events=False):
+    runtime = DetectionRuntime(data_dir, initial_file, session_mode=session_mode, session_events=session_events)
     app.state.detection_runtime = runtime
     router = APIRouter(tags=['Data analysis'])
 

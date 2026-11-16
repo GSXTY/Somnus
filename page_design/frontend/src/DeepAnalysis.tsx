@@ -6,6 +6,7 @@ import type { DataConnection } from './DataConnection';
 import { Markdown } from './MarkdownView';
 import { formatDateTime } from './format.mjs';
 import { describeError } from './errors.mjs';
+import { watchAnalysisTask } from './taskAttention';
 import './deep-analysis.css';
 import './deep-analysis-report.css';
 
@@ -43,12 +44,26 @@ export function DeepAnalysis({ dataConnection = { mode: 'local', url: null } }: 
 
   useEffect(() => {
     alive.current = true; void refresh(); void loadRecent();
-    const abort = new AbortController();
-    const linkedTask = typeof window.location?.hash === 'string' ? /^#deep-analysis\?task=([a-f0-9]{32})$/.exec(window.location.hash)?.[1] : undefined;
-    let id: string | null = linkedTask || null;
-    if (!id) { try { id = localStorage.getItem(preference); } catch { /* optional */ } }
-    if (id) void getAnalysisTask(id, abort.signal).then((next: Task) => { if (alive.current) setTask(next); }).catch(failure => { if (linkedTask && alive.current && !abort.signal.aborted) setError('无法打开此深度分析任务：' + errorText(failure)); });
-    return () => { alive.current = false; abort.abort(); controller.current?.abort(); };
+    let request: AbortController | undefined;
+    const loadTask = (restore: boolean) => {
+      const linkedTask = /^#deep-analysis\?task=([a-f0-9]{32})$/.exec(window.location.hash)?.[1];
+      let id: string | null = linkedTask || null;
+      if (!id && restore) { try { id = localStorage.getItem(preference); } catch { /* optional */ } }
+      if (!id) return;
+      request?.abort();
+      const abort = new AbortController();
+      request = abort;
+      if (linkedTask) { setError(''); setPollError(''); }
+      void getAnalysisTask(id, abort.signal).then((next: Task) => {
+        if (!abort.signal.aborted && alive.current) setTask(next);
+      }).catch(failure => {
+        if (linkedTask && alive.current && !abort.signal.aborted) setError('无法打开此深度分析任务：' + errorText(failure));
+      });
+    };
+    const openLinked = () => loadTask(false);
+    loadTask(true);
+    window.addEventListener('hashchange', openLinked);
+    return () => { alive.current = false; request?.abort(); controller.current?.abort(); window.removeEventListener('hashchange', openLinked); };
   }, []);
   useEffect(() => {
     if (!task || !activeTaskStates.has(task.status)) return;
@@ -71,9 +86,14 @@ export function DeepAnalysis({ dataConnection = { mode: 'local', url: null } }: 
   }
   async function start() {
     if (!file || !question.trim() || operation.current || running || uploadBlocked) return;
-    operation.current = true; setBusy(true); setError(''); setPollError(''); const abort = new AbortController(); controller.current = abort;
-    try { const next = await createAnalysisTask(file.id, question, abort.signal); if (alive.current) commitTask(next); }
-    catch (failure) { if (alive.current && !abort.signal.aborted) setError(errorText(failure)); }
+    operation.current = true; setBusy(true); setError(''); setPollError('');
+    try {
+      // The server task can outlive this view. Keep its creation receipt so the desktop can watch it.
+      const next = await createAnalysisTask(file.id, question);
+      if (activeTaskStates.has(next.status) || next.status === 'complete' || next.status === 'failed') watchAnalysisTask(next.id);
+      if (alive.current) commitTask(next);
+    }
+    catch (failure) { if (alive.current) setError(errorText(failure)); }
     finally { operation.current = false; if (alive.current) setBusy(false); }
   }
   async function cancel() {

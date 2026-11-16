@@ -69,7 +69,7 @@ class DshCommunityMarket {
   }
 
   async installer() {
-    const root = this.market.profileDir;
+    const root = this.market.runtimeRoot ?? this.market.profileDir;
     const tool = 'pnpm-' + TOOL_VERSION;
     const [entry, metadata] = await Promise.all([
       this.localFile(root, 'dsh-tools', tool, 'bin/pnpm.mjs'),
@@ -279,5 +279,3 @@ class DshCommunityMarket {
 }
 
 module.exports = { DshCommunityMarket };
-
-

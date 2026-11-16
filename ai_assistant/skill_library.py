@@ -92,12 +92,16 @@ def _frontmatter(raw):
         else:
             metadata[key] = _metadata_value(value)
     name, description = metadata.get('name', ''), metadata.get('description', '')
+    instructions = '\n'.join(lines[end + 1:]).strip()
+    _validate_fields(name, description, instructions)
+    return name, description, instructions
+
+
+def _validate_fields(name, description, instructions):
     if len(name) > 64 or not NAME.fullmatch(name) or not description or len(description) > 1024:
         raise SkillError('invalid_skill_metadata', '技能名称须为 1 至 64 个小写字母、数字或连字符，描述须为 1 至 1024 个字符。')
-    instructions = '\n'.join(lines[end + 1:]).strip()
     if not instructions or len(instructions) > MAX_INSTRUCTIONS:
         raise SkillError('invalid_skill_instructions', f'技能须包含 1 至 {MAX_INSTRUCTIONS} 个字符的指令。')
-    return name, description, instructions
 
 
 def _archive_members(archive):

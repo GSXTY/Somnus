@@ -45,7 +45,8 @@ test('ACP uses reserved project context for read-only search and staged write pr
           ...(!write ? { history_summary: 'older same-agent summary\nSecond summary line' } : {}),
           images: write || unsupported ? [{ mimeType: 'image/png', data: 'aW1hZ2U=' }] : [],
           tools: write ? [] : [searchTool],
-          project: { available: true, sources: [{ source: 'source_1', name: 'synthetic' }],
+          ...(write ? { workspace_id: 'ws_aabbccddeeff', project_sources: [{ source: 'source_1' }] } : {}),
+          project: { available: true, supports_create: write, sources: [{ source: 'source_1', name: 'synthetic' }],
             files: Object.keys(actualFiles).map(file => ({ source: 'source_1', path: file })) } };
       } else if (req.url.endsWith('/tool')) {
         assert.equal(write, false);
@@ -58,13 +59,19 @@ test('ACP uses reserved project context for read-only search and staged write pr
       } else {
         assert.equal(req.url.split('/').at(-1), 'project-file');
         assert.equal(data.source, 'source_1');
-        assert.ok(Object.hasOwn(actualFiles, data.path));
-        if (data.action === 'propose') {
+        if (data.action === 'propose_create') {
+          assert.ok(write);
+          assert.deepEqual(data, { agent_id: agentId, action: 'propose_create', source: 'source_1', path: 'new.txt', content: 'new proposal' });
+          pending.push({ id: 'create_new', path: data.path, new_content: data.content, operation: 'create' });
+          reply = { proposal: pending.at(-1) };
+        } else if (data.action === 'propose') {
+          assert.ok(Object.hasOwn(actualFiles, data.path));
           assert.ok(write);
           assert.equal(data.expected_sha256, digest);
           pending.push({ id: 'edit_' + data.path, path: data.path, new_content: data.content });
           reply = { proposal: pending.at(-1) };
         } else {
+          assert.ok(Object.hasOwn(actualFiles, data.path));
           assert.equal(data.action, 'read');
           if (data.line) assert.deepEqual([data.line, data.limit], [2, 1]);
           reply = { content: data.line ? 'second line' : actualFiles[data.path], sha256: digest };
@@ -108,16 +115,18 @@ test('ACP uses reserved project context for read-only search and staged write pr
     { content: 'Read context', priority: 'high', status: 'completed' },
   ]);
   assert.deepEqual(result.projectProposals, [
+    { id: 'create_new', path: 'new.txt', new_content: 'new proposal', operation: 'create' },
     { id: 'edit_delegated.txt', path: 'delegated.txt', new_content: 'delegated edit' },
     { id: 'edit_direct.txt', path: 'direct.txt', new_content: 'local mirror edit' },
   ]);
   assert.deepEqual(actualFiles, { 'direct.txt': 'snapshot', 'delegated.txt': 'first line\nsecond line' });
   assert.equal((await send(readOnlyId, 'read-only-turn')).projectProposals, undefined);
   assert.equal((await send(readOnlyId, 'read-only-turn')).text, 'verified');
-  assert.deepEqual(updates.flatMap(item => item.toolProgress ? [item.toolProgress] : []), ['running', 'complete', 'running', 'complete']
-    .map(status => ({ name: searchTool.name, callId: 'call-1', status })));
+  assert.deepEqual(updates.flatMap(item => item.toolProgress ? [item.toolProgress] : []), [
+    'propose_project_file_create', searchTool.name, searchTool.name,
+  ].flatMap(name => ['running', 'complete'].map(status => ({ name, callId: 'call-1', status }))));
   assert.ok(updates.every(item => !item.acpPermission));
-  assert.equal(pending.length, 2);
+  assert.equal(pending.length, 3);
   unsupported = true;
   await assert.rejects(send(readOnlyId, 'read-only-turn'), /不支持图片/);
   assert.equal(serverFailure, undefined);
@@ -129,14 +138,16 @@ test('project MCP read and proposal reuse native route and return the pending it
   const digest = 'a'.repeat(64);
   const currentContent = 'original\n';
   const proposal = { id: 'edit_one', path: 'README.md', old_content: currentContent, new_content: 'new\n', status: 'pending' };
+  const creation = { id: 'create_one', path: 'docs/new.md', old_content: '', new_content: 'draft\n', status: 'pending', operation: 'create' };
   const turn = { conversationId: 'conversation', turnId: 'turn-one', agentId: 'agent', signal: abort.signal, onUpdate() {} };
-  const prepared = { workspace_id: 'ws_aabbccddeeff', project: { available: true },
+  const prepared = { workspace_id: 'ws_aabbccddeeff', project: { available: true, supports_create: true },
     project_sources: [{ source: 'source_1' }], permission_mode: 'workspace_write' };
   const client = { async file(owner, params, signal) {
     assert.equal(owner, turn);
     assert.equal(signal.aborted, false);
     nativeCalls.push(params);
     if (params.action === 'read') return { sha256: digest, content: currentContent };
+    if (params.action === 'propose_create') return { proposal: creation };
     assert.equal(params.expected_sha256, digest);
     return { proposal };
   } };
@@ -144,6 +155,8 @@ test('project MCP read and proposal reuse native route and return the pending it
   const tools = toolCatalog(projectFileTools(prepared));
   assert.deepEqual(projectFileTools({ ...prepared, permission_mode: 'read_only' }).map(tool => tool.name), ['read_project_file']);
   assert.deepEqual(projectFileTools({ ...prepared, project: { available: false } }), []);
+  assert.deepEqual(projectFileTools({ ...prepared, project: { available: true } }).map(tool => tool.name),
+    ['read_project_file', 'propose_project_file_edit']);
   const mcp = new SessionMcp(tools, () => turn, (_turn, params, signal) => project.mcpFile(params.name, params.arguments, signal));
   await mcp.listen();
   t.after(() => { abort.abort(); mcp.close(); });
@@ -166,7 +179,18 @@ test('project MCP read and proposal reuse native route and return the pending it
   assert.deepEqual(JSON.parse(pending.content[0].text), { ...file, proposal_id: proposal.id, status: 'pending' });
   assert.deepEqual(project.proposals, [proposal]);
   assert.equal((await invoke('tools/call', { name: 'propose_project_file_edit', arguments: edit })).isError, true);
+  const target = { source: 'source_1', path: 'docs/new.md' };
+  const createArgs = { ...target, new_content: 'draft\n' };
+  for (const args of [{ ...createArgs, path: '../../new.md' }, { ...createArgs, expected_sha256: digest }]) {
+    assert.equal((await invoke('tools/call', { name: 'propose_project_file_create', arguments: args })).isError, true);
+  }
+  const result = await invoke('tools/call', { name: 'propose_project_file_create', arguments: createArgs });
+  assert.deepEqual(JSON.parse(result.content[0].text),
+    { ...target, proposal_id: creation.id, status: 'pending', operation: 'create' });
+  assert.deepEqual(project.proposals, [proposal, creation]);
+  assert.equal((await invoke('tools/call', { name: 'propose_project_file_create', arguments: createArgs })).isError, true);
   assert.deepEqual(nativeCalls, [
     { ...file, action: 'read' }, { ...file, action: 'propose', content: 'new\n', expected_sha256: digest },
+    { ...target, action: 'propose_create', content: 'draft\n' },
   ]);
 });

@@ -72,14 +72,20 @@ def _validate(fields):
 
 
 class ModelStore:
-    def __init__(self, folder):
+    def __init__(self, folder, database=None):
         self.path = Path(folder).resolve() / 'models.json'
-        self.legacy = ROOT / 'data' / 'models.json'
+        self.legacy = None if os.getenv('SOMNUS_PROFILE_CONFIG_ONLY') else ROOT / 'data' / 'models.json'
+        self.database = database
         self.lock = threading.RLock()
+        if self.database is not None:
+            with self.database() as db:
+                db.execute('''CREATE TABLE IF NOT EXISTS model_selection (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton=1), model_id TEXT NOT NULL
+                )''')
 
-    def _load(self):
+    def _load(self, db=None):
         source = self.path if self.path.is_file() else self.legacy
-        if not source.is_file():
+        if source is None or not source.is_file():
             return dict(active=BUILTIN, providers=[])
         try:
             with source.open('rb') as stream:
@@ -118,7 +124,26 @@ class ModelStore:
             raise ModelError('model_store_unavailable', '无法读取本机模型配置，请检查 models.json。', 503) from exc
         if source != self.path or any('group_id' not in entry for entry in entries):
             self._write(data)
+        # Existing JSON files provide the initial selection. Subsequent selections
+        # live beside personal plugin state so checkpoint restores commit together.
+        if db is None and self.database is not None:
+            with self.database() as connection:
+                selected = self._selection(connection)
+        else:
+            selected = self._selection(db) if db is not None else None
+        if selected is not None:
+            data['active'] = selected if selected in seen else BUILTIN
         return data
+
+    @staticmethod
+    def _selection(db):
+        row = db.execute('SELECT model_id FROM model_selection WHERE singleton=1').fetchone()
+        return row[0] if row is not None else None
+
+    @staticmethod
+    def _write_selection(db, model_id):
+        db.execute('''INSERT INTO model_selection VALUES (1, ?)
+                      ON CONFLICT(singleton) DO UPDATE SET model_id=excluded.model_id''', (model_id,))
 
     def _write(self, data):
         encoded = (json.dumps(data, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
@@ -242,8 +267,12 @@ class ModelStore:
             data = self._load()
             if model_id != BUILTIN:
                 self._find(data, model_id)
-            data['active'] = model_id
-            self._write(data)
+            if self.database is not None:
+                with self.database() as db:
+                    self._write_selection(db, model_id)
+            else:
+                data['active'] = model_id
+                self._write(data)
         return dict(active=model_id)
 
     def remove(self, model_id):

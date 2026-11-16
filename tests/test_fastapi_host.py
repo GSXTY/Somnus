@@ -37,7 +37,7 @@ class FastAPIHostTests(unittest.TestCase):
 
     def test_built_shell_embedded_analysis_and_fixed_static_assets(self):
         for route, marker in [('/', 'id="root"'), ('/dashboard', 'id="root"'),
-                              ('/events?embedded=1', '<h1>数据分析</h1>'),
+                              ('/events?embedded=1', '<h1>波形分析</h1>'),
                               ('/viewer.js', 'embeddedAnalysis'), ('/ui/events.css', '.events-page')]:
             response = self.client.get(route)
             self.assertEqual(response.status_code, 200, route)
@@ -52,6 +52,17 @@ class FastAPIHostTests(unittest.TestCase):
         for route in ['/workbench-assets/%2e%2e/%2e%2e/requirements.txt',
                       '/workbench-assets/..%5c..%5crequirements.txt', '/api/not-a-route']:
             self.assertEqual(self.client.get(route).status_code, 404, route)
+
+    def test_plugin_registry_exposes_explicit_record_workspace(self):
+        registry = self.client.get('/api/plugins').json()
+        plugin = next(plugin for plugin in registry['plugins'] if plugin['key'] == 'respiratory')
+        entry, = plugin['workspace_entries']
+        self.assertEqual(entry, dict(id='analysis', title='波形分析', slot='sidebar',
+                                     path='/events', mode='embedded', access='selected-record'))
+        page = self.client.get(entry['path'])
+        self.assertIn('href="/" class="events-return-link"', page.text)
+        self.assertIsNone(self.client.get('/api/workbench/users/unknown?source=live').json()['user'])
+        self.assertEqual(self.client.get('/api/meta').status_code, 400)
 
     def test_workbench_nulls_validation_and_population_stay_separate(self):
         demo = self.client.get('/api/workbench?source=demo&model=all').json()
@@ -86,6 +97,23 @@ class FastAPIHostTests(unittest.TestCase):
 
 
 class FastAPIConfigurationTests(unittest.TestCase):
+    def test_plugin_manifest_cannot_publish_untrusted_or_unmounted_routes(self):
+        from plugins.loader import workspace_entries
+
+        path = Path('local-tool')
+        entry = dict(id='tool', title='本机工具', slot='tools', path='/module/local-tool/',
+                     mode='standalone', access='plugin-managed')
+        errors = []
+        self.assertEqual(workspace_entries({'workspace_entries': [entry]}, path, True, errors), [entry])
+        self.assertEqual(errors, [])
+        for target in ('//example.com/', '/events?recording_id=fake', '/module/local-tool/../', '/api/meta'):
+            with self.subTest(target=target):
+                errors = []
+                self.assertEqual(workspace_entries({'workspace_entries': [dict(entry, path=target)]},
+                                                   path, True, errors), [])
+                self.assertTrue(errors)
+        self.assertEqual(workspace_entries({'workspace_entries': [entry]}, path, False, []), [])
+
     def test_cli_keeps_local_defaults_and_original_options(self):
         args = parser().parse_args(['--no-browser', '--data-dir', 'data-test', '--port', '8870'])
         self.assertEqual(args.host, '127.0.0.1')

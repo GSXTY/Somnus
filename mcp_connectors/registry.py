@@ -103,9 +103,10 @@ def _validate(server_id, fields):
 
 class Registry:
     def __init__(self, data_dir):
-        override = os.getenv('MCP_CONFIG', '').strip()
+        isolated = os.getenv('SOMNUS_PROFILE_CONFIG_ONLY')
+        override = '' if isolated else os.getenv('MCP_CONFIG', '').strip()
         self.path = Path(override).expanduser().resolve() if override else Path(data_dir).resolve() / 'mcp.json'
-        self.legacy = None if override else ROOT / 'mcp.json'
+        self.legacy = None if override or isolated else ROOT / 'mcp.json'
         self.lock = threading.RLock()
         self.connection_locks = {}
         self.configs = {}

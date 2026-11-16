@@ -261,6 +261,19 @@ def _remember(store, recording):
         print(f'Warning: could not record file metadata: {exc}', flush=True)
 
 
+def _viewer_meta(current):
+    if getattr(event_store, 'session_only', False):
+        return dict(current.meta, event_storage='session')
+    return current.meta
+
+
+def _release_recording(file_id):
+    if getattr(event_store, 'session_only', False):
+        event_store.forget_record(file_id)
+        recording_cache.inventory.pop(file_id, None)
+    return recording_cache.release(file_id)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -362,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
             if current is None:
                 return self.send({'error': '请先打开 CSV 文件。'}, 400)
             if url.path == '/api/meta':
-                return self.send(current.meta)
+                return self.send(_viewer_meta(current))
             if url.path == '/api/current-csv':
                 if parse_qs(url.query).get('file_id',[''])[0]!=current.meta['file_id']:
                     return self.send({'error':'当前文件已变更，请重新读取'},409)
@@ -437,20 +450,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(fid,str) or len(fid)!=64:raise ValueError('文件指纹无效')
                 with recording_lock:
                     if urlparse(self.path).path.endswith('/release'):
-                        return self.send(dict(released=recording_cache.release(fid) if recording is None or recording.meta['file_id']!=fid else False))
+                        return self.send(dict(released=_release_recording(fid) if recording is None or recording.meta['file_id']!=fid else False))
                     recording_cache.put(recording)
                     cached=recording_cache.get(fid)
                     if cached is None:return self.send(dict(hit=False))
                     recording=cached
                     _remember(event_store, cached)
-                    return self.send(dict(hit=True,meta=cached.meta))
+                    return self.send(dict(hit=True,meta=_viewer_meta(cached)))
             if urlparse(self.path).path=='/api/close':
                 length=int(self.headers.get('Content-Length','0'))
                 if not 0<length<1000:raise ValueError('关闭请求大小无效')
                 args=json.loads(self.rfile.read(length))
                 with recording_lock:
                     if recording is None or args.get('file_id')!=recording.meta['file_id']:raise Conflict('当前文件已变化，关闭已取消')
-                    recording_cache.release(recording.meta['file_id'])
+                    _release_recording(recording.meta['file_id'])
                     recording=None
                 return self.send(dict(closed=True))
             if urlparse(self.path).path=='/api/feedback/open-folder':
@@ -582,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                 recording_cache.put(new)
                 recording = new
             _remember(event_store, new)
-            self.send(new.meta)
+            self.send(_viewer_meta(new))
         except Conflict as exc:
             self.send({'error': str(exc)}, 409)
         except Exception as exc:

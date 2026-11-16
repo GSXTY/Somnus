@@ -5,20 +5,21 @@ import io
 import json
 from pathlib import Path
 import re
+import sys
 
 from agent_core.sql_access import SqlAccessError, SqlSettings, run, schema
 from agent_core.sql_agent import propose_sql
 from deep_analysis.service import AnalysisError
 
 from .external_context import IDENTIFIER, TABLE_OWNER, TABLE_UPLOAD_LIMIT, table_record
-from .permissions import allowed
+from .permissions import POWERSHELL, allowed
 
 
 SCHEMA, QUERY = 'list_database_schema', 'query_database'
 PROJECT_SEARCH = 'search_project_files'
 PROJECT_TESTS = 'run_project_tests'
 PROJECT_GIT_DIFF = 'project_git_diff'
-NATIVE_PROJECT_TOOLS = frozenset({PROJECT_TESTS, PROJECT_GIT_DIFF})
+NATIVE_PROJECT_TOOLS = frozenset({PROJECT_TESTS, PROJECT_GIT_DIFF, POWERSHELL})
 ATTACHED, ANALYZE, STATUS = ('create_deep_analysis', 'create_deep_analysis_from_query', 'get_deep_analysis_task')
 DATA_NAMES = frozenset({SCHEMA, QUERY, ATTACHED, ANALYZE, STATUS})
 TOOL_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}')
@@ -75,7 +76,8 @@ def schemas(permission, data_tools, chat_specs, *, mcp_policy, project_search=No
         description, properties, required = project_search
         tools.append(dict(name=PROJECT_SEARCH, description=description, inputSchema=dict(
             type='object', properties=properties, required=required, additionalProperties=False)))
-        tools.extend(item for item in PROJECT_DEVELOPMENT_TOOLS if allowed(permission, item['name']))
+        tools.extend(item for item in PROJECT_DEVELOPMENT_TOOLS
+                     if allowed(permission, item['name']) and (item['name'] != POWERSHELL or sys.platform == 'win32'))
     for spec in chat_specs:
         tool = spec['function']
         if tool['name'].startswith('mcp__') and TOOL_NAME.fullmatch(tool['name']):
@@ -92,6 +94,9 @@ PROJECT_DEVELOPMENT_TOOLS = (
     dict(_tool(PROJECT_TESTS,
                '请用户逐次确认运行项目中已保存的测试。测试使用当前磁盘内容。已有修改提案时，先让用户应用修改，再发起测试。',
                {'preset_id': '用户已保存的测试预设 ID'}, ('preset_id',)), requires_confirmation=True),
+    dict(_tool(POWERSHELL, '在当前项目目录中运行 Windows PowerShell。每条命令须先经用户确认。',
+               {'command': '待确认的 PowerShell 命令', 'source': '可选来源标识，默认使用主项目来源'},
+               ('command',)), requires_confirmation=True),
 )
 
 

@@ -1,12 +1,13 @@
 """Plugin discovery: folders under plugins/ that declare plugin.json.
 
-A plugin contributes chat tools (and later UI routes). Loading is defensive: a
+A plugin contributes chat tools and can register workspace entries. Loading is defensive: a
 broken plugin is skipped with a warning instead of taking the app down.
 """
 from __future__ import annotations
 
 import importlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +15,40 @@ ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = ROOT / 'plugins'
 
 _cache: dict | None = None
+
+
+def workspace_entries(meta, folder, has_ui, errors):
+    """Publish navigation metadata for pages already served by the host."""
+    entries = meta.get('workspace_entries', [])
+    if not isinstance(entries, list):
+        errors.append(f'{folder.name}: workspace_entries must be a list')
+        return []
+
+    key = meta.get('key') or folder.name
+    published = []
+    identifiers = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append(f'{folder.name}: invalid workspace entry')
+            continue
+        identifier, title = entry.get('id'), entry.get('title')
+        path, slot = entry.get('path'), entry.get('slot')
+        access = entry.get('access')
+        mode = entry.get('mode')
+        detection = (folder.name == key == 'respiratory' and identifier == 'analysis'
+                     and mode == 'embedded' and path == '/events' and access == 'selected-record')
+        module = (key == folder.name and re.fullmatch(r'[a-z][a-z0-9-]*', folder.name)
+                  and has_ui and path == f'/module/{key}/' and mode == 'standalone'
+                  and access == 'plugin-managed')
+        if (not isinstance(identifier, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', identifier)
+                or identifier in identifiers or not isinstance(title, str) or not title.strip()
+                or slot not in ('tools', 'sidebar') or not (detection or module)):
+            errors.append(f'{folder.name}: invalid workspace entry {identifier!r}')
+            continue
+        identifiers.add(identifier)
+        published.append(dict(id=identifier, title=title.strip(), path=path, slot=slot,
+                              mode=mode, access=access))
+    return published
 
 
 def discover(force=False):
@@ -30,6 +65,8 @@ def discover(force=False):
                 continue
             try:
                 meta = json.loads(manifest.read_text(encoding='utf-8'))
+                if not isinstance(meta, dict):
+                    raise ValueError('plugin.json must contain an object')
             except (OSError, ValueError) as exc:
                 errors.append(f'{folder.name}: {exc}')
                 continue
@@ -53,10 +90,11 @@ def discover(force=False):
                     name=name, description=tool.get('description', ''), parameters=tool.get('parameters') or {})))
                 handlers[name] = table[name]
                 count += 1
+            has_ui = (folder / 'web' / 'index.html').is_file()
             plugins.append(dict(key=meta.get('key') or folder.name, name=meta.get('name') or folder.name,
                                 version=meta.get('version'), tools=count,
                                 routes=meta.get('routes') or [],
-                                has_ui=(folder / 'web' / 'index.html').is_file()))
+                                has_ui=has_ui, workspace_entries=workspace_entries(meta, folder, has_ui, errors)))
     _cache = dict(specs=specs, handlers=handlers, plugins=plugins, errors=errors)
     return _cache
 

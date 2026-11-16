@@ -83,3 +83,26 @@ test('About updates read status, wait for each user action, and show download pr
   assert.equal(unconfigured.find('Button').props.children, '检查更新');
   assert.equal(unconfigured.find('Button').props.disabled, true);
 });
+
+test('A channel with no Windows release allows another manual check', async () => {
+  const currentVersion = '1.0.0';
+  const noRelease = { phase: 'no-release', currentVersion };
+  let checks = 0;
+  const view = harness({
+    getState: async () => ({ phase: 'idle', currentVersion }),
+    subscribe: () => () => {},
+    async check() { checks++; return noRelease; },
+    async download() { assert.fail('No release to download'); },
+    async install() { assert.fail('No release to install'); },
+  });
+  await settle();
+  view.find('Button').props.onClick();
+  await settle();
+  assert.equal(view.find('p').props.children, '尚未发布 Windows 安装包。');
+  assert.equal(view.find('Button').props.children, '检查更新');
+  assert.equal(view.find('Button').props.disabled, false);
+  view.find('Button').props.onClick();
+  await settle();
+  assert.equal(checks, 2);
+  view.cleanup();
+});

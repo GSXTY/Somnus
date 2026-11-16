@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ai_assistant.asgi import create_router
+from ai_assistant.plugin_bundles import BundleError
 from ai_assistant.service import AssistantService, Config
 from mcp_connectors.registry import Registry
 
@@ -112,6 +114,97 @@ class PluginBundleTests(unittest.TestCase):
         self.assertEqual(self.client.delete(path, headers=self.desktop).json(), {'removed': True})
         self.assertIsNotNone(self.registry.enabled_states().get('allowed'))
 
+    def test_local_preflight_rejects_non_declarative_fields_and_unavailable_dependencies(self):
+        path = self.library + '/development'
+        self.assertEqual(self.client.get(path + '/template').status_code, 403)
+        template = self.client.get(path + '/template', headers=self.desktop).json()['manifest']
+        self.assertEqual(template['version'], '1.0.0')
+        manifest = dict(template, name='试验插件', version='1.2.0-beta.1', mcp_ids=['not-installed'])
+        failed = self.client.post(path + '/preflight', headers=self.desktop, json=manifest).json()['report']
+        self.assertFalse(failed['ok'])
+        self.assertEqual(failed['checks'][2]['status'], 'fail')
+        disallowed = self.client.post(path + '/preflight', headers=self.desktop,
+                                      json=dict(manifest, command='untrusted')).json()['report']
+        self.assertFalse(disallowed['ok'])
+        self.assertEqual(disallowed['checks'][0]['id'], 'invalid_plugin')
+        self.assertEqual(self.client.get(path + '/candidates', headers=self.desktop).status_code, 403)
+
+    def test_portable_round_trip_in_fresh_profile_with_real_echo_server(self):
+        origin = 'http://127.0.0.1:9876'
+        routes = self.library + '/portable'
+        descriptor = {'name': 'Portable demo', 'version': '1.1.0',
+                      'skill_ids': [self.bundled], 'mcp_ids': ['allowed']}
+        exported = self.client.post(routes + '/export', headers=self.desktop, json=descriptor)
+        self.assertEqual(exported.status_code, 200, exported.text)
+        package = exported.json()['package']
+        canonical = json.dumps(package, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+        self.assertEqual(exported.json()['sha256'], hashlib.sha256(canonical).hexdigest())
+        self.assertNotIn('secret-', json.dumps(package))
+        self.assertNotIn(self.bundled, json.dumps(package))
+        self.assertIn('BUNDLE_SKILL_MARKER', package['skills'][0]['instructions'])
+        with tempfile.TemporaryDirectory() as target, patch.dict(os.environ, {'MCP_CONFIG': ''}):
+            folder = Path(target)
+            (folder / 'mcp.json').write_text('{"servers":{}}', encoding='utf-8')
+            target_registry = Registry(folder)
+            app = FastAPI()
+            app.state.session_mode = 'shared'
+            app.state.mcp_registry = target_registry
+            target_service = app.state.assistant_service = AssistantService(folder / 'assistant.sqlite3', self.config)
+            with patch.dict(os.environ, {'RESPIRATORY_VIEWER_PROJECT_TOKEN': self.native['X-Data-Agent-Native']}):
+                with patch('ai_assistant.project_access.sys.platform', 'win32'):
+                    app.include_router(create_router())
+            try:
+                with TestClient(app, base_url=origin, client=('127.0.0.1', 30000)) as client:
+                    self.assertEqual(client.post(routes + '/preflight', json=package).status_code, 403)
+                    report = client.post(routes + '/preflight', headers=self.desktop, json=package).json()['report']
+                    self.assertFalse(report['ok'])
+                    self.assertEqual(report['references']['mcp_ids']['allowed'], 'missing')
+                    rejected = client.post(routes + '/import', headers=self.desktop, json=package)
+                    self.assertEqual(rejected.status_code, 409)
+                    self.assertEqual(target_service.skills.list(), [])
+                    self.assertEqual(target_service.plugins.list(target_registry), [])
+                    target_registry.put('allowed', {'command': sys.executable, 'enabled': True,
+                        'args': [str(Path(__file__).with_name('mcp_echo_server.py'))],
+                        'tool_permissions': {'echo': 'read'}}, create=True)
+                    too_new = dict(package, minimum_somnus_version='9.0.0')
+                    future_report = client.post(routes + '/preflight', headers=self.desktop, json=too_new).json()['report']
+                    self.assertFalse(future_report['ok'])
+                    self.assertTrue(client.post(routes + '/preflight', headers=self.desktop, json=package).json()['report']['ok'])
+                    with patch.object(target_service.plugins, 'insert',
+                                      side_effect=BundleError('fixture', 'Atomic rollback fixture.', 409)):
+                        self.assertEqual(client.post(routes + '/import', headers=self.desktop, json=package).status_code, 409)
+                    self.assertEqual(target_service.skills.list(), [])
+                    result = client.post(routes + '/import', headers=self.desktop, json=package)
+                    self.assertEqual(result.status_code, 201, result.text)
+                    plugin = result.json()['plugin']
+                    self.assertEqual(target_registry.connections, {})
+                    self.assertFalse(plugin['enabled'])
+                    self.assertNotEqual(plugin['skill_ids'], [self.bundled])
+                    target_service.plugins.set_enabled(plugin['id'], True, target_registry)
+                    skill_ids, mcp_ids = target_service.plugins.select([plugin['id']], target_registry)
+                    self.assertEqual(mcp_ids, {'allowed'})
+                    skills = target_service.skills.for_turn(skill_ids)
+                    self.assertIn('BUNDLE_SKILL_MARKER', json.dumps(skills))
+                    agent = '21922344-de22-4c5f-87f5-8b58633c37a9'
+                    cid = target_service.create()['id']
+                    chat = self.library.rsplit('/', 1)[0] + '/conversations/' + cid
+                    started = client.post(chat + '/external-turns', headers=self.desktop,
+                        json={'content': 'Run a synthetic echo.', 'agent_id': agent,
+                              'agent_name': 'Fixture', 'plugin_ids': [plugin['id']]})
+                    self.assertEqual(started.status_code, 201, started.text)
+                    turn = chat + '/external-turns/' + started.json()['turn_id']
+                    prepared = client.post(turn + '/prepare', headers=self.native, json={'agent_id': agent})
+                    self.assertEqual(prepared.status_code, 200, prepared.text)
+                    self.assertIn('BUNDLE_SKILL_MARKER', prepared.json()['text'])
+                    self.assertIn('mcp__allowed__echo', {item['name'] for item in prepared.json()['tools']})
+                    echo = client.post(turn + '/tool', headers=self.native,
+                                      json={'agent_id': agent, 'name': 'mcp__allowed__echo',
+                                            'arguments': {'text': 'portable smoke'}})
+                    self.assertEqual(echo.status_code, 200, echo.text)
+                    self.assertEqual(echo.json()['content'][0]['text'], 'echo: portable smoke')
+            finally:
+                target_registry.close()
+
     def test_selected_plugins_scope_models_and_acp_with_standalone_unchanged(self):
         plugin = self.create_bundle()
         other = self.create_bundle(name='Other bundle', skill_ids=[self.manual], mcp_ids=[])
@@ -158,6 +251,33 @@ class DefaultPluginTests(unittest.TestCase):
     setUp = PluginBundleTests.setUp
     skill = PluginBundleTests.skill
     create_bundle = PluginBundleTests.create_bundle
+
+    def test_owner_reviews_immutable_candidates_and_native_access(self):
+        path = self.library + '/development/candidates'
+        manifest = {'name': '版本候选', 'description': '测试', 'version': '1.2.3-beta.1+local',
+                    'skill_ids': [self.bundled], 'mcp_ids': ['disabled']}
+        failed = self.client.post(path, headers=self.desktop, json=dict(manifest, version='latest'))
+        self.assertEqual(failed.status_code, 409)
+        saved = self.client.post(path, headers=self.desktop, json=manifest).json()['candidate']
+        self.assertEqual(saved['manifest'], manifest)
+        canonical = json.dumps(manifest, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
+        self.assertEqual(saved['sha256'], hashlib.sha256(canonical).hexdigest())
+        repeated = self.client.post(path, headers=self.desktop, json=manifest).json()['candidate']
+        self.assertEqual(repeated, saved)
+        native_path = path + '/' + saved['id']
+        self.assertEqual(self.client.get(native_path, headers=self.desktop).status_code, 403)
+        self.assertEqual(self.client.get(native_path, headers=self.native).json()['candidate'], saved)
+        self.registry.put('disabled', {'enabled': True})
+        updated_review = self.client.post(path, headers=self.desktop, json=manifest).json()['candidate']
+        self.assertEqual(updated_review['sha256'], saved['sha256'])
+        self.assertNotEqual(updated_review['id'], saved['id'])
+        self.assertNotEqual(updated_review['report'], saved['report'])
+        self.assertEqual(self.client.get(native_path, headers=self.native).json()['candidate'], saved)
+        self.assertEqual(len(self.client.get(path, headers=self.desktop).json()['candidates']), 2)
+        self.assertEqual(self.client.get(self.library, headers=self.desktop).json()['plugins'], [])
+        self.assertEqual(self.client.get(self.library + '/defaults', headers=self.desktop).json()['plugins'], [])
+        self.assertNotIn('secret-', json.dumps(updated_review))
+        self.assertEqual(self.tools['allowed'].calls, 0)
 
     def test_owner_can_publish_and_remove_for_the_same_profile_only(self):
         personal = self.create_bundle()

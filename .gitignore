@@ -23,7 +23,10 @@ release/
 node_modules/
 .frontend-cache/
 page_design/web/
-
+/.tmp/
+/mcp.json
+/viewer-restart.stdout.tmp
+/tools/cloudflared.exe
 # Local state, credentials and release artifacts
 .tmp/
 *.tmp

@@ -2,11 +2,17 @@ const { randomBytes } = require('node:crypto');
 const { mkdirSync, readFileSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
 const path = require('node:path');
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, session, shell, Tray } = require('electron');
 const { backendCommand, startBackend } = require('./backend.cjs');
-const { registerProjectFolders } = require('./project-folders.cjs');
+const { openProjectFolder, registerProjectFolders } = require('./project-folders.cjs');
 const { registerAcpAgents } = require('./acp-ipc.cjs');
 const { registerSomnusUpdater } = require('./acp-somnus-updater.cjs');
+const { registerDotRelay } = require('./acp-dot-relay-client.cjs');
+const { registerDocumentLibrary } = require('./acp-document-library.cjs');
+const { registerPluginWorkspace } = require('./acp-plugin-workspace.cjs');
+const { registerTaskAttention } = require('./task-attention.cjs');
+const { createDesktopTray, folderLaunchArgument, keepWindowInTray } = require('./desktop-tray.cjs');
+const { createDesktopProfiles } = require('./desktop-recovery.cjs');
 
 const sourceRoot = path.resolve(__dirname, '..');
 const showStartupPage = process.platform === 'win32';
@@ -41,7 +47,7 @@ const startupPage = `<!doctype html>
 <header aria-hidden="true"></header>
 <main role="status">
   <span class="mark" aria-hidden="true"><img src="data:image/png;base64,${startupMark}" alt=""></span>
-  <div><h1>${APP_TITLE}</h1><p><span class="spinner" aria-hidden="true"></span>正在启动本机分析服务…</p></div>
+  <div><h1>${APP_TITLE}</h1><p><span class="spinner" aria-hidden="true"></span>启动中…</p></div>
 </main>
 </html>`;
 const webPreferences = {
@@ -58,12 +64,48 @@ let origin;
 let quitting = false;
 let canQuit = false;
 let stoppingBackend = false;
+let tray;
+let profiles;
+let launchProject;
+let pendingFolder;
+let folderQueue = Promise.resolve();
+let workspaceReady = false;
+let recovering = false;
 
 function focusWindow() {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
   window.show();
   window.focus();
+}
+
+function focusDesktop() {
+  if (profiles?.focus()) return;
+  if (recovering && profiles) {
+    void profiles.openRecovery().catch(displayDesktopError);
+    return;
+  }
+  focusWindow();
+}
+
+function displayDesktopError(error) {
+  dialog.showErrorBox(APP_TITLE, error?.message || '操作未完成。');
+}
+
+function queueProjectFolder(folder) {
+  if (!folder || quitting || recovering || profiles?.isRecovery || profiles?.safeMode) return;
+  if (!launchProject) { pendingFolder = folder; return; }
+  folderQueue = folderQueue.then(() => {
+    if (!quitting && !recovering) return launchProject(folder);
+  }).catch(displayDesktopError);
+}
+
+async function pickProjectFolder() {
+  focusDesktop();
+  if (recovering || profiles?.isRecovery || profiles?.safeMode) return;
+  if (!window || window.isDestroyed()) throw new Error('工作台窗口尚未就绪。');
+  const result = await dialog.showOpenDialog(window, { title: '打开项目文件夹', properties: ['openDirectory'] });
+  if (!result.canceled) queueProjectFolder(result.filePaths[0]);
 }
 
 function parseUrl(value) {
@@ -100,7 +142,9 @@ function createWorkspaceWindow() {
   const activeSession = session.defaultSession;
   activeSession.setPermissionCheckHandler(() => false);
   activeSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  app.on('web-contents-created', (_event, contents) => restrictNavigation(contents));
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.session === activeSession) restrictNavigation(contents);
+  });
 
   const titleBar = process.platform === 'win32' ? {
     titleBarStyle: 'hidden',
@@ -126,6 +170,7 @@ function createWorkspaceWindow() {
       : webPreferences,
   });
   workspace.on('closed', () => { window = null; });
+  keepWindowInTray(workspace, () => Boolean(tray && workspaceReady && !quitting));
   const contents = workspace.webContents;
   contents.on('page-title-updated', event => event.preventDefault());
   contents.on('before-input-event', (event, input) => {
@@ -156,7 +201,8 @@ async function openWorkspace(logFile, timings) {
     sourceRoot,
   });
   const projectToken = showStartupPage ? randomBytes(32).toString('hex') : '';
-  const env = projectToken ? { ...process.env, RESPIRATORY_VIEWER_PROJECT_TOKEN: projectToken } : process.env;
+  const env = { ...process.env, ...(projectToken ? { RESPIRATORY_VIEWER_PROJECT_TOKEN: projectToken } : {}),
+    ...profiles?.environment() };
   backend = startBackend(command, logFile, { env });
   timings.backendSpawnedMs = Math.round(process.uptime() * 1000);
   const service = backend.ready.then(url => {
@@ -168,16 +214,46 @@ async function openWorkspace(logFile, timings) {
 
   if (!window) window = createWorkspaceWindow();
   if (projectToken) {
+    const profileDir = profiles?.active.roamingDir ?? app.getPath('userData');
     await registerProjectFolders({ ipcMain, dialog, shell, window, origin, token: projectToken });
     if (quitting) return;
-    registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token: projectToken,
-      profileDir: app.getPath('userData'), version: app.getVersion() });
+    if (!profiles?.safeMode) {
+      registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token: projectToken,
+        profileDir, dshRuntimeDir: profiles?.baseDir, version: app.getVersion() });
+      registerDotRelay({ ipcMain, window, origin, profileDir, safeStorage });
+      registerPluginWorkspace({ ipcMain, dialog, shell, window, origin, token: projectToken, profileDir });
+    }
     registerSomnusUpdater({ ipcMain, app, window, origin, prepareInstall: stopBackendForUpdate });
+    registerTaskAttention({ ipcMain, Notification, window, origin, focusWindow,
+      allowsNotification: (kind, failed) => tray?.allowsNotification(kind, failed) ?? true });
+    registerDocumentLibrary({ ipcMain, dialog, shell, window, origin, token: projectToken,
+      profileDir, tempDir: app.getPath('temp'),
+      defaultSharedDir: path.join(app.isPackaged ? process.resourcesPath : sourceRoot, 'shared-documents') });
   }
   void backend.exited.then(error => {
     if (!quitting) reportFailure(error, logFile);
   });
   await window.loadURL(origin);
+  if (quitting || recovering) return;
+  workspaceReady = true;
+  if (projectToken && !profiles?.safeMode) {
+    launchProject = async folder => {
+      const id = await openProjectFolder(origin, projectToken, folder);
+      if (typeof id !== 'string' || !/^ws_[a-f0-9]{12}$/.test(id)) throw new Error('项目已打开，但无法定位项目。');
+      if (quitting || recovering || !window || window.isDestroyed()) return;
+      focusWindow();
+      const target = '#assistant?project=' + id;
+      const current = parseUrl(window.webContents.getURL());
+      if (current?.origin === origin && current.pathname === '/') {
+        await window.webContents.executeJavaScript('location.hash = ' + JSON.stringify(target));
+      } else {
+        await window.loadURL(origin + '/' + target);
+      }
+    };
+    queueProjectFolder(pendingFolder);
+    pendingFolder = null;
+  }
+  await profiles?.markHealthy();
   if (showStartupPage && window && !quitting) window.setTitleBarOverlay(WORKSPACE_CAPTION);
   timings.workspaceLoadedMs = Math.round(process.uptime() * 1000);
   if (!showStartupPage && !quitting) focusWindow();
@@ -188,7 +264,7 @@ async function stopBackendForUpdate() {
   stoppingBackend = true;
   quitting = true;
   try {
-    await backend.stop();
+    await Promise.all([backend.stop(), tray?.flush()]);
     canQuit = true;
   } catch (error) {
     quitting = false;
@@ -199,11 +275,19 @@ async function stopBackendForUpdate() {
 }
 
 function reportFailure(error, logFile) {
-  if (quitting) return;
-  quitting = true;
+  if (quitting || recovering) return;
   if (window && !window.isDestroyed()) window.hide();
-  dialog.showErrorBox(APP_TITLE, `${error.message}\n\n本机服务日志：${logFile}`);
-  app.quit();
+  function fatal() {
+    quitting = true;
+    dialog.showErrorBox(APP_TITLE, `${error.message}\n\n本机服务日志：${logFile}`);
+    app.quit();
+  }
+  if (profiles) {
+    recovering = true;
+    void profiles.openRecovery(error).catch(fatal);
+  } else {
+    fatal();
+  }
 }
 
 if (process.platform === 'win32' || process.platform === 'darwin') {
@@ -217,19 +301,33 @@ if (process.platform === 'win32' || process.platform === 'darwin') {
   if (process.platform === 'win32') app.setAppUserModelId('com.vvfly.respiratoryviewer');
 }
 
-if (!app.requestSingleInstanceLock()) {
+const launchFolder = showStartupPage ? folderLaunchArgument(process.argv, process.cwd(), process.defaultApp) : null;
+if (!app.requestSingleInstanceLock(launchFolder ? { folder: launchFolder } : {})) {
   app.quit();
 } else {
-  app.on('second-instance', focusWindow);
-  app.on('activate', focusWindow);
-  app.on('window-all-closed', () => app.quit());
+  if (showStartupPage) {
+    profiles = createDesktopProfiles({ app, BrowserWindow, ipcMain, dialog, baseDir: app.getPath('userData'),
+      isolatedDefault: Boolean(app.commandLine.getSwitchValue('user-data-dir')),
+      restart: args => { app.relaunch({ args }); app.quit(); } });
+    if (profiles.active.id !== 'default') app.setPath('sessionData', profiles.active.roamingDir);
+    queueProjectFolder(launchFolder);
+  }
+  app.on('second-instance', (_event, _argv, _cwd, additionalData) => {
+    focusDesktop();
+    if (typeof additionalData?.folder === 'string') queueProjectFolder(additionalData.folder);
+  });
+  app.on('activate', focusDesktop);
+  app.on('window-all-closed', () => {
+    if (!tray || !recovering || quitting) app.quit();
+  });
+  app.on('will-quit', () => tray?.destroy());
   app.on('before-quit', event => {
+    quitting = true;
     if (canQuit || !backend) return;
     event.preventDefault();
     if (stoppingBackend) return;
     stoppingBackend = true;
-    quitting = true;
-    void backend.stop().catch(error => console.error(error)).then(() => {
+    void Promise.all([backend.stop(), tray?.flush()]).catch(error => console.error(error)).then(() => {
       canQuit = true;
       app.quit();
     });
@@ -238,6 +336,24 @@ if (!app.requestSingleInstanceLock()) {
     const logFile = path.join(app.getPath('logs'), 'backend.log');
     const timings = { electronReadyMs: Math.round(process.uptime() * 1000) };
     try {
+      if (showStartupPage) {
+        try {
+          tray = await createDesktopTray({ Tray, Menu, icon: path.join(BRAND_DIRECTORY, 'somnus.ico'),
+            dataDir: profiles.active.roamingDir, show: focusDesktop,
+            openFolder: !profiles.isRecovery && !profiles.safeMode ? () => void pickProjectFolder().catch(displayDesktopError) : null,
+            openProfiles: () => void profiles.openProfiles().catch(displayDesktopError),
+            openRecovery: () => void profiles.openRecovery().catch(displayDesktopError),
+            quit: () => void tray.flush().finally(() => app.quit()),
+          });
+        } catch (error) {
+          console.error('Unable to start the Somnus tray', error.message);
+        }
+      }
+      if (profiles?.isRecovery) {
+        await profiles.openRecovery();
+        recovering = true;
+        return;
+      }
       await openWorkspace(logFile, timings);
     } catch (error) {
       reportFailure(error, logFile);

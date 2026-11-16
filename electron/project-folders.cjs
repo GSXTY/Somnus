@@ -6,6 +6,7 @@ const path = require('node:path');
 const cookieName = 'respiratory_desktop';
 const secretScope = 'vvman-project-browser-session';
 const apiRoot = '/api/assistant';
+const openableText = new Set('.c .cc .cpp .h .hpp .md .txt .json .yaml .yml .ini .cfg .toml'.split(' '));
 
 function trustWorkbench(event, window, origin) {
   const contents = window?.webContents;
@@ -25,6 +26,7 @@ function nativeRequest(origin, token, endpoint, payload, signal) {
       body = JSON.stringify(payload);
       headers['Content-Type'] = 'application/json';
       headers['Content-Length'] = Buffer.byteLength(body);
+      headers['X-Data-Agent-Local'] = '1';
     }
     const timeout = AbortSignal.timeout(5000);
     const request = http.request(origin + apiRoot + endpoint, {
@@ -58,6 +60,52 @@ function nativeRequest(origin, token, endpoint, payload, signal) {
   });
 }
 
+async function openProjectFolder(origin, token, folder, request = nativeRequest) {
+  const grant = await request(origin, token, '/project-folder-grants', { path: folder });
+  if (typeof grant?.root_path !== 'string' || typeof grant.folder_grant !== 'string') {
+    throw new Error('无法验证选中的项目文件夹。');
+  }
+  const { workspaces } = await request(origin, token, '/workspaces');
+  const existing = workspaces.filter(project => (project.source_folders ?? [project.root_path]).some(
+    source => typeof source === 'string' && source.toLowerCase() === grant.root_path.toLowerCase(),
+  ));
+  const available = existing.find(project => !project.archived);
+  if (available) return available.id;
+  if (existing.length) throw new Error('对应项目已归档，请在工作台恢复后打开。');
+
+  const label = path.win32.basename(grant.root_path) || grant.root_path;
+  const { workspace } = await request(origin, token, '/workspaces', {
+    name: [...label].slice(0, 60).join(''),
+    source_folders: [grant],
+  });
+  return workspace.id;
+}
+
+async function resolveAppliedFile(location) {
+  const root = location?.root_path;
+  const relative = location?.relative_path;
+  if (typeof root !== 'string' || !path.isAbsolute(root) || (process.platform === 'win32' && !/^[a-z]:\\/i.test(root)) ||
+      typeof relative !== 'string' || !relative || relative.length > 500) return null;
+  const pieces = relative.split('/');
+  if (pieces.some(part => !part || part.startsWith('.') || /[<>:"\\|?*\x00-\x1f]|[. ]$/.test(part) ||
+      /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\s*\.|$)/i.test(part))) return null;
+  const samePath = (left, right) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+  try {
+    let target = path.resolve(root);
+    const rootInfo = await lstat(target);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || !samePath(await realpath(target), target)) return null;
+    let info;
+    for (const piece of pieces) {
+      target = path.join(target, piece);
+      info = await lstat(target);
+      if (info.isSymbolicLink() || !samePath(await realpath(target), target)) return null;
+    }
+    return info?.isFile() && info.nlink === 1 ? target : null;
+  } catch {
+    return null;
+  }
+}
+
 async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, token }) {
   const session = window.webContents.session;
   // Cookies are host-scoped, so remove this capability from requests to any other port.
@@ -79,6 +127,31 @@ async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, 
     httpOnly: true,
     sameSite: 'strict',
     path: apiRoot,
+  });
+
+  async function appliedLocation(event, conversationId, proposalId) {
+    trustWorkbench(event, window, origin);
+    if (typeof conversationId !== 'string' || !/^[a-f0-9]{32}$/.test(conversationId) ||
+        typeof proposalId !== 'string' || !/^edit_[a-f0-9]{32}$/.test(proposalId)) {
+      throw new Error('请选择同一会话中已应用的文件。');
+    }
+    const endpoint = '/conversations/' + conversationId + '/file-proposals/' + proposalId + '/open-target';
+    const location = await nativeRequest(origin, token, endpoint, {}).catch(() => {
+      throw new Error('无法找到该会话中已应用的文件。');
+    });
+    const target = await resolveAppliedFile(location);
+    trustWorkbench(event, window, origin);
+    if (!target) throw new Error('文件已移动或当前无法访问。');
+    return { target, location };
+  }
+  ipcMain.handle('vvman-projects:approved-file-location', async (event, conversationId, proposalId) =>
+    (await appliedLocation(event, conversationId, proposalId)).target);
+  ipcMain.handle('vvman-projects:open-approved-file', async (event, conversationId, proposalId) => {
+    const { target, location } = await appliedLocation(event, conversationId, proposalId);
+    if (openableText.has(path.extname(target).toLowerCase()) && !await shell.openPath(target)) return;
+    if (!await resolveAppliedFile(location)) throw new Error('文件已移动或当前无法访问。');
+    trustWorkbench(event, window, origin);
+    shell.showItemInFolder(target);
   });
 
   ipcMain.handle('vvman-projects:choose-directory', async event => {
@@ -126,4 +199,4 @@ async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, 
   });
 }
 
-module.exports = { registerProjectFolders, trustWorkbench, nativeRequest };
+module.exports = { registerProjectFolders, trustWorkbench, nativeRequest, openProjectFolder };

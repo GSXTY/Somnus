@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { createHmac } = require('node:crypto');
-const { mkdir, mkdtemp, realpath, rm, symlink } = require('node:fs/promises');
+const { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
@@ -27,9 +27,12 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   const missing = path.join(directory, 'missing');
   const token = 'native-project-secret';
   const projectId = 'ws_0123456789ab';
+  const cid = 'a'.repeat(32);
+  const pid = 'edit_' + 'b'.repeat(32);
   const routes = [];
   let savedDirectory = directory;
   let sourceFolders;
+  let approvedTarget;
   const server = http.createServer(async (request, response) => {
     routes.push(request.url);
     assert.equal(request.headers['x-data-agent-native'], token);
@@ -40,6 +43,14 @@ test('native grant and Explorer open are scoped to selected and persisted direct
       for await (const chunk of request) body += chunk;
       assert.deepEqual(JSON.parse(body), { path: directory });
       response.end(JSON.stringify({ root_path: directory, folder_grant: 'bound-folder-grant' }));
+    } else if (request.url.endsWith('/open-target')) {
+      assert.equal(request.url, `/api/assistant/conversations/${cid}/file-proposals/${pid}/open-target`);
+      assert.equal(request.method, 'POST');
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      assert.deepEqual(JSON.parse(body), {});
+      if (!approvedTarget) response.writeHead(404).end('{}');
+      else response.end(JSON.stringify(approvedTarget));
     } else {
       response.end(JSON.stringify({ workspaces: [{ id: projectId, root_path: savedDirectory, source_folders: sourceFolders }] }));
     }
@@ -51,6 +62,8 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   t.after(() => new Promise(resolve => server.close(resolve)));
   const origin = 'http://127.0.0.1:' + server.address().port;
   const opened = [];
+  const revealed = [];
+  let openFailure = '';
   let cookie;
   let outgoing;
   const handlers = new Map();
@@ -65,7 +78,8 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   await registerProjectFolders({
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [directory] }) },
-    shell: { openPath: async value => { opened.push(value); return ''; } },
+    shell: { openPath: async value => { opened.push(value); return openFailure; },
+      showItemInFolder: value => revealed.push(value) },
     window, origin, token,
   });
   assert.equal(cookie.httpOnly, true);
@@ -100,4 +114,35 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   sourceFolders = [];
   await assert.rejects(open(trusted, projectId), /未绑定/);
   assert.deepEqual(opened, [directory, directory, secondDirectory]);
+
+  const lookupApproved = handlers.get('vvman-projects:approved-file-location');
+  const openApproved = handlers.get('vvman-projects:open-approved-file');
+  const source = path.join(secondDirectory, 'example.c');
+  await writeFile(source, 'int main(void) { return 0; }');
+  await writeFile(path.join(secondDirectory, 'script.js'), 'console.log("test");');
+  await assert.rejects(openApproved(trusted, cid, pid), /无法找到/);
+  approvedTarget = { root_path: directory, relative_path: 'second/example.c' };
+  assert.equal(await lookupApproved(trusted, cid, pid), source);
+  await assert.rejects(openApproved(trusted, 'other', pid), /有效|请选择/);
+  await assert.rejects(openApproved({ ...trusted, senderFrame: {} }, cid, pid), /工作台/);
+  await openApproved(trusted, cid, pid, 'C:\\forged.txt');
+  assert.equal(opened.at(-1), source);
+  openFailure = 'no file association';
+  await openApproved(trusted, cid, pid);
+  assert.deepEqual(revealed, [source]);
+  openFailure = '';
+  approvedTarget.relative_path = 'second/script.js';
+  const shellOpenCount = opened.length;
+  await openApproved(trusted, cid, pid);
+  assert.equal(opened.length, shellOpenCount);
+  assert.equal(revealed.at(-1), path.join(secondDirectory, 'script.js'));
+
+  for (const unsafe of ['../second/example.c', 'second/example.c:stream', 'linked/second/example.c', 'absent.c']) {
+    approvedTarget.relative_path = unsafe;
+    await assert.rejects(openApproved(trusted, cid, pid), /已移动/);
+  }
+  const hardlink = path.join(secondDirectory, 'linked-file.c');
+  await link(source, hardlink);
+  approvedTarget.relative_path = 'second/linked-file.c';
+  await assert.rejects(openApproved(trusted, cid, pid), /已移动/);
 });

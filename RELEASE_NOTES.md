@@ -1,6 +1,13 @@
-# Somnus 发布记录
+# Somnus v0.3.0-beta.7
 
-当前 Electron 源码的 Windows 本机启动入口为 `dist/electron/win-unpacked/Somnus.exe`。构建与应用更新流程见 [维护与发布](docs/MAINTAINER.md)。
+Windows x64 桌面试用版。下载安装程序，退出托盘中正在运行的 Somnus 后安装。
+
+- 托盘常驻、运行配置切换、独立故障恢复和分类任务通知。
+- 在 Somnus 内接入 DeepSeek Harness、Codex 及其他受支持的 ACP Agent；管理 Skill、插件和已授权的项目工具。
+- 公司默认 DeepSeek Flash 会话的窗口配置为 1,000,000 tokens。实际可用长度取决于上游和转发服务。
+- 提供项目工作树、差异审阅、授权 PowerShell、公司数据查询、深度分析及呼吸波形复核。
+
+本次发布提供未签名的 Windows x64 安装程序，请从 GitHub 发布页手动下载。全新安装时可直接使用随附的 Codex ACP 适配器和 Node.js。DeepSeek Harness 与 CodeBuddy 可从已安装的官方本机运行时接入。
 
 ## v0.3.0-beta.6
 

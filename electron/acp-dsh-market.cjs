@@ -1,6 +1,7 @@
 const { lstat, open, realpath, rename, unlink, writeFile } = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const path = require('node:path');
 const { DshCommunityMarket } = require('./acp-dsh-community.cjs');
 const { DshAccount, accountState } = require('./acp-dsh-account.cjs');
@@ -9,6 +10,13 @@ const { processEnvironment } = require('./acp-stdio.cjs');
 const RUNTIME = '@deepseek-ai/dsh';
 const VERSION = '0.2.2-rc.1';
 const ENTRY = 'lib/bin.js';
+const MANAGED_CLI = [
+  "import { pathToFileURL } from 'node:url';",
+  'const [entry, pnpm, ...args] = process.argv.slice(1);',
+  'process.argv = [process.execPath, entry, ...args];',
+  'const { runCli } = await import(pathToFileURL(entry));',
+  'await runCli({ packageManager: { command: process.execPath, args: [pnpm] } });',
+].join('\n');
 const BADGE = {
   id: 'badge-skill',
   packageName: '@deepseek-ai/dsh-experimental-badge-skill-bundle',
@@ -64,27 +72,28 @@ async function readJson(file) {
 }
 
 class DshPluginMarket {
-  constructor(profileDir, resourcesPath) {
+  constructor(profileDir, resourcesPath, runtimeRoot = profileDir) {
     this.profileDir = profileDir;
     this.resourcesPath = resourcesPath;
+    this.runtimeRoot = runtimeRoot;
     this.home = path.join(profileDir, 'dsh-home');
     this.community = new DshCommunityMarket(this, localFile, readJson, VERSION);
     this.account = new DshAccount();
   }
 
   runtimeFile(packageName, relative) {
-    return localFile(this.profileDir, 'dsh-runtime', VERSION, 'node_modules', packageName, relative);
+    return localFile(this.runtimeRoot, 'dsh-runtime', VERSION, 'node_modules', packageName, relative);
   }
 
   get runtimeDir() {
-    return path.join(this.profileDir, 'dsh-runtime', VERSION);
+    return path.join(this.runtimeRoot, 'dsh-runtime', VERSION);
   }
 
   async ownsLaunch(profile) {
     const script = path.join('dsh-runtime', VERSION, 'node_modules', RUNTIME, ENTRY);
     const argument = path.normalize(profile.args[0] || '').toLowerCase();
-    if (argument === path.join(this.profileDir, script).toLowerCase()) return true;
-    const root = await realpath(this.profileDir).catch(() => null);
+    if (argument === path.join(this.runtimeRoot, script).toLowerCase()) return true;
+    const root = await realpath(this.runtimeRoot).catch(() => null);
     return Boolean(root && argument === path.join(root, script).toLowerCase());
   }
 
@@ -111,6 +120,15 @@ class DshPluginMarket {
     return { file, data, bundles };
   }
 
+  async webProfile() {
+    const file = await localFile(this.profileDir, 'dsh-home', 'profiles', 'web', 'package.json');
+    const data = await readJson(file).catch(() => null);
+    const bundles = data?.dsh?.profile?.bundles;
+    if (data?.name !== 'dsh-profile-web' || data.private !== true || !Array.isArray(bundles) ||
+        !bundles.includes('@deepseek-ai/dsh-base') || !bundles.includes('@deepseek-ai/dsh-web-app')) return null;
+    return { file, bundles };
+  }
+
   async available(plugin) {
     if (plugin !== BADGE && plugin !== PERSONALIZED) return false;
     const metadata = await this.runtimeFile(plugin.packageName, 'package.json').then(readJson).catch(() => null);
@@ -120,7 +138,7 @@ class DshPluginMarket {
   }
 
   async catalog() {
-    const data = await localFile(this.profileDir, 'dsh-runtime', VERSION, 'official-catalog.json').then(readJson).catch(() => null);
+    const data = await localFile(this.runtimeRoot, 'dsh-runtime', VERSION, 'official-catalog.json').then(readJson).catch(() => null);
     const rows = [...OFFICIAL_PLUGINS];
     if (data?.version !== VERSION || !Array.isArray(data.plugins) || data.plugins.length > 40) return rows;
     for (const row of data.plugins) {
@@ -217,19 +235,16 @@ class DshPluginMarket {
   }
 
   async settings(validateSender) {
-    const launch = await this.launch();
-    if (!launch || !await this.profile()) throw new Error('独立的 DeepSeek Harness ACP 运行时尚未安装。');
+    const [launch, acp, web] = await Promise.all([this.launch(), this.profile(), this.webProfile()]);
+    if (!launch || !acp || !web) throw new Error('托管 DSH 的 ACP 或 Web 配置不可用。');
     validateSender();
-    const server = this.settingsServer ?? this.startSettings(launch);
+    const installer = await this.community.installer();
+    validateSender();
+    const server = this.settingsServer ?? this.startSettings(launch, installer);
     await server.ready;
     validateSender();
     if (server !== this.settingsServer) throw new Error('官方 DSH 设置已关闭，请重试。');
     return server;
-  }
-
-  async openSettings(shell, validateSender) {
-    const server = await this.settings(validateSender);
-    await shell.openExternal(await server.ready);
   }
 
   async accountStatus(validateSender) {
@@ -252,9 +267,12 @@ class DshPluginMarket {
     return { ...status, version: VERSION };
   }
 
-  startSettings(launch) {
+  startSettings(launch, installer) {
+    const [entry] = launch.args;
+    const launcher = installer ? ['--input-type=module', '-e', MANAGED_CLI, '--', entry, installer] : [entry];
     const child = spawn(launch.executable, [
-      launch.args[0], '--profile', 'web', '--host', '127.0.0.1', '--port', '0', '--no-open',
+      ...launcher, '--profile', 'web',
+      '--host', '127.0.0.1', '--port', '0', '--no-open',
     ], {
       cwd: this.home, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'ignore'],
       env: { ...processEnvironment(), DSH_HOME: this.home, DSH_TELEMETRY_DISABLED: '1' },
@@ -265,7 +283,7 @@ class DshPluginMarket {
       const fail = () => {
         clearTimeout(deadline);
         if (this.settingsServer === server) this.settingsServer = null;
-        reject(new Error('无法打开独立的官方 DSH 设置，请稍后重试。'));
+        reject(new Error('无法启动托管 DSH Web 服务，请稍后重试。'));
       };
       const deadline = setTimeout(() => { child.kill(); fail(); }, 30_000);
       deadline.unref();
@@ -300,7 +318,42 @@ class DshPluginMarket {
     this.settingsServer?.child.kill();
     this.settingsServer = null;
   }
+
+  async openTerminal(validateSender = () => {}) {
+    const [launch, profile, installer] = await Promise.all([this.launch(), this.webProfile(), this.community.installer()]);
+    if (!launch || !profile) throw new Error('托管 DSH Web 配置不可用。');
+    const env = processEnvironment();
+    const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32',
+      'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    validateSender();
+    // Only fixed shell code is evaluated. Program and working paths arrive as literal environment values.
+    const script = [
+      'function Invoke-SomnusDsh {',
+      '  if ($env:SOMNUS_DSH_PNPM) {',
+      '    & $env:SOMNUS_DSH_NODE --input-type=module -e $env:SOMNUS_DSH_CLI -- $env:SOMNUS_DSH_ENTRY $env:SOMNUS_DSH_PNPM @args',
+      '  } else { & $env:SOMNUS_DSH_NODE $env:SOMNUS_DSH_ENTRY @args }',
+      '}',
+      "function dsh { if ($args.Count -gt 0 -and $args[0] -eq 'plugin') {",
+      '  $rest = $args | Select-Object -Skip 1; Invoke-SomnusDsh plugin --profile web @rest',
+      '} else { Invoke-SomnusDsh --profile web @args } }',
+      "Write-Host 'Somnus · DSH Web profile'",
+      "Write-Host 'dsh --help | dsh plugin list'",
+    ].join('\n');
+    const broker = [
+      "$ErrorActionPreference = 'Stop'",
+      "Start-Process -FilePath $env:SOMNUS_DSH_POWERSHELL -WindowStyle Normal -ArgumentList @('-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand', $env:SOMNUS_DSH_TERMINAL_SCRIPT)",
+    ].join('\n');
+    const child = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(broker, 'utf16le').toString('base64')], {
+      cwd: path.dirname(profile.file), windowsHide: true, stdio: 'ignore', shell: false,
+      env: { ...env, DSH_HOME: this.home, DSH_TELEMETRY_DISABLED: '1',
+        SOMNUS_DSH_NODE: launch.executable, SOMNUS_DSH_ENTRY: launch.args[0],
+        SOMNUS_DSH_PNPM: installer || '', SOMNUS_DSH_CLI: MANAGED_CLI,
+        SOMNUS_DSH_POWERSHELL: powershell, SOMNUS_DSH_TERMINAL_SCRIPT: Buffer.from(script, 'utf16le').toString('base64') },
+    });
+    const [code] = await once(child, 'exit').catch(() => [1]);
+    if (code !== 0) throw new Error('无法打开 DSH PowerShell 终端。');
+  }
 }
 
 module.exports = { DshPluginMarket };
-

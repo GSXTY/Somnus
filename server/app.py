@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
+import re
 import sys
 from urllib.parse import urlsplit
 
@@ -14,6 +15,7 @@ from app_version import APP_ID, APP_VERSION
 from agent_core.analytics import dashboard as user_dashboard
 from agent_core.workbench import dashboard as workbench_dashboard, user_detail
 from ai_assistant.bundled_defaults import install_bundled_defaults
+from ai_assistant.dot_tasks import DotTasks
 from ai_assistant.service import AssistantService
 from event_detection.patient_flow_v4 import VERSION as PATIENT_VERSION
 from mcp_connectors.asgi import create_router as create_mcp_router
@@ -66,13 +68,18 @@ def mount_plugin_pages(app):
     from fastapi.staticfiles import StaticFiles
     from plugins import loader
 
+    mounted_paths = set()
     for plugin in loader.discover()['plugins']:
-        if not plugin.get('has_ui'):
+        key = plugin['key']
+        if not plugin.get('has_ui') or not isinstance(key, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', key):
             continue
-        folder = loader.PLUGIN_DIR / plugin['key'] / 'web'
+        folder = loader.PLUGIN_DIR / key / 'web'
         if folder.is_dir():
-            app.mount(f"/module/{plugin['key']}", StaticFiles(directory=str(folder), html=True),
-                      name=f"module-{plugin['key']}")
+            path = f'/module/{key}'
+            app.mount(path, StaticFiles(directory=str(folder), html=True),
+                      name=f'module-{key}')
+            mounted_paths.add(f'{path}/')
+    return mounted_paths
 
 
 def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_management=None, managed_desktop=False):
@@ -91,6 +98,8 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     folder.mkdir(parents=True, exist_ok=True)
 
     def stop_services(app):
+        if app.state.dot_tasks:
+            app.state.dot_tasks.stop()
         if app.state.mcp_registry:
             app.state.mcp_registry.close()
         deep_service = getattr(app.state, 'deep_analysis_service', None)
@@ -119,6 +128,8 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     @asynccontextmanager
     async def lifespan(app):
         try:
+            if app.state.dot_tasks:
+                await anyio.to_thread.run_sync(app.state.dot_tasks.start)
             if report_presence:
                 async with anyio.create_task_group() as tasks:
                     tasks.start_soon(remote_data.report_presence, APP_VERSION)
@@ -138,6 +149,9 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     app.state.analytics_repository = None
     app.state.remote_data = remote_data
     app.state.session_mode = session_mode
+    dot_allowed = (managed_desktop and sys.platform == 'win32' and session_mode == 'shared'
+                   and os.getenv('SHARE_MODE', '').strip() != '1')
+    app.state.dot_tasks = DotTasks(folder) if dot_allowed else None
     if mcp_management is None:
         mcp_management = session_mode == 'shared'
     app.state.mcp_registry = McpRegistry(folder) if mcp_management else None
@@ -185,7 +199,10 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     def plugins():
         from plugins import loader
         info = loader.discover(force=True)
-        return dict(plugins=info['plugins'], errors=info['errors'],
+        plugins = [dict(plugin, workspace_entries=[
+            entry for entry in plugin['workspace_entries'] if entry['path'] in workspace_paths
+        ]) for plugin in info['plugins']]
+        return dict(plugins=plugins, errors=info['errors'],
                     tools=[spec['function']['name'] for spec in info['specs']])
 
     @app.get('/api/workbench', tags=['工作台'])
@@ -286,7 +303,7 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     app.include_router(create_deep_analysis_router(relay=relay_deep_analysis if remote_data.mode != 'local' else None))
     from server_detection import install_routes
     install_routes(app, folder, initial_file=initial_file or os.getenv('RESPIRATORY_CSV') or None,
-                   session_mode=session_mode)
+                   session_mode=session_mode, session_events=managed_desktop and session_mode == 'shared')
 
     page = ASSETS / 'page_design'
     event = ASSETS / 'event_detection'
@@ -326,5 +343,5 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     web = page / 'web'
     if web.is_dir():
         app.mount('/workbench-assets', StaticFiles(directory=web), name='workbench-assets')
-    mount_plugin_pages(app)
+    workspace_paths = mount_plugin_pages(app) | {'/events'}
     return app

@@ -4,7 +4,7 @@ let controller, serial=0, timer, drag=null, overviewDrag=null, raf=0;
 let cache=null, overviewImage=null, baseSecond=0, generation=0;
 let groups=[], movingChannel=null;
 let displayMode='engineering';
-let annotations=null,marking=false,markSelection=null,eventDraft=null;
+let annotations=null;
 let fileLibrary=[],activeLibraryId=null,librarySerial=0,fileSwitching=false;
 // Embedded mode is opt-in and only applies inside the retained same-origin
 // workspace frame. A direct /events visit keeps its standalone navigation.
@@ -43,6 +43,8 @@ function selectDetectionProfile(profile,history=false){
  select.value=profile;
 }
 const scanViews=new Map();
+const transientAnnotationStorage={getItem(){return null},setItem(){}};
+function usesSessionEvents(recording=meta){return recording?.event_storage==='session'}
 function resultGroupForProfile(profile){return isBaseline(profile)?'baseline':isAdaptive(profile)?'adaptive':profile==='company_rules'?'company':'automatic'}
 function currentScanView(){const v=scanViews.get(meta?.file_id);return v?.profile===$('scan-profile').value?v:null}
 function actualEventProfile(e){return e.detection_profile||(e.type?.startsWith('公司')||(e.note||'').includes('公司规则试验')?'company_rules':e.type?.startsWith('流量波动')||(e.note||'').includes('machine-flow-candidates-v2')?'device_candidates':'engineering')}
@@ -60,7 +62,7 @@ function updateBaselineControls(){
  if(!configurable&&![2,5,8].includes(Number($('baseline-window').value)))$('baseline-window').value='5';
  $('baseline-duration').hidden=!configurable;$('scan-duration').hidden=configurable;
  $('baseline-duration').value=String(Number($('scan-duration').value)||10);
- if(v3)$('optimized-v3-rule-info').textContent='优化v3：检测窗口'+$('baseline-window').value+'秒，最短持续'+$('scan-duration').value+'秒。显著下降：1秒复核剩余<25%连续达标并有主窗口佐证；减弱：所选主窗口剩余<50%连续达标，1秒小峰不打断弱事件。弱事件从窗口末端计时。总漏气变化仅提示复核，不清空参考；无效数据、缺口及状态变化仍重置。';
+ if(v3)$('optimized-v3-rule-info').textContent='优化v3：检测窗口'+$('baseline-window').value+'秒，最短持续'+$('scan-duration').value+'秒。显著下降：1秒复核剩余<25%连续达标并有主窗口佐证；减弱：所选主窗口剩余<50%连续达标，1秒小峰不打断弱事件。弱事件从窗口末端计时。总漏气变化仅作提示，不清空参考；无效数据、缺口及状态变化仍重置。';
 }
 async function showScanBatch(runId,restore=false){
  if(!meta||!runId)return;const fileId=meta.file_id;
@@ -69,7 +71,7 @@ async function showScanBatch(runId,restore=false){
  const config=snapshot.settings;
  if(restore){selectDetectionProfile(config.profile,true);$('scan-profile').onchange();if(isBaseline(config.profile)){$('baseline-method').value=config.method;$('baseline-window').value=String(config.window_seconds)}$('scan-duration').value=config.min_duration;if(Number.isFinite(config.reduction_ratio))$('scan-ratio').value=Math.round(config.reduction_ratio*100);if(isAdaptive(config.profile))$('adaptive-version').value=config.version;chosenDetectionTypes=new Set(config.event_types||detectionTypes[config.profile]);renderDetectionChoices();if(config.profile==='company_rules')$('amplitude-source').value=config.flow_source||'pressure_q';updateBaselineControls();pruneProfileChannels()}
  scanViews.set(fileId,{runId,profile:config.profile,config,ids:new Set(snapshot.events.map(e=>snapshot.event_links?.[e.id]||e.id))});
- $('baseline-all-configs').checked=false;visibleEventTypes=new Set([...config.event_types,...(annotations?.items||[]).filter(e=>scanViews.get(fileId).ids.has(e.id)).map(e=>e.type)]);$('event-filter').value='active';
+ $('baseline-all-configs').checked=false;visibleEventTypes=new Set([...config.event_types,...(annotations?.items||[]).filter(e=>scanViews.get(fileId).ids.has(e.id)).map(e=>e.type)]);
  setResultGroup(resultGroupForProfile(config.profile));renderDisplayChoices();refreshEventVisibility();
 
 }
@@ -119,7 +121,7 @@ let activeResultGroup='automatic';
 const resultVisibility=new Map();
 function eventResultGroup(e){if(e.source&&e.source!=='detector')return 'manual';if(isBaseline(e.detection_profile))return 'baseline';if(isAdaptive(e.detection_profile))return 'adaptive';return e.detection_profile==='company_rules'||(!e.detection_profile&&(e.type.startsWith('公司')||(e.note||'').includes('公司规则试验')))?'company':'automatic'}
 function displayTypesForCurrentGroup(){const base=activeResultGroup==='baseline'?(detectionTypes[activeBaselineProfile]||detectionTypes.dynamic_baseline):activeResultGroup==='adaptive'?detectionTypes.adaptive_test:activeResultGroup==='company'?detectionTypes.company_rules:activeResultGroup==='automatic'?[...detectionTypes.engineering,...detectionTypes.device_candidates]:Object.keys(eventColors);return [...new Set([...base,...(annotations?.items||[]).filter(e=>matchesResultGroup(e,activeResultGroup)).map(e=>e.type)])]}
-function setResultGroup(group){if(!['automatic','company','manual','adaptive','baseline'].includes(group))return;$('device-metrics').hidden=group!=='automatic';$('adaptive-version-label').hidden=group!=='adaptive';$('baseline-history-label').hidden=group!=='baseline';if(group!==activeResultGroup){resultVisibility.set(activeResultGroup,{types:[...visibleEventTypes],status:$('event-filter').value||'active'});activeResultGroup=group;const saved=resultVisibility.get(group);visibleEventTypes=new Set(saved?.types||Object.keys(eventColors));$('event-filter').value=saved?.status||'active'}renderDisplayChoices();refreshEventVisibility()}
+function setResultGroup(group){if(!['automatic','company','manual','adaptive','baseline'].includes(group))return;$('device-metrics').hidden=group!=='automatic';$('adaptive-version-label').hidden=group!=='adaptive';$('baseline-history-label').hidden=group!=='baseline';if(group!==activeResultGroup){resultVisibility.set(activeResultGroup,[...visibleEventTypes]);activeResultGroup=group;const saved=resultVisibility.get(group);visibleEventTypes=new Set(saved||Object.keys(eventColors))}renderDisplayChoices();refreshEventVisibility()}
 const $=id=>document.getElementById(id);
 function displayText(value){return String(value).replaceAll('公司公式Q','压力估算Q').replaceAll('公司A','波动幅度A').replaceAll('公司判定同源A','检测用A').replaceAll('公司规则','幅度规则').replaceAll('公司暂停','幅度规则暂停').replaceAll('公司低通气','幅度规则低通气').replaceAll('公司','幅度')}
 function channelLabel(name){if(name==='流量')return '流量 · 患者呼吸流量 [L/min]';const unit=meta?.channel_units?.[name],role=meta?.channel_roles?.[name];return displayText(name+(!multiNames.includes(name)&&!allDynamicNames.includes(name)&&!allOptimizedNames.includes(name)&&role&&role!==name?' · '+role:'')+(unit?' ['+unit+']':''))}
@@ -136,7 +138,7 @@ function clock(t){let s=((Math.floor(baseSecond+t)%86400)+86400)%86400;const tex
 function fit(c){const d=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d)}const ctx=c.getContext('2d');ctx.setTransform(d,0,0,d,0,0);ctx.clearRect(0,0,w,h);return [ctx,w,h]}
 function bound(a,b){const total=Math.max(meta.duration,1),width=Math.min(total,Math.max(1,b-a));a=Math.max(0,Math.min(a,total-width));return [a,a+width]}
 function scheduleRender(){if(!raf)raf=requestAnimationFrame(()=>{raf=0;render();drawOverview()})}
-function setView(a,b,delay=120){if(!meta)return;view=bound(a,b);hover=null;markSelection=null;$('range').textContent=clock(view[0])+' — '+clock(view[1])+' · '+(view[1]-view[0]).toFixed(1)+' 秒';scheduleRender();clearTimeout(timer);if(!drag)timer=setTimeout(loadWave,delay)}
+function setView(a,b,delay=120){if(!meta)return;view=bound(a,b);hover=null;$('range').textContent=clock(view[0])+' — '+clock(view[1])+' · '+(view[1]-view[0]).toFixed(1)+' 秒';scheduleRender();clearTimeout(timer);if(!drag)timer=setTimeout(loadWave,delay)}
 function cacheCovers(){return cache&&cache.key===selectionKey()&&cache.start<=view[0]&&cache.end>=view[1]&&cache.width<=3*(view[1]-view[0])&&cache.pixels>=$('plots').clientWidth*.8}
 async function loadWave(force=false){
  if(!meta)return;
@@ -189,21 +191,35 @@ function makePlots(){
   const section=document.createElement('section');section.dataset.name=group[0];section.className='wave-panel'+(group.length>1?' merged':'');
   const title=document.createElement('div');title.className='title group-title';
   const legend=document.createElement('div');legend.className='legend';
+  const targets=groups.filter(g=>g!==group);
+  const controls=document.createElement('details');controls.className='group-controls';
+  const menuLabel=document.createElement('summary');menuLabel.textContent='管理通道';controls.append(menuLabel);
+  const settings=document.createElement('div');settings.className='group-channel-settings';controls.append(settings);
   group.forEach(name=>{
-   const chip=document.createElement('div');chip.className='channel-chip';
-   const handle=document.createElement('span');handle.className='channel-handle';handle.draggable=true;handle.textContent='⠿ '+channelLabel(name)+(displayMode==='engineering'&&meta.engineering_pressure_compensated&&['气压1','气压2'].includes(name)?'（已减气压3）':'');handle.style.color=channelColor(name);handle.title='拖到另一张图上叠加';
+   const label=channelLabel(name)+(displayMode==='engineering'&&meta.engineering_pressure_compensated&&['气压1','气压2'].includes(name)?'（已减气压3）':'');
+   const handle=document.createElement('span');handle.className='channel-chip channel-handle';handle.draggable=true;
+   handle.textContent=displayText(name);handle.style.setProperty('--channel-color',channelColor(name));
+   handle.title=label+' · 拖到另一张图可叠加';handle.setAttribute('aria-label',label);
    handle.ondragstart=e=>{movingChannel=name;e.dataTransfer.setData('text/plain',name);e.dataTransfer.effectAllowed='move';document.body.classList.add('channel-dragging')};
    handle.ondragend=()=>{movingChannel=null;document.body.classList.remove('channel-dragging');document.querySelectorAll('.drop-target').forEach(el=>el.classList.remove('drop-target'))};
-   chip.append(handle);
-   const select=document.createElement('select');select.setAttribute('aria-label',displayText(name)+'移动到');select.title='也可从这里选择叠加目标';
-   const hint=document.createElement('option');hint.value='';hint.textContent='叠加到…';select.append(hint);
-   groups.filter(g=>g!==group).forEach(g=>{const option=document.createElement('option');option.value=g[0];option.textContent=displayText(g.join(' + '));select.append(option)});
-   select.onchange=()=>{if(select.value)moveChannel(name,select.value)};chip.append(select);
-   if(group.length>1){const split=document.createElement('button');split.textContent='拆出';split.setAttribute('aria-label','拆出'+displayText(name));split.onclick=()=>moveChannel(name,null);chip.append(split)}
-   legend.append(chip);
+   legend.append(handle);
+   if(!targets.length&&group.length===1)return;
+   const row=document.createElement('div');row.className='group-channel-row';
+   const caption=document.createElement('span');caption.textContent=label;row.append(caption);
+   if(targets.length){
+    const select=document.createElement('select');select.setAttribute('aria-label',displayText(name)+'叠加到');
+    const hint=document.createElement('option');hint.value='';hint.textContent='叠加到…';select.append(hint);
+    targets.forEach(g=>{const option=document.createElement('option');option.value=g[0];option.textContent=displayText(g.join(' + '));select.append(option)});
+    select.onchange=()=>{if(select.value)moveChannel(name,select.value)};row.append(select);
+   }
+   if(group.length>1){const split=document.createElement('button');split.type='button';split.textContent='拆出';split.setAttribute('aria-label','拆出'+displayText(name));split.onclick=()=>moveChannel(name,null);row.append(split)}
+   settings.append(row);
   });
-  const axis=document.createElement('span');axis.className='axis-note';axis.textContent=(group.length>1?'叠加 · 共用数值轴':'拖动通道名称可叠加')+(displayMode==='engineering'?' · 旧脚本处理值':' · 原始值');
-  const units=[...new Set(group.map(n=>meta.channel_units?.[n]||'未确认'))];axis.textContent+=' · '+(units.length===1&&units[0]==='Pa'?'纵轴 Pa':'单位 '+units.join(' / '));title.append(legend,axis);const value=document.createElement('div');value.className='value group-value';value.dataset.active='false';
+  const axis=document.createElement('span');axis.className='axis-note';
+  const units=[...new Set(group.map(n=>meta.channel_units?.[n]||'未确认'))];
+  axis.textContent=(group.length>1?'共用纵轴 · ':'')+units.join(' / ');axis.title=displayMode==='engineering'?'旧脚本处理值':'原始值';
+  title.append(legend,axis);if(targets.length||group.length>1)title.append(controls);
+  const value=document.createElement('div');value.className='value group-value';value.dataset.active='false';
   for(const name of group){const slot=document.createElement('span'),text=document.createElement('span');slot.className='readout-item';slot.style.color=channelColor(name);slot.title=channelLabel(name);text.className='readout-text';slot.append(text);value.append(slot)}
   const wrap=document.createElement('div');wrap.className='wave-wrap';const canvas=document.createElement('canvas'),overlay=document.createElement('canvas');overlay.className='cursor-layer';wrap.append(canvas,overlay);section.append(title,value,wrap);host.append(section);events(overlay);
   section.ondragover=e=>{if(movingChannel&&!group.includes(movingChannel)){e.preventDefault();e.dataTransfer.dropEffect='move';section.classList.add('drop-target')}};
@@ -220,10 +236,10 @@ function finishDrag(){if(!drag)return;drag=null;scheduleRender();clearTimeout(ti
 function events(c){
  c.addEventListener('wheel',e=>{e.preventDefault();if(!meta)return;if(e.ctrlKey){const t=pointer(c,e),factor=e.deltaY>0?1.2:1/1.2;setView(t-(t-view[0])*factor,t+(view[1]-t)*factor)}else{const shift=(e.deltaY+e.deltaX)/600*(view[1]-view[0]);setView(view[0]+shift,view[1]+shift)}},{passive:false});
  c.oncontextmenu=e=>e.preventDefault();
- c.onpointerdown=e=>{if(e.button!==0&&e.button!==2)return;if(marking&&e.button===0){if(!annotations)return error('事件存储尚不可用，请刷新页面');clearTimeout(timer);const name=c.closest('section').dataset.name;markSelection={start:pointer(c,e),end:pointer(c,e),channels:[...groups.find(g=>g.includes(name))],mode:displayMode};c.setPointerCapture(e.pointerId);scheduleCursor();return}clearTimeout(timer);controller?.abort();serial++;drag={x:e.clientX,range:[...view],limits:new Map()};hover=null;render();c.setPointerCapture(e.pointerId)};
- c.onpointermove=e=>{if(markSelection){markSelection.end=pointer(c,e);scheduleCursor()}else if(drag){const shift=(drag.x-e.clientX)/(c.clientWidth-84)*(drag.range[1]-drag.range[0]);setView(drag.range[0]+shift,drag.range[1]+shift)}else{hover=pointer(c,e);scheduleCursor()}};
- c.onpointerup=()=>{if(markSelection){const s=markSelection;markSelection=null;scheduleCursor();if(Math.abs(s.end-s.start)>.001)openEventEditor(Math.min(s.start,s.end),Math.max(s.start,s.end),s.channels);return}finishDrag()};
- c.onpointercancel=c.onlostpointercapture=()=>{markSelection=null;scheduleCursor();finishDrag()};
+ c.onpointerdown=e=>{if(e.button!==0&&e.button!==2)return;clearTimeout(timer);controller?.abort();serial++;drag={x:e.clientX,range:[...view],limits:new Map()};hover=null;render();c.setPointerCapture(e.pointerId)};
+ c.onpointermove=e=>{if(drag){const shift=(drag.x-e.clientX)/(c.clientWidth-84)*(drag.range[1]-drag.range[0]);setView(drag.range[0]+shift,drag.range[1]+shift)}else{hover=pointer(c,e);scheduleCursor()}};
+ c.onpointerup=finishDrag;
+ c.onpointercancel=c.onlostpointercapture=finishDrag;
  c.onpointerleave=()=>{if(!drag){hover=null;scheduleCursor()}};c.ondblclick=()=>setView(0,Math.max(meta.duration,1));
 }
 function drawOverview(){if(!meta)return;const c=$('overview');if(!overviewImage||overviewImage.width!==Math.round(c.clientWidth*(devicePixelRatio||1))||overviewImage.height!==Math.round(c.clientHeight*(devicePixelRatio||1))){paint(c,overview,[0,Math.max(1,meta.duration)],'#547b98',true);overviewImage=document.createElement('canvas');overviewImage.width=c.width;overviewImage.height=c.height;overviewImage.getContext('2d').drawImage(c,0,0)}const [ctx,w,h]=fit(c);ctx.drawImage(overviewImage,0,0,w,h);const X=t=>12+t/Math.max(1,meta.duration)*(w-28),a=X(view[0]),b=X(view[1]);ctx.fillStyle='#167c8928';ctx.fillRect(a,0,b-a,h);ctx.strokeStyle='#167c89';ctx.strokeRect(a,1,Math.max(2,b-a),h-2);drawExternalEvents(ctx,X,[0,meta.duration],2,h-18,false)}
@@ -238,44 +254,54 @@ function showModeInfo(){
  $('info').replaceChildren();[meta.name,meta.rows.toLocaleString()+' 行',meta.start+' — '+meta.end,'当前模式断线 '+meta.gaps.length+' 处'].forEach(s=>{const span=document.createElement('span');span.textContent=s;$('info').append(span)});
 }
 async function loadOverview(){const gen=generation,channel=meta.channels.includes('流量')?'流量':selected[0]||meta.channels[0],q=new URLSearchParams({start:0,end:Math.max(meta.duration,1),pixels:1000,channel,mode:displayMode});try{const d=await api('/api/wave?'+q);if(gen!==generation)return;overview=d.series[channel]||[];overviewImage=null;drawOverview()}catch(e){if(gen===generation)error(e)}}
-function changeMode(mode){if(!meta)return;markSelection=null;displayMode=mode;generation++;serial++;controller?.abort();cache=null;data={};overview=[];overviewImage=null;hover=null;drag=null;$('plots').dataset.layout='';showModeInfo();setView(...view,0);loadOverview();renderEventList()}
+function changeMode(mode){if(!meta)return;displayMode=mode;generation++;serial++;controller?.abort();cache=null;data={};overview=[];overviewImage=null;hover=null;drag=null;$('plots').dataset.layout='';showModeInfo();setView(...view,0);loadOverview();renderEventList()}
 async function init(m){
  $('show-all-channels').checked=true;
- for(const name of annotationTypes){if(![...$('event-type').options].some(o=>o.value===name)){const o=document.createElement('option');o.value=name;o.textContent=displayText(name);$('event-type').append(o)}}
  generation++;const gen=generation;serial++;controller?.abort();clearTimeout(timer);meta=m;displayMode='engineering';cache=null;data={};overviewImage=null;hover=null;drag=null;groups=[];
  const parts=m.start.slice(11,19).split(':').map(Number);baseSecond=parts[0]*3600+parts[1]*60+parts[2];
- $('error').textContent='';if(duplicateScanResolve)finishDuplicateScan('cancel');if($('scan-history-dialog').open)$('scan-history-dialog').close();historySerial++;$('feedback-run').replaceChildren();annotations=null;restoreExternalEvents();eventDraft=null;markSelection=null;if($('event-dialog').open)$('event-dialog').close();try{if(!m.file_id)throw Error('请重启查看器后再使用事件保存');annotations=new AnnotationModel(m,localStorage);annotations.load()}catch(e){annotations=null;error(e)}renderEventList();
+ $('error').textContent='';if(duplicateScanResolve)finishDuplicateScan('cancel');if($('scan-history-dialog').open)$('scan-history-dialog').close();historySerial++;$('feedback-run').replaceChildren();$('scan-result').replaceChildren();annotations=null;restoreExternalEvents();try{if(!m.file_id)throw Error('请重启查看器后再使用事件筛查');const storage=usesSessionEvents(m)?transientAnnotationStorage:localStorage;annotations=new AnnotationModel(m,storage);annotations.load()}catch(e){annotations=null;error(e)}renderEventList();
  $('info').replaceChildren();[m.name,m.rows.toLocaleString()+' 行',m.start+' — '+m.end,'时间间隔异常 '+m.gaps.length+' 处'].forEach(s=>{const span=document.createElement('span');span.textContent=s;$('info').append(span)});
  groups=defaultPlotGroups.map(group=>group.filter(n=>m.channels.includes(n))).filter(group=>group.length);
  if(!groups.length)groups=m.channels.slice(0,3).map(name=>[name]);
  selected=groups.flat();
  $('channels').replaceChildren();m.channels.filter(name=>!analysisDerivedNames.includes(name)).forEach(name=>{const l=document.createElement('label'),c=document.createElement('input');c.type='checkbox';c.checked=selected.includes(name);c.dataset.name=name;c.onchange=channelSelectionChanged;l.append(c,document.createTextNode(' '+channelLabel(name)));$('channels').append(l)});filterChannels();
- $('time').value=m.start.slice(11,19);overview=[];$('plots').dataset.layout='';showModeInfo();setView(0,Math.max(m.duration,1),0);loadOverview();eventSyncReady=false;serverRevision=0;refreshSharedEvents(true);loadFeedbackRuns();$('feedback-comparison').replaceChildren();$('device-metrics').replaceChildren();loadDeviceMetrics();renderDetectionChoices();renderDisplayChoices();reviewedTypeSelection.clear();renderReviewChoices();$('review-mode').value='spot';$('review-start').value=$('review-end').value='';$('package-result').textContent='';$('package-open').hidden=true;pendingPackage=null;if($('package-dialog').open)$('package-dialog').close();
+ const previousBatch=usesSessionEvents(m)?scanViews.get(m.file_id):null;
+ $('time').value=m.start.slice(11,19);overview=[];$('plots').dataset.layout='';showModeInfo();setView(0,Math.max(m.duration,1),0);loadOverview();eventSyncReady=false;serverRevision=0;
+ const eventsReady=refreshSharedEvents(true);const runsReady=loadFeedbackRuns(previousBatch?.runId);
+ $('device-metrics').replaceChildren();loadDeviceMetrics();renderDetectionChoices();renderDisplayChoices();
  resizeSidebar();restoreFileView();if(!fileSwitching){let entry=fileLibrary.find(f=>f.file_id===m.file_id);if(!entry){entry={id:++librarySerial,name:m.name,file_id:m.file_id,file:null};fileLibrary.push(entry)}activeLibraryId=entry.id;renderFileLibrary()}
+ if(previousBatch){
+  await Promise.all([eventsReady,runsReady]);
+  if(meta!==m)return;
+  try{await showScanBatch(previousBatch.runId,true)}catch(e){if(meta===m)error(e)}
+ }
 }
-$('file').onchange=async e=>{const files=[...e.target.files];if(!files.length)return;if(fileSwitching||scanning||eventSaving||packageSaving){error('请等待扫描、保存或文件切换完成后再添加');e.target.value='';return}const added=[];for(const file of files){let entry=fileLibrary.find(f=>f.file&&f.name===file.name&&f.file.size===file.size&&f.file.lastModified===file.lastModified);if(!entry){entry={id:++librarySerial,name:file.name,file,file_id:null};fileLibrary.push(entry)}else entry.file=file;added.push(entry)}renderFileLibrary();try{await switchLibraryFile(added[0].id)}finally{e.target.value=''}};
+$('file').onchange=async e=>{const files=[...e.target.files];if(!files.length)return;if(fileSwitching||scanning||eventSaving){error('请等待扫描、保存或文件切换完成后再添加');e.target.value='';return}const added=[];for(const file of files){let entry=fileLibrary.find(f=>f.file&&f.name===file.name&&f.file.size===file.size&&f.file.lastModified===file.lastModified);if(!entry){entry={id:++librarySerial,name:file.name,file,file_id:null};fileLibrary.push(entry)}else entry.file=file;added.push(entry)}renderFileLibrary();try{await switchLibraryFile(added[0].id)}finally{e.target.value=''}};
 function rememberFileView(){if(!meta)return;try{localStorage.setItem('respiratory-view-v1:'+meta.file_id,JSON.stringify({view,selected,groups,displayMode,channelScopeVersion:2,channelListVersion:1,showAllChannels:$('show-all-channels').checked,window:$('window').value,time:$('time').value}))}catch(e){/* View preference storage must not block annotation or switching. */}}
 function restoreFileView(){if(!meta)return;try{const saved=JSON.parse(localStorage.getItem('respiratory-view-v1:'+meta.file_id)||'null');if(!saved||!Array.isArray(saved.view)||saved.view.length!==2||!saved.view.every(Number.isFinite)||saved.view[1]<=saved.view[0])return;$('show-all-channels').checked=saved.channelListVersion!==1||saved.showAllChannels!==false;const fallback=[...selected];if(saved.channelScopeVersion===2&&Array.isArray(saved.selected))selected=saved.selected.filter(n=>meta.channels.includes(n));selected=selected.filter(n=>!analysisDerivedNames.includes(n));if(saved.selected?.length&&!selected.length)selected=fallback;if(saved.channelScopeVersion===2&&Array.isArray(saved.groups))groups=saved.groups.filter(Array.isArray);reconcileGroups();displayMode=['raw','engineering'].includes(saved.displayMode)?saved.displayMode:displayMode;showModeInfo();$('channels').querySelectorAll('input').forEach(c=>c.checked=selected.includes(c.dataset.name));filterChannels();if(saved.window)$('window').value=saved.window;if(saved.time)$('time').value=saved.time;generation++;serial++;controller?.abort();cache=null;data={};overviewImage=null;$('plots').dataset.layout='';setView(...saved.view,0);loadOverview()}catch(e){/* Invalid preferences fall back to the normal initial view. */}}
-function renderFileLibrary(){const host=$('file-list');host.replaceChildren();const query=$('file-search').value.trim().toLowerCase();for(const entry of fileLibrary){if(!entry.name.toLowerCase().includes(query))continue;const row=document.createElement('div');row.className='library-row';const button=document.createElement('button');button.type='button';button.className='library-file';button.textContent=(entry.id===activeLibraryId?'● ':'')+entry.name+(entry.error?' · 打开失败':'');button.title=entry.name+(entry.file_id?'\n内容指纹：'+entry.file_id:'\n点击时读取');button.disabled=fileSwitching;button.setAttribute('aria-pressed',String(entry.id===activeLibraryId));button.onclick=()=>switchLibraryFile(entry.id);const close=document.createElement('button');close.type='button';close.className='library-close';close.textContent='×';close.title='关闭文件，不删除CSV和标记';close.setAttribute('aria-label','关闭文件 '+entry.name);close.disabled=fileSwitching;close.onclick=()=>closeLibraryFile(entry.id);row.append(button,close);host.append(row)}$('file-library-count').textContent=fileLibrary.length+' 份';}
+function renderFileLibrary(){const host=$('file-list');host.replaceChildren();const query=$('file-search').value.trim().toLowerCase();for(const entry of fileLibrary){if(!entry.name.toLowerCase().includes(query))continue;const row=document.createElement('div');row.className='library-row';const button=document.createElement('button');button.type='button';button.className='library-file';button.textContent=(entry.id===activeLibraryId?'● ':'')+entry.name+(entry.error?' · 打开失败':'');button.title=entry.name+(entry.file_id?'\n内容指纹：'+entry.file_id:'\n点击时读取');button.disabled=fileSwitching;button.setAttribute('aria-pressed',String(entry.id===activeLibraryId));button.onclick=()=>switchLibraryFile(entry.id);const close=document.createElement('button');close.type='button';close.className='library-close';close.textContent='×';close.title='关闭文件';close.setAttribute('aria-label','关闭文件 '+entry.name);close.disabled=fileSwitching;close.onclick=()=>closeLibraryFile(entry.id);row.append(button,close);host.append(row)}$('file-library-count').textContent=fileLibrary.length+' 份';}
 async function closeLibraryFile(id){
  if(fileSwitching)return;
- if(scanning||eventSaving||packageSaving||$('event-dialog').open||$('package-dialog').open)return error('请先完成扫描、保存或关闭编辑窗口，再关闭文件');
+ if(scanning||eventSaving)return error('请等待筛查或导入完成后再关闭文件');
  const entry=fileLibrary.find(f=>f.id===id);if(!entry)return;
+ const temporary=usesSessionEvents();
  if(id===activeLibraryId){const next=fileLibrary.find(f=>f.id!==id&&!f.error)||fileLibrary.find(f=>f.id!==id);
   if(next){await switchLibraryFile(next.id);if(activeLibraryId===id)return;}
   else{fileSwitching=true;renderFileLibrary();rememberFileView();try{await api('/api/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:meta.file_id})});clearCurrentFileView()}catch(e){error(e);return}finally{fileSwitching=false}}
  }
  if(entry.file_id)try{await api('/api/cache/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:entry.file_id})})}catch(e){/* A failed cache release must not remove saved annotations. */}
- entry.file=null;fileLibrary=fileLibrary.filter(f=>f.id!==id);renderFileLibrary();$('status').textContent=meta?'已关闭 '+entry.name+'；原始CSV和标记保留。':'所有文件已关闭，可重新添加CSV；标记和查看位置保留。';
+ if(temporary){scanViews.delete(entry.file_id);sessionExternalEvents.delete(entry.file_id)}
+ entry.file=null;fileLibrary=fileLibrary.filter(f=>f.id!==id);renderFileLibrary();
+ $('status').textContent=(meta?'已关闭 '+entry.name:'所有文件已关闭')+(temporary?'；临时筛查结果已清除。':'；原始 CSV 和标记保留。');
 }
-function clearCurrentFileView(){generation++;serial++;feedbackSerial++;historySerial++;controller?.abort();clearTimeout(timer);meta=null;restoreExternalEvents();annotations=null;activeLibraryId=null;eventSyncReady=false;serverRevision=0;selected=[];groups=[];data={};overview=[];cache=null;overviewImage=null;hover=null;drag=null;markSelection=null;eventDraft=null;pendingPackage=null;lastPackageFileId=null;
- for(const id of ['plots','channels','feedback-run','feedback-comparison','device-metrics','scan-result','package-result'])$(id).replaceChildren();
- $('plots').dataset.layout='';$('info').textContent='尚未加载文件，请添加CSV';$('mode-note').textContent='请选择一份或多份CSV';$('channel-count').textContent='已选 0 / 0';$('range').textContent='';$('error').textContent='';$('package-open').hidden=true;if($('scan-history-dialog').open)$('scan-history-dialog').close();const canvas=$('overview');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);renderEventList();
+function clearCurrentFileView(){generation++;serial++;feedbackSerial++;historySerial++;controller?.abort();clearTimeout(timer);meta=null;restoreExternalEvents();annotations=null;activeLibraryId=null;eventSyncReady=false;serverRevision=0;selected=[];groups=[];data={};overview=[];cache=null;overviewImage=null;hover=null;drag=null;
+ for(const id of ['plots','channels','feedback-run','device-metrics','scan-result'])$(id).replaceChildren();
+ $('plots').dataset.layout='';$('info').textContent='尚未加载文件，请添加CSV';$('mode-note').textContent='请选择一份或多份CSV';$('channel-count').textContent='已选 0 / 0';$('range').textContent='';$('error').textContent='';if($('scan-history-dialog').open)$('scan-history-dialog').close();const canvas=$('overview');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);renderEventList();
 }
 
 async function switchLibraryFile(id){
  const entry=fileLibrary.find(f=>f.id===id);if(!entry||fileSwitching)return;
- if(scanning||eventSaving||packageSaving||$('event-dialog').open||$('package-dialog').open)return error('请先完成扫描、保存或关闭当前标记/导出窗口，再切换文件');
+ if(scanning||eventSaving)return error('请等待筛查或导入完成后再切换文件');
  if(id===activeLibraryId&&entry.file_id===meta?.file_id)return;
  fileSwitching=true;renderFileLibrary();rememberFileView();$('status').textContent='正在读取 '+entry.name+' …';
  try{const active=fileLibrary.find(f=>f.id===activeLibraryId);if(active&&!active.file&&meta?.file_id===active.file_id){const response=await fetch('/api/current-csv?file_id='+encodeURIComponent(active.file_id));if(!response.ok)throw Error('原文件已切换，请刷新后重新选择');active.file=new File([await response.blob()],active.name,{type:'text/csv'})}
@@ -283,7 +309,7 @@ async function switchLibraryFile(id){
  if(entry.file_id){const cached=await api('/api/activate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:entry.file_id})});if(cached.hit){m=cached.meta;cacheHit=true}}
  if(!m){if(!entry.file)throw Error('此文件不在缓存中，请用“添加CSV”重新选择');$('status').textContent='首次读取或缓存已释放，正在解析 '+entry.name+' …';m=await api('/api/open',{method:'POST',headers:{'X-Filename':encodeURIComponent(entry.file.name)},body:entry.file})}
  const duplicate=fileLibrary.find(f=>f.id!==entry.id&&f.file_id===m.file_id);if(duplicate){duplicate.file=entry.file;duplicate.name=entry.name;fileLibrary=fileLibrary.filter(f=>f.id!==entry.id);activeLibraryId=duplicate.id}else{entry.file_id=m.file_id;entry.error=null;activeLibraryId=entry.id}
- await init(m);$('status').textContent=(cacheHit?'已从缓存快速切换到 ':'已读取 ')+m.name+'，已恢复该文件的标记与查看设置。';
+ await init(m);const restored=usesSessionEvents(m)?(scanViews.has(m.file_id)?'，已恢复本次筛查结果。':'。可手动开始筛查。'):'，已恢复该文件的标记与查看设置。';$('status').textContent=(cacheHit?'已从缓存快速切换到 ':'已读取 ')+m.name+restored;
  }catch(e){entry.error=e.message;error(e);$('status').textContent='文件切换失败，原有标记未删除';if(meta)loadWave(true)}finally{fileSwitching=false;renderFileLibrary()}
 }
 $('file-search').oninput=renderFileLibrary;
@@ -312,6 +338,7 @@ window.addEventListener('resize',()=>{if(embeddedAnalysis&&!embeddedAnalysisVisi
 function eventClock(t){const d=new Date(Date.parse(meta.start.replace(' ','T'))+Math.round(t*1000));return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':')+'.'+String(d.getMilliseconds()).padStart(3,'0')}
 const externalKey=id=>'respiratory-external-events-v1:'+id;
 let externalEvents=[];
+const sessionExternalEvents=new Map();
 function externalTime(value){
  if(typeof value!=='string'||!/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:\.\d{1,3})?$/.test(value))return NaN;
  const t=Date.parse(value.replace(' ','T')+'Z');
@@ -345,7 +372,8 @@ function renderExternalEvents(message=''){
 }
 function restoreExternalEvents(){
  externalEvents=[];
- if(meta)try{
+ if(usesSessionEvents())externalEvents=sessionExternalEvents.get(meta.file_id)||[];
+ else if(meta)try{
   const saved=JSON.parse(localStorage.getItem(externalKey(meta.file_id))||'[]');
   // Old entries called the report timestamp offset "start".
   if(Array.isArray(saved))externalEvents=saved.filter(e=>e&&Number.isFinite(e.duration)&&e.duration>0)
@@ -365,12 +393,13 @@ $('external-file').onchange=async e=>{
   const details=(outside?'；'+outside+' 条在当前 CSV 时间范围外':'')+(unresolved?'；'+unresolved+' 条无法定位为单次事件':'');
   if(!events.length)return renderExternalEvents('未导入任何事件'+details+'。请核对 CSV 对应的录制日期和时间。');
   externalEvents=events;let saved=true;
-  try{localStorage.setItem(externalKey(recording.file_id),JSON.stringify(events))}catch(e){saved=false}
+  if(usesSessionEvents(recording)){sessionExternalEvents.set(recording.file_id,events);saved=false}
+  else try{localStorage.setItem(externalKey(recording.file_id),JSON.stringify(events))}catch(e){saved=false}
   renderExternalEvents('已导入 '+events.length+' 条'+details+'。紫色区间按报告终点往前标记'+(saved?'。':'；本次显示，刷新后需重新导入。'));scheduleRender();
  }catch(err){renderExternalEvents('导入失败：'+err.message)}
 };
 $('external-show').onchange=()=>scheduleRender();
-$('external-clear').onclick=()=>{if(!meta)return;try{localStorage.removeItem(externalKey(meta.file_id))}catch(e){return renderExternalEvents('无法清除本机保存的外部事件。')}externalEvents=[];renderExternalEvents();scheduleRender()};
+$('external-clear').onclick=()=>{if(!meta)return;if(usesSessionEvents())sessionExternalEvents.delete(meta.file_id);else try{localStorage.removeItem(externalKey(meta.file_id))}catch(e){return renderExternalEvents('无法清除本机保存的外部事件。')}externalEvents=[];renderExternalEvents();scheduleRender()};
 $('external-jump').onchange=e=>{if(e.target.value==='')return;const item=externalEvents[Number(e.target.value)];if(item)setView(item.start-8,item.end+8,0);e.target.value=''};
 function drawExternalEvents(ctx,X,range,top,bottom,labels){
  if(!$('external-show').checked)return;
@@ -397,10 +426,8 @@ function drawEventBands(ctx,w,h,range,channels,firstPlot=false){
  const events=firstPlot&&!firstPlotEvents.checked?[]:visibleEvents(annotations?.items||[]).filter(e=>e.end>=range[0]&&e.start<=range[1]&&(firstPlot||e.channels.some(c=>channels.includes(c)))&&(!isBaseline(e.detection_profile)||!channels.some(c=>allDynamicNames.includes(c)||allOptimizedNames.includes(c)||allPatientNames.includes(c))||e.detection_method===dynamicMethod()&&(!channels.some(c=>allPatientNames.includes(c))||isPatientFlow(e.detection_profile))&&(!channels.some(c=>allOptimizedNames.includes(c))||isOptimized(e.detection_profile))));
  events.forEach((e,i)=>{const a=Math.max(left,X(e.start)),b=Math.min(w-16,X(e.end)),color=eventColors[e.type];ctx.fillStyle=color+'28';ctx.fillRect(a,12,Math.max(1,b-a),h-40);ctx.strokeStyle=color;ctx.setLineDash([]);ctx.strokeRect(a,12,Math.max(1,b-a),h-40);if(b-a>45){ctx.fillStyle=color;ctx.font='11px Microsoft YaHei';ctx.fillText(displayText(e.type)+' '+(e.end-e.start).toFixed(2)+'s',a+3,24+(i%3)*13)}});
  if(firstPlot)drawExternalEvents(ctx,X,range,30,h-29,true);
- if(markSelection&&markSelection.mode===displayMode){const a=X(Math.min(markSelection.start,markSelection.end)),b=X(Math.max(markSelection.start,markSelection.end));ctx.fillStyle='#167c8938';ctx.fillRect(a,12,b-a,h-40)}ctx.restore();
+ ctx.restore();
 }
-function openEventEditor(start,end,channels,event=null){if(fileSwitching)return error('文件正在切换，请稍候再标记');if(!annotations)return error('事件保存不可用，请刷新或重启查看器');eventDraft=event?{...event}: {id:crypto.randomUUID(),mode:displayMode};$('event-dialog-title').textContent=event?'修改事件标记':'新建事件标记';$('event-start').value=start.toFixed(3);$('event-end').value=Math.min(end,eventDraft.mode==='engineering'?meta.display_duration:meta.raw_duration).toFixed(3);$('event-type').value=event?.type||'波形异常';$('event-note').value=event?.note||'';$('event-error').textContent='';$('event-axis-note').textContent=eventDraft.mode==='engineering'?'当前标记基于估算展开时间，持续时间仅供人工复核，不是已验证的采样计时。':'当前标记基于文件原始时间轴，时间戳本身可能只有秒级精度。';$('event-channels').replaceChildren();meta.channels.forEach(name=>{const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.value=name;input.checked=channels.includes(name);label.append(input,document.createTextNode(displayText(name)));$('event-channels').append(label)});updateEventDuration();$('event-dialog').showModal()}
-function updateEventDuration(){const a=Number($('event-start').value),b=Number($('event-end').value);$('event-duration').textContent=Number.isFinite(a)&&Number.isFinite(b)?eventClock(a)+' — '+eventClock(b)+' · 持续 '+(b-a).toFixed(3)+' 秒':''}
 function renderEventModeLabel(){
  const profile=$('scan-profile').value,manual=activeResultGroup==='manual';
  const labels={patient_flow_v4:'患者流量：暂停/低通气（优化v4）',company_rules:'幅度规则（试验）',dynamic_baseline_v3:'动态基线优化测试（v3 · 起点复核）'};
@@ -411,31 +438,26 @@ function renderEventModeLabel(){
 function renderEventList(){
  const list=$('event-list'),previousScroll=list.scrollTop||0;list.replaceChildren();
  renderEventModeLabel();
- const saved=[...(annotations?.items||[])],all=saved.filter(e=>matchesResultGroup(e,activeResultGroup)).sort((a,b)=>a.start-b.start),filter=$('event-filter').value||'active';
- for(const [group,id,label] of [['automatic','result-auto','自动检测'],['company','result-company','幅度规则'],['adaptive','result-adaptive','自适应测试'],['baseline','result-baseline','动态基线优化v3'],['manual','result-manual','人工 / Agent']]){const button=$(id);button.textContent=label+(group==='company'?' · '+(amplitudeSource()==='csv_flow'?'CSV流量':'压力估算Q'):'')+'（'+saved.filter(e=>matchesResultGroup(e,group)).length+'）';button.ariaPressed=String(group===activeResultGroup&&(group!=='baseline'||activeBaselineProfile==='dynamic_baseline_v3'))}
- const items=visibleEvents(all),scope=currentScanView();$('scan-view-note').textContent=scope?(primaryProfiles.includes(scope.profile)?'仅显示所选扫描批次，其他批次保留在历史中。':'正在查看已停用算法的历史批次；选择患者流量v4、幅度规则或v3可继续扫描。'):'当前算法历史；扫描完成后只显示本次结果。';
+ const saved=[...(annotations?.items||[])],all=saved.filter(e=>e.status!=='ignored'&&matchesResultGroup(e,activeResultGroup)).sort((a,b)=>a.start-b.start);
+ for(const [group,id,label] of [['automatic','result-auto','自动检测'],['company','result-company','幅度规则'],['adaptive','result-adaptive','自适应测试'],['baseline','result-baseline','动态基线优化v3'],['manual','result-manual','人工 / Agent']]){const button=$(id);button.textContent=label+(group==='company'?' · '+(amplitudeSource()==='csv_flow'?'CSV流量':'压力估算Q'):'')+'（'+saved.filter(e=>e.status!=='ignored'&&matchesResultGroup(e,group)).length+'）';button.ariaPressed=String(group===activeResultGroup&&(group!=='baseline'||activeBaselineProfile==='dynamic_baseline_v3'))}
+ const items=visibleEvents(all),scope=currentScanView();$('scan-view-note').textContent=scope?(primaryProfiles.includes(scope.profile)?'':'正在查看历史方案的批次。'):'';
  $('event-count').textContent='显示 '+items.length+' / 共 '+all.length+' 条';
- $('event-summary').textContent=annotations?(activeResultGroup==='baseline'&&$('baseline-all-configs').checked?'所有配置对照：可能含重叠候选，请勿累计为独立事件。':'')+'待复核 '+all.filter(e=>e.status==='candidate').length+' · 已确认 '+all.filter(e=>e.status==='reviewed').length+' · 已忽略 '+all.filter(e=>e.status==='ignored').length+'。点击跳转可显示对应通道与时间轴；自动结果需人工复核。':'标记存储未就绪，请刷新页面。';
+ $('event-summary').textContent=annotations?(activeResultGroup==='baseline'&&$('baseline-all-configs').checked?'所有配置对照：可能含重叠候选，请勿累计为独立事件。':'')+(items.length?'选择结果可定位到波形。':''):'';
  const choices=displayTypesForCurrentGroup(),checked=choices.filter(t=>visibleEventTypes.has(t)).length;$('display-type-summary').textContent=checked===choices.length?'本页全部类型':checked?'本页已选 '+checked+' 种类型':'未选择显示类型';
- if(!items.length){const text=document.createElement('p');text.textContent=visibleEventTypes.size?'暂无符合类型及状态筛选的事件。可更改显示条件。':'未选择显示类型，事件已隐藏；点击“显示全部”恢复。';list.append(text)}
+ if(!items.length){const text=document.createElement('p');text.textContent=all.length?'当前类型筛选下没有结果。':annotations?(scope?'本批次未发现候选。':'暂无筛查结果。'):'打开 CSV 后可开始筛查。';list.append(text)}
  items.forEach(e=>{
   const row=document.createElement('div');row.className='event-row';const text=document.createElement('div');text.className='event-text';
-  const title=document.createElement('strong');title.style.color=eventColors[e.type];title.textContent=displayText(e.type)+' · '+(e.end-e.start).toFixed(3)+' 秒 · '+({agent:'Agent',manual:'人工',detector:'自动检测'}[e.source]||e.source)+' / '+({candidate:'待复核',reviewed:'已确认',ignored:'已忽略'}[e.status]);
+  const title=document.createElement('strong');title.style.color=eventColors[e.type];title.textContent=displayText(e.type)+' · '+(e.end-e.start).toFixed(3)+' 秒';
   const detail=document.createElement('small');detail.textContent=eventClock(e.start)+' — '+eventClock(e.end)+' · '+(e.mode==='engineering'?'估算展开时间':'原始秒级时间')+' · '+displayText(e.channels.join('、'));
   if(isBaseline(e.detection_profile))detail.textContent+=' · '+(isPatientFlow(e.detection_profile)?'患者流量v4 · ':isOptimized(e.detection_profile)?(e.detection_profile==='dynamic_baseline_v3'?'优化v3 · ':'优化v2 · '):'')+baselineMethodLabel(e.detection_method,e.detection_profile)+' / '+e.detection_window_seconds+'秒窗口'+(['dynamic_baseline_v3','patient_flow_v4'].includes(e.detection_profile)?' / 持续≥'+eventDuration(e)+'秒':'');
    const note=document.createElement('small');note.textContent=displayText(e.note);
    const noteBox=document.createElement('details'),noteTitle=document.createElement('summary');noteBox.className='event-note';noteTitle.textContent='算法说明 / 备注';noteBox.append(noteTitle,note);text.append(title,detail);
    if(e.evidence?.review_flags?.length){const hints=document.createElement('small');hints.className='event-hints';hints.textContent=displayText(e.evidence.review_flags.join('；'));text.append(hints)}
    text.append(noteBox);
-  if(isPatientFlow(e.detection_profile)&&e.evidence){const box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),thresholdTime=Number.isFinite(e.evidence.threshold_met_at)?e.evidence.threshold_met_at:e.evidence.confirmed_at;summary.textContent='查看患者流量候选依据';body.textContent='患者呼吸流量（L/min） · 绝对值幅度 · 两类候选均按原始源秒连续达标至少10秒，并有主窗口支持 · 暂停剩余≤10%，低通气剩余≤70%。'+(Number.isFinite(e.evidence.main_reference_amplitude)?' 主窗口参考 '+e.evidence.main_reference_amplitude.toFixed(3)+' L/min。':'')+(Number.isFinite(e.evidence.remaining_ratio_median)?' 主窗口剩余中位 '+(e.evidence.remaining_ratio_median*100).toFixed(1)+'%。':'')+' 门限达标时间 '+(Number.isFinite(thresholdTime)?eventClock(thresholdTime):'未记录')+'；结果形成时间 '+(Number.isFinite(e.evidence.finalized_at)?eventClock(e.evidence.finalized_at):'未记录')+'。'+'低通气未接入血氧下降或觉醒支持，仍需人工复核。'+(Array.isArray(e.evidence.review_flags)?e.evidence.review_flags.join('；'):'');box.append(summary,body);text.append(box)}
-  if(isOptimized(e.detection_profile)&&e.evidence){const v=e.evidence,box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),range=a=>Array.isArray(a)&&a.length===2&&a.every(Number.isFinite)?a.map(eventClock).join(' — '):'未记录';summary.textContent='查看原始优化判定依据（人工修改后不重算）';body.textContent=(v.boundary_basis==='main_window_end'&&!v.onset_backtrack_seconds&&!v.recovery_trim_seconds&&!v.normal_low_phase_review?'主窗口连续达标区间 ':'估计波形区间 ')+range(v.estimated_waveform_interval)+(v.onset_backtrack_seconds||v.recovery_trim_seconds||v.normal_low_phase_review?' · 修正后持续 ':v.boundary_basis==='main_window_end'?' · 主窗口连续 ':' · 1秒复核连续 ')+(v.boundary_duration_seconds??'未知')+'秒 · 主窗口父过程达标 '+(v.main_qualified_total_seconds??'未知')+'秒，区间：'+(Array.isArray(v.main_qualified_intervals)?v.main_qualified_intervals.map(range).join('；'):'未记录')+' · 确认 '+(Number.isFinite(v.confirmed_at)?eventClock(v.confirmed_at):'未记录')+(v.extremely_low_strength?' · 连续'+(v.minimum_duration??10)+'秒≤10%极低强度标记':'')+'。'+(Array.isArray(v.review_flags)?v.review_flags.join('；'):'');if(v.threshold_boundary_review)body.textContent+=' · 较早终点 '+eventClock(v.threshold_boundary_review.alternative_end)+'（'+v.threshold_boundary_review.alternative_duration_seconds+' 秒）；原终点 '+eventClock(v.estimated_waveform_interval[1]);if(Number.isFinite(v.recovery_trim_seconds))body.textContent+=' · 原判定终点 '+eventClock(v.unadjusted_end)+'，按流量恢复缩短 '+v.recovery_trim_seconds+' 秒';if(Number.isFinite(v.recovery_cycle_seconds))body.textContent+=' · 恢复波动间隔约 '+v.recovery_cycle_seconds+' 秒，复核于 '+eventClock(v.recovery_confirmed_at);if(Number.isFinite(v.rhythm_period_seconds))body.textContent+=(v.rhythm_basis==='earlier'?' · 较早节律（仅用于起点）约 ':' · 近期节律约 ')+v.rhythm_period_seconds+' 秒/周期'+(v.rhythm_interval_count?'（'+v.rhythm_interval_count+' 个一致间隔）':'')+'，起点回看范围 '+(v.flow_tail_search_seconds??v.weak_onset_search_seconds)+' 秒';if(Number.isFinite(v.onset_backtrack_seconds))body.textContent+=' · 原主窗口起点 '+eventClock(v.unadjusted_start)+'，按流量提前 '+v.onset_backtrack_seconds+' 秒';if(v.normal_low_phase_review){const phase=v.normal_low_phase_review;body.textContent+=(phase.low_phase_basis==='independent_phase_mean'?' · 近期低流量阶段平均 ':phase.low_phase_basis==='independent_phase'?' · 独立估计低流量阶段，上限 ':' · 典型低流量阶段约 ')+phase.low_phase_seconds+' 秒（'+phase.low_phase_count+' 个一致样本），从 '+eventClock(phase.waveform_start)+' 后移 '+phase.delayed_seconds+' 秒再计时'}if(v.flow_recovery_breaks?.length)body.textContent+=' · 原始流量识别到 '+v.flow_recovery_breaks.length+' 次持续回升并回落，已分段复核';if(v.normal_low_phase_review?.low_phase_reference_basis==='held_non_event_history')body.textContent+=' · 沿用事件前的有效尾段参考，最新样本距起点 '+v.normal_low_phase_review.low_phase_reference_age_seconds.toFixed(1)+' 秒';if(v.unconfirmed_low_phase_review){const phase=v.unconfirmed_low_phase_review;body.textContent+=' · 起点待复核：近期低位阶段平均 '+phase.low_phase_seconds.toFixed(2)+' 秒，但本次波形未确认超过参考时长后仍持续低位'}if(v.post_inspiratory_pause_review){const phase=v.post_inspiratory_pause_review;body.textContent+=' · 高流量结束后的常见间隔约 '+phase.pause_seconds+' 秒（'+phase.sample_count+' 个一致周期），预计 '+eventClock(phase.expected_low_second)+' 进入低流量相；观察到中间平台持续，未见预期波形变化'+(phase.delayed_seconds?'，起点后移 '+phase.delayed_seconds+' 秒':'')}if(Number.isFinite(v.weak_tail_trim_seconds))body.textContent+=' · 回溯起点 '+eventClock(v.weak_tail_start)+' 仍在趋稳，剔除尾段 '+v.weak_tail_trim_seconds+' 秒';if(Number.isFinite(v.flow_tail_trim_seconds))body.textContent+=' · 原始起点 '+eventClock(v.unadjusted_start)+'，流量趋稳后开始计时（缩短 '+v.flow_tail_trim_seconds+' 秒）';if(Array.isArray(v.leak_change_context)&&v.leak_change_context.length)body.textContent+=' · 总漏气字段变化：'+v.leak_change_context.map(s=>eventClock(s.time)+' '+s.before+'→'+s.after+' L/min').join('；');box.append(summary,body);text.append(box)}
-  if(['adaptive_multifeature','dynamic_baseline'].includes(e.detection_profile)&&e.evidence){const v=e.evidence,box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),num=(n,d=2)=>Number.isFinite(n)?n.toFixed(d):'未知';summary.textContent='查看原始自动判定依据（人工修改后保留，不自动重算）';body.textContent='参考B '+num(v.reference_amplitude)+' L/min · 强度/A中位 '+num(v.amplitude_median??v.strength_median)+' L/min · 剩余中位 '+num(v.remaining_ratio_median*100,1)+'% / 最大 '+num(v.remaining_ratio_max*100,1)+'% · 严格达标 '+num(v.strict_duration_seconds,0)+' 秒 · 首次确认 '+(Number.isFinite(v.confirmed_at)?eventClock(v.confirmed_at):'未知')+'。'+(Array.isArray(v.review_flags)?v.review_flags.join('；'):'');box.append(summary,body);text.append(box)}row.append(text);
-  const statusAction=status=>async()=>{try{await commitShared(m=>m.save({...e,status,updated_at:new Date().toISOString()}))}catch(err){error(err)}};
-  const actions=[['跳转',()=>jumpEvent(e)],['修改',()=>openEventEditor(e.start,e.end,e.channels,e)]];
-  if(e.status==='candidate')actions.push(['确认',statusAction('reviewed')],['忽略',statusAction('ignored')]);
-  if(e.status==='ignored')actions.push(['恢复待复核',statusAction('candidate')]);
-  actions.push(['删除',async()=>{try{await commitShared(m=>m.remove(e.id))}catch(err){error(err)}}]);
-   for(const [label,action] of actions){const button=document.createElement('button');button.textContent=label;button.setAttribute('aria-label',label+'事件 '+displayText(e.type)+' '+e.start.toFixed(3));button.onclick=action;row.append(button)}list.append(row);
+  if(isPatientFlow(e.detection_profile)&&e.evidence){const box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),thresholdTime=Number.isFinite(e.evidence.threshold_met_at)?e.evidence.threshold_met_at:e.evidence.confirmed_at;summary.textContent='查看患者流量候选依据';body.textContent='患者呼吸流量（L/min） · 绝对值幅度 · 两类候选均按原始源秒连续达标至少10秒，并有主窗口支持 · 暂停剩余≤10%，低通气剩余≤70%。'+(Number.isFinite(e.evidence.main_reference_amplitude)?' 主窗口参考 '+e.evidence.main_reference_amplitude.toFixed(3)+' L/min。':'')+(Number.isFinite(e.evidence.remaining_ratio_median)?' 主窗口剩余中位 '+(e.evidence.remaining_ratio_median*100).toFixed(1)+'%。':'')+' 门限达标时间 '+(Number.isFinite(thresholdTime)?eventClock(thresholdTime):'未记录')+'；结果形成时间 '+(Number.isFinite(e.evidence.finalized_at)?eventClock(e.evidence.finalized_at):'未记录')+'。'+'低通气候选缺少血氧下降或觉醒证据。'+(Array.isArray(e.evidence.review_flags)?e.evidence.review_flags.join('；'):'');box.append(summary,body);text.append(box)}
+  if(isOptimized(e.detection_profile)&&e.evidence){const v=e.evidence,box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),range=a=>Array.isArray(a)&&a.length===2&&a.every(Number.isFinite)?a.map(eventClock).join(' — '):'未记录';summary.textContent='原始优化判定依据';body.textContent=(v.boundary_basis==='main_window_end'&&!v.onset_backtrack_seconds&&!v.recovery_trim_seconds&&!v.normal_low_phase_review?'主窗口连续达标区间 ':'估计波形区间 ')+range(v.estimated_waveform_interval)+(v.onset_backtrack_seconds||v.recovery_trim_seconds||v.normal_low_phase_review?' · 修正后持续 ':v.boundary_basis==='main_window_end'?' · 主窗口连续 ':' · 1秒复核连续 ')+(v.boundary_duration_seconds??'未知')+'秒 · 主窗口父过程达标 '+(v.main_qualified_total_seconds??'未知')+'秒，区间：'+(Array.isArray(v.main_qualified_intervals)?v.main_qualified_intervals.map(range).join('；'):'未记录')+' · 确认 '+(Number.isFinite(v.confirmed_at)?eventClock(v.confirmed_at):'未记录')+(v.extremely_low_strength?' · 连续'+(v.minimum_duration??10)+'秒≤10%极低强度标记':'')+'。'+(Array.isArray(v.review_flags)?v.review_flags.join('；'):'');if(v.threshold_boundary_review)body.textContent+=' · 较早终点 '+eventClock(v.threshold_boundary_review.alternative_end)+'（'+v.threshold_boundary_review.alternative_duration_seconds+' 秒）；原终点 '+eventClock(v.estimated_waveform_interval[1]);if(Number.isFinite(v.recovery_trim_seconds))body.textContent+=' · 原判定终点 '+eventClock(v.unadjusted_end)+'，按流量恢复缩短 '+v.recovery_trim_seconds+' 秒';if(Number.isFinite(v.recovery_cycle_seconds))body.textContent+=' · 恢复波动间隔约 '+v.recovery_cycle_seconds+' 秒，复核于 '+eventClock(v.recovery_confirmed_at);if(Number.isFinite(v.rhythm_period_seconds))body.textContent+=(v.rhythm_basis==='earlier'?' · 较早节律（仅用于起点）约 ':' · 近期节律约 ')+v.rhythm_period_seconds+' 秒/周期'+(v.rhythm_interval_count?'（'+v.rhythm_interval_count+' 个一致间隔）':'')+'，起点回看范围 '+(v.flow_tail_search_seconds??v.weak_onset_search_seconds)+' 秒';if(Number.isFinite(v.onset_backtrack_seconds))body.textContent+=' · 原主窗口起点 '+eventClock(v.unadjusted_start)+'，按流量提前 '+v.onset_backtrack_seconds+' 秒';if(v.normal_low_phase_review){const phase=v.normal_low_phase_review;body.textContent+=(phase.low_phase_basis==='independent_phase_mean'?' · 近期低流量阶段平均 ':phase.low_phase_basis==='independent_phase'?' · 独立估计低流量阶段，上限 ':' · 典型低流量阶段约 ')+phase.low_phase_seconds+' 秒（'+phase.low_phase_count+' 个一致样本），从 '+eventClock(phase.waveform_start)+' 后移 '+phase.delayed_seconds+' 秒再计时'}if(v.flow_recovery_breaks?.length)body.textContent+=' · 原始流量识别到 '+v.flow_recovery_breaks.length+' 次持续回升并回落，已分段复核';if(v.normal_low_phase_review?.low_phase_reference_basis==='held_non_event_history')body.textContent+=' · 沿用事件前的有效尾段参考，最新样本距起点 '+v.normal_low_phase_review.low_phase_reference_age_seconds.toFixed(1)+' 秒';if(v.unconfirmed_low_phase_review){const phase=v.unconfirmed_low_phase_review;body.textContent+=' · 起点待复核：近期低位阶段平均 '+phase.low_phase_seconds.toFixed(2)+' 秒，但本次波形未确认超过参考时长后仍持续低位'}if(v.post_inspiratory_pause_review){const phase=v.post_inspiratory_pause_review;body.textContent+=' · 高流量结束后的常见间隔约 '+phase.pause_seconds+' 秒（'+phase.sample_count+' 个一致周期），预计 '+eventClock(phase.expected_low_second)+' 进入低流量相；观察到中间平台持续，未见预期波形变化'+(phase.delayed_seconds?'，起点后移 '+phase.delayed_seconds+' 秒':'')}if(Number.isFinite(v.weak_tail_trim_seconds))body.textContent+=' · 回溯起点 '+eventClock(v.weak_tail_start)+' 仍在趋稳，剔除尾段 '+v.weak_tail_trim_seconds+' 秒';if(Number.isFinite(v.flow_tail_trim_seconds))body.textContent+=' · 原始起点 '+eventClock(v.unadjusted_start)+'，流量趋稳后开始计时（缩短 '+v.flow_tail_trim_seconds+' 秒）';if(Array.isArray(v.leak_change_context)&&v.leak_change_context.length)body.textContent+=' · 总漏气字段变化：'+v.leak_change_context.map(s=>eventClock(s.time)+' '+s.before+'→'+s.after+' L/min').join('；');box.append(summary,body);text.append(box)}
+  if(['adaptive_multifeature','dynamic_baseline'].includes(e.detection_profile)&&e.evidence){const v=e.evidence,box=document.createElement('details'),summary=document.createElement('summary'),body=document.createElement('small'),num=(n,d=2)=>Number.isFinite(n)?n.toFixed(d):'未知';summary.textContent='原始自动判定依据';body.textContent='参考B '+num(v.reference_amplitude)+' L/min · 强度/A中位 '+num(v.amplitude_median??v.strength_median)+' L/min · 剩余中位 '+num(v.remaining_ratio_median*100,1)+'% / 最大 '+num(v.remaining_ratio_max*100,1)+'% · 严格达标 '+num(v.strict_duration_seconds,0)+' 秒 · 首次确认 '+(Number.isFinite(v.confirmed_at)?eventClock(v.confirmed_at):'未知')+'。'+(Array.isArray(v.review_flags)?v.review_flags.join('；'):'');box.append(summary,body);text.append(box)}row.append(text);
+  const jump=document.createElement('button');jump.type='button';jump.textContent='定位';jump.setAttribute('aria-label','定位到波形 '+displayText(e.type)+' '+e.start.toFixed(3));jump.onclick=()=>jumpEvent(e);row.append(jump);list.append(row);
  });
  list.scrollTop=previousScroll;
 }
@@ -444,14 +466,9 @@ function jumpEvent(e){if(isPatientFlow(e.detection_profile))patientInitialized=t
  const margin=Math.max(1,(e.end-e.start)*.5);setView(e.start-margin,e.end+margin,0);refreshEventVisibility();$('event-list').scrollTop=panelScroll;const fileId=meta.file_id;requestAnimationFrame(()=>{if(meta?.file_id===fileId)scrollToEventWaveform(e)});$('status').textContent='保持当前显示模式；事件计时依据：'+(e.mode==='raw'?'原始秒级时间':'估算展开时间')}
 function scrollToEventWaveform(e){const panels=[...$('plots').querySelectorAll('.wave-panel')],priorities=[...e.channels.filter(n=>!analysisDerivedNames.includes(n)),...e.channels];let target;for(const channel of priorities){target=panels.find(p=>groups.find(g=>g[0]===p.dataset.name)?.includes(channel));if(target)break}(target||$('plots')).scrollIntoView?.({block:'start',behavior:'smooth'})}
 function downloadEvents(kind){if(!annotations)return error('没有可导出的标记记录');let content,mime;if(kind==='json'){content=JSON.stringify(annotations.export(),null,2);mime='application/json'}else{const safe=v=>'"'+String(v).replace(/^[=+@\-]/,"'$&").replace(/"/g,'""')+'"';const rows=[['id','类型','起始时间','结束时间','持续秒数','起始偏移秒','结束偏移秒','通道','时间轴','来源','备注'],...annotations.items.map(e=>[e.id,e.type,eventClock(e.start),eventClock(e.end),(e.end-e.start).toFixed(3),e.start,e.end,e.channels.join(';'),e.mode,e.source+' / '+e.status,e.note])];content='\ufeff'+rows.map(row=>row.map(safe).join(',')).join('\r\n');mime='text/csv;charset=utf-8'}const url=URL.createObjectURL(new Blob([content],{type:mime})),a=document.createElement('a');a.href=url;a.download=meta.name.replace(/\.csv$/i,'')+'.events.'+kind;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-$('mark-mode').onclick=()=>{marking=!marking;$('mark-mode').setAttribute('aria-pressed',String(marking));$('mark-mode').textContent='标记模式：'+(marking?'开启':'关闭');markSelection=null;scheduleCursor()};
-$('mark-window').onclick=()=>{if(meta&&selected.length)openEventEditor(view[0],view[1],[...selected]);else error('请先选择要标记的通道')};
-$('event-start').oninput=$('event-end').oninput=updateEventDuration;
-$('event-cancel').onclick=()=>$('event-dialog').close();
-$('event-form').onsubmit=async e=>{e.preventDefault();try{if(!$('event-start').value||!$('event-end').value)throw Error('请输入起始和结束时间');await commitShared(m=>m.save({...eventDraft,start:Number($('event-start').value),end:Number($('event-end').value),type:$('event-type').value,note:$('event-note').value,channels:[...$('event-channels').querySelectorAll('input:checked')].map(c=>c.value),updated_at:new Date().toISOString()}));if(!eventDraft.source||eventDraft.source==='manual'||eventDraft.source==='agent')setResultGroup('manual');$('event-dialog').close();renderEventList();scheduleCursor();$('status').textContent='事件已保存到本机共享存储，Agent和网页均可读取'}catch(err){$('event-error').textContent=err.message}};
 $('export-events-json').onclick=()=>downloadEvents('json');$('export-events-csv').onclick=()=>downloadEvents('csv');
-$('import-events').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(!annotations)throw Error('请先打开数据文件');if(file.size>10*1024*1024)throw Error('标记JSON请小于10MB');const packet=JSON.parse(await file.text());await commitShared(m=>m.import(packet));renderEventList();scheduleCursor();$('status').textContent='事件已导入并保存到本机共享存储'}catch(err){error(err)}finally{e.target.value=''}};
-window.setInterval?.(()=>{if(annotations&&eventSyncReady&&!document.hidden&&!$('event-dialog').open&&!eventSaving)refreshSharedEvents(false)},3000);
+$('import-events').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(!annotations)throw Error('请先打开数据文件');if(file.size>10*1024*1024)throw Error('标记JSON请小于10MB');const packet=JSON.parse(await file.text());await commitShared(m=>m.import(packet));renderEventList();scheduleCursor();$('status').textContent=usesSessionEvents()?'事件已导入当前会话':'事件已导入本机共享存储'}catch(err){error(err)}finally{e.target.value=''}};
+window.setInterval?.(()=>{if(annotations&&eventSyncReady&&!document.hidden&&!eventSaving)refreshSharedEvents(false)},3000);
 api('/api/meta').then(init).catch(()=>{$('info').textContent='请点击右上角打开 CSV';$('status').textContent='尚未加载文件'});
 
 
@@ -467,7 +484,7 @@ async function refreshSharedEvents(initial=false){
   let packet=await api('/api/events?file_id='+encodeURIComponent(fileId));
   if(annotations!==model||eventSaving)return;
   const marker=model.key+':shared-migrated';
-  if(initial&&!localStorage.getItem(marker)){
+  if(initial&&!usesSessionEvents()&&!localStorage.getItem(marker)){
    const merged=new Map(packet.events.map(e=>[e.id,model.validate(e)]));
    for(const e of model.items){
     const normalized=model.validate(e);
@@ -489,7 +506,7 @@ async function commitShared(mutate){
  try{
   const draft=new AnnotationModel(meta,{setItem(){},getItem(){return null}});
   draft.items=model.items.map(e=>({...e,channels:[...e.channels]}));mutate(draft);
-  const packet=await api('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:fileId,revision:serverRevision,events:draft.items,reviewer:$('reviewer').value})});
+  const packet=await api('/api/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:fileId,revision:serverRevision,events:draft.items})});
   if(annotations!==model)return;
   applyShared(packet);
   try{model.commit(packet.events)}catch(e){error('事件已保存到本机，浏览器备份失败：'+e.message)}
@@ -523,13 +540,13 @@ async function scanRecording(whole){
   const scanArgs={file_id:fileId,start,end,min_duration:minDuration,reduction_ratio:isPatientFlow($('scan-profile').value)?.7:baseline?.5:$('scan-profile').value==='company_rules'?.3:ratio,profile:$('scan-profile').value,event_types:eventTypes,flow_source:baseline||isAdaptive($('scan-profile').value)?'csv_flow':amplitudeSource(),...(baseline?baselineArgs():{})};
   const existing=await api('/api/scans/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(scanArgs)});
   if(annotations!==model)return;
-  if(existing.match){const action=await chooseDuplicateScan(existing.match);if(annotations!==model)return;if(action!=='rescan'){if(action==='reuse'){await loadFeedbackRuns(existing.match.run_id);await showScanBatch(existing.match.run_id);await loadDeviceMetrics();$('scan-result').textContent='已选择已有批次用于反馈导出；未重新扫描，未新增批次。当前仅显示此批次的事件。'}else $('scan-result').textContent='已取消扫描，未新增批次。';return}}
+  if(existing.match){const action=await chooseDuplicateScan(existing.match);if(annotations!==model)return;if(action!=='rescan'){if(action==='reuse'){await loadFeedbackRuns(existing.match.run_id);await showScanBatch(existing.match.run_id);await loadDeviceMetrics();$('scan-result').textContent='已显示所选批次。'}else $('scan-result').textContent='已取消扫描，未新增批次。';return}}
   const result=await api('/api/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(scanArgs)});
   if(annotations!==model)return;
   applyShared(result.packet);
   await loadFeedbackRuns(result.packet.run_id);
   await showScanBatch(result.packet.run_id);
-  $('scan-result').textContent='扫描完成：检出 '+result.detected_count+' 条，新增 '+result.added+' 条，跳过已有重叠记录 '+result.skipped+' 条。有效参考区间 '+result.eligible_seconds+' 秒。保持当前显示模式，候选按原始秒级时间定位；点击事件列表“跳转”复核。'+displayText(result.warnings.join(' '));
+  $('scan-result').textContent='扫描完成：检出 '+result.detected_count+' 条，新增 '+result.added+' 条，跳过已有重叠记录 '+result.skipped+' 条。有效参考区间 '+result.eligible_seconds+' 秒。候选按原始时间定位。'+displayText(result.warnings.join(' '));
   showDeviceMetrics(result.device_metrics);
   renderEventList();
   if(scanArgs.profile==='adaptive_multifeature')$('adaptive-version').value='adaptive-flow-test-v3-multifeature';
@@ -546,8 +563,7 @@ function refreshMultiPlots(){if(meta&&selected.some(n=>multiNames.includes(n))){
 $('scan-ratio').onchange=refreshMultiPlots;$('scan-duration').onchange=refreshMultiPlots;
 function showDeviceMetrics(m){const host=$('device-metrics');host.hidden=activeResultGroup!=='automatic';host.replaceChildren();if(!m)return;host.textContent='设备方案最近一次扫描候选统计（未人工确认）：所选流量类型候选时长 '+(m.total_candidate_duration_seconds===null?'未检测':m.total_candidate_duration_seconds+' 秒')+'；'+Object.entries(m.by_type).map(([type,v])=>type+(v.count===null?' 未检测':' '+v.count+' 条 / '+v.duration_seconds+' 秒')).join('；')+'。中枢性暂停时长：不可判定；临床低通气时长：不可判定；AHI：不可计算。总时长按本次勾选的流量候选区间并集计算，不含漏气与数据质量事件。列表保留旧方案记录，请勿与本方案重复累计。人工修改后请查看事件列表，此处保留扫描原结果。'}
 async function loadDeviceMetrics(){if(!meta)return;const fid=meta.file_id;try{const result=await api('/api/device-summary?file_id='+encodeURIComponent(fid));if(meta?.file_id===fid)showDeviceMetrics(result.device_metrics)}catch(e){if(meta?.file_id===fid)error(e)}}
-$('event-filter').onchange=refreshEventVisibility;
-function visibleEvents(items){const status=$('event-filter').value||'active';return items.filter(e=>matchesResultGroup(e,activeResultGroup)&&visibleEventTypes.has(e.type)&&(status==='all'||(status==='active'?e.status!=='ignored':e.status===status)))}
+function visibleEvents(items){return items.filter(e=>e.status!=='ignored'&&matchesResultGroup(e,activeResultGroup)&&visibleEventTypes.has(e.type))}
 function refreshEventVisibility(){renderEventList();scheduleCursor()}
 function renderDetectionChoices(){const host=$('scan-type-options');host.replaceChildren();const available=detectionTypes[$('scan-profile').value]||detectionTypes.device_candidates;for(const type of available){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.checked=chosenDetectionTypes.has(type);input.value=type;input.onchange=()=>{if(input.checked)chosenDetectionTypes.add(type);else chosenDetectionTypes.delete(type);updateDetectionSummary()};label.append(input,document.createTextNode(displayText(type)));host.append(label)}updateDetectionSummary()}
 function updateDetectionSummary(){const count=chosenDetectionTypes.size,total=(detectionTypes[$('scan-profile').value]||detectionTypes.device_candidates).length;$('scan-type-summary').textContent=count===total?'全检测（'+total+' 类）':count?'已选 '+count+' / '+total+' 类':'请选择检测类型'}
@@ -569,13 +585,13 @@ function showBaselineDetectionCurves(){
  if(patient)groups.push(wanted.slice(5));
  if(optimized){groups.push(wanted.slice(6));if(b.dynamic_method==='detrended_abs')groups.push([wanted[5]])}
  $('channels').querySelectorAll('input').forEach(c=>c.checked=selected.includes(c.dataset.name));filterChannels();cache=null;data={};loadWave(true);
- $('status').textContent=patient?'已显示患者流量绝对值幅度、参考、暂停/低通气门限、剩余比例与1秒复核曲线。候选仍需复核，未接入血氧或觉醒证据。':optimized?'已显示优化测试的主窗口、1秒复核强度/参考及背景估计（仅去背景法）。估计区间、主窗口达标区间和确认时刻分开记录。':'已显示当前检测方法和窗口对应的强度、参考、25%/50%门限和剩余比例；点击扫描后保存候选，在“动态基线检测”页签复核。';
+ $('status').textContent=patient?'已显示患者流量绝对值幅度、参考、暂停/低通气门限、剩余比例与1秒复核曲线。低通气候选缺少血氧下降或觉醒证据。':optimized?'已显示优化测试的主窗口、1秒复核强度/参考及背景估计（仅去背景法）。估计区间、主窗口达标区间和确认时刻分开记录。':'已显示当前检测方法和窗口对应的强度、参考、25%/50%门限和剩余比例；候选可在「筛查结果」中查看。';
 }
 $('show-company-a').onclick=()=>{if(isBaseline($('scan-profile').value))return showBaselineDetectionCurves();if(!meta)return error('请先打开CSV');const names=amplitudeChannels(),available=names.filter(n=>meta.channels.includes(n));if(available.length<2)return error('所选输入或A通道不可用，请重启更新后的查看器并重新打开CSV');selected=[...new Set([...selected,...available])];if($('scan-profile').value==='adaptive_multifeature')groupMultiEvidence();else{groups=groups.map(g=>g.filter(n=>n!==names[1])).filter(g=>g.length);groups.push([names[1]])}$('channels').querySelectorAll('input').forEach(c=>c.checked=selected.includes(c.dataset.name));filterChannels();cache=null;loadWave(true);$('status').textContent=$('scan-profile').value==='adaptive_multifeature'?'已显示A、参考B、严格比例门限和剩余/下降百分比；对应当前参数，噪声代理未标定。':$('scan-profile').value==='adaptive_test'?'已显示CSV流量和测试鲁棒A；实际冻结参考与迟滞门限见候选依据；不绘制固定10/17阈值。':'已显示所选输入及5秒幅度A；每秒更新，前5秒及无效窗口留空，虚线为10和17。'};
 $('amplitude-source').onchange=()=>{pruneProfileChannels();if(activeResultGroup==='company')setResultGroup('company');if(meta)$('show-company-a').onclick()};
 $('scan-types-all').onclick=()=>{chosenDetectionTypes=new Set(detectionTypes[$('scan-profile').value]||detectionTypes.device_candidates);renderDetectionChoices()};
 $('scan-types-none').onclick=()=>{chosenDetectionTypes.clear();renderDetectionChoices()};
-$('display-types-all').onclick=()=>{visibleEventTypes=new Set(Object.keys(eventColors));$('event-filter').value='all';renderDisplayChoices();refreshEventVisibility()};
+$('display-types-all').onclick=()=>{visibleEventTypes=new Set(Object.keys(eventColors));renderDisplayChoices();refreshEventVisibility()};
 $('display-types-none').onclick=()=>{visibleEventTypes.clear();renderDisplayChoices();refreshEventVisibility()};
 
 async function loadFeedbackRuns(preferred){
@@ -615,29 +631,32 @@ $('history-search').onclick=()=>{historyOffset=0;loadScanHistory()};$('history-s
 $('history-query').onkeydown=e=>{if(e.key==='Enter')$('history-search').onclick()};
 $('history-prev').onclick=()=>{historyOffset=Math.max(0,historyOffset-20);loadScanHistory()};$('history-next').onclick=()=>{historyOffset+=20;loadScanHistory()};
 function downloadJsonPacket(packet,suffix){const blob=new Blob([JSON.stringify(packet,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=meta.name.replace(/\.csv$/i,'')+'.'+packet.run_id+'.'+suffix+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-async function exportFeedback(kind){
+async function exportAutomaticFeedback(){
  if(!meta||!$('feedback-run').value)return error('请先执行扫描并选择扫描批次');
- if(eventSaving||scanning)return error('请等待当前保存或扫描完成');
- const startText=$('review-start').value,endText=$('review-end').value;
- if(kind==='reviewed'&&(!startText||!endText||!$('reviewer').value.trim()))return error('请填写校验人和实际已检查的起止秒数');
- try{const args=kind==='reviewed'?reviewExportArgs():{file_id:meta.file_id,run_id:$('feedback-run').value};const fid=meta.file_id,packet=await api('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...args,kind})});if(meta?.file_id!==fid)return;downloadJsonPacket(packet,kind==='automatic'?'automatic':'reviewed')}catch(e){error(e)}
+ if(eventSaving||scanning)return error('请等待当前筛查或导入完成');
+ try{
+  const fid=meta.file_id,runId=$('feedback-run').value;
+  const packet=await api('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:fid,run_id:runId,kind:'automatic'})});
+  if(meta?.file_id===fid)downloadJsonPacket(packet,'automatic');
+ }catch(e){error(e)}
 }
-let reviewedTypeSelection=new Set(),pendingPackage=null,packageSaving=false,lastPackageFileId=null;
-function renderReviewChoices(){const host=$('review-type-options');host.replaceChildren();for(const type of Object.keys(eventColors)){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.value=type;input.checked=reviewedTypeSelection.has(type);input.onchange=()=>{if(input.checked)reviewedTypeSelection.add(type);else reviewedTypeSelection.delete(type);$('review-type-summary').textContent=reviewedTypeSelection.size?'已选 '+reviewedTypeSelection.size+' 类':'请选择实际检查的类型'};label.append(input,document.createTextNode(displayText(type)));host.append(label)}$('review-type-summary').textContent=reviewedTypeSelection.size?'已选 '+reviewedTypeSelection.size+' 类':'请选择实际检查的类型'}
-function reviewExportArgs(){if(fileSwitching)throw Error('文件正在切换，请稍候再导出');if(!meta||!$('feedback-run').value)throw Error('请先选择对应的自动扫描批次');if(!$('review-start').value||!$('review-end').value||!$('reviewer').value.trim())throw Error('请填写校验人和实际检查范围');if(!reviewedTypeSelection.size)throw Error('请勾选实际检查过的事件类型');return {file_id:meta.file_id,run_id:$('feedback-run').value,reviewer:$('reviewer').value.trim(),reviewed_range:[Number($('review-start').value),Number($('review-end').value)],reviewed_types:[...reviewedTypeSelection],review_mode:$('review-mode').value||'spot'}}
-$('export-package').onclick=async()=>{if(scanning||eventSaving||packageSaving)return error('请等待扫描或保存完成');const button=$('export-package');button.disabled=true;try{const args=reviewExportArgs(),preview=await api('/api/feedback/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args)});if(meta?.file_id!==args.file_id)return;pendingPackage={...args,expected_revision:preview.revision};$('package-preview').textContent='文件：'+preview.file_name+'\n批次：'+preview.run_id+'\n校验人：'+preview.reviewer+'\n原始时间：第 '+preview.reviewed_range.join(' — ')+' 秒\n检查类型：'+displayText(preview.reviewed_types.join('、'))+'\n检查方式：'+(preview.review_mode==='complete'?'完整检查所选类型，包含主动补标漏检':'逐条复核；其余空白区间保持未知')+'\n范围内标记 '+preview.event_count+' 条，其中已确认 '+preview.confirmed_count+' 条、待复核 '+preview.pending_count+' 条；跨边界 '+preview.boundary_count+' 条单独记录，不直接训练。\n保存位置：'+preview.folder+'\n\n原始CSV只存一份；自动JSON按批次复用。校验JSON仅保存所选区间/类型，不重复嵌入整份自动快照和全文件历史；相同内容重复保存会复用。';$('package-agree').checked=false;$('package-save').disabled=true;$('package-error').textContent='';$('package-dialog').showModal()}catch(e){error(e)}finally{button.disabled=false}};
-$('package-agree').onchange=()=>{$('package-save').disabled=!$('package-agree').checked};
-$('package-cancel').onclick=()=>{if(!packageSaving){pendingPackage=null;$('package-dialog').close()}};
-$('package-dialog').oncancel=e=>{if(packageSaving)e.preventDefault();else pendingPackage=null};
-$('package-save').onclick=async()=>{if(!pendingPackage||!$('package-agree').checked||packageSaving)return;const args={...pendingPackage,confirmed:true};packageSaving=true;$('package-save').disabled=true;$('package-cancel').disabled=true;try{const result=await api('/api/feedback/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args)});if(meta?.file_id!==args.file_id)return;$('package-dialog').close();pendingPackage=null;lastPackageFileId=args.file_id;$('package-result').textContent='反馈已保存到：'+result.folder+'\n新增 '+result.created.length+' 个文件，复用 '+result.reused.length+' 个文件。首次回传整个文件夹；之后回传新增文件及对应manifests清单。若选择新扫描批次，还需回传新增自动JSON；负责人已持有的CSV无需重复回传。训练时需按数据指纹、标注ID及校验版本去重，不能把重复或重叠快照当作新样本。';$('package-open').hidden=false}catch(e){$('package-error').textContent=e.message+'；如标记已变化，请取消并重新预览。'}finally{packageSaving=false;$('package-cancel').disabled=false;$('package-save').disabled=!$('package-agree').checked}};
-$('package-open').onclick=async()=>{if(!lastPackageFileId||meta?.file_id!==lastPackageFileId)return;try{await api('/api/feedback/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:lastPackageFileId})})}catch(e){error(e)}};
-$('feedback-refresh').onclick=()=>loadFeedbackRuns();$('export-automatic').onclick=()=>exportFeedback('automatic');$('export-reviewed').onclick=()=>exportFeedback('reviewed');
-$('review-current-range').onclick=()=>{if(!meta)return;$('review-start').value=Math.min(view[0],meta.raw_duration).toFixed(3);$('review-end').value=Math.min(view[1],meta.raw_duration).toFixed(3)};
-$('compare-feedback').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(!meta)throw Error('请先打开对应原始CSV');if(file.size>50*1024*1024)throw Error('反馈JSON请小于50MB');const packet=JSON.parse(await file.text()),rows=compareReviewed(packet,meta),host=$('feedback-comparison');host.replaceChildren();const summary=document.createElement('p');summary.textContent='校验人：'+packet.reviewer+' · 程序：'+packet.app_version+' · 比较结果 '+rows.length+' 条（只读查看）';host.append(summary);for(const item of rows){const row=document.createElement('div');row.className='event-row';const text=document.createElement('div');text.className='event-text';text.textContent=item.result+' · '+displayText(item.event.type)+' · '+eventClock(item.event.start)+' — '+eventClock(item.event.end);if(item.original){const original=document.createElement('small');original.textContent='自动原区间：'+item.original.start+'—'+item.original.end+'秒 · '+displayText(item.original.type);text.append(original)}const button=document.createElement('button');button.textContent='查看波形';button.onclick=()=>jumpEvent(item.event);row.append(text,button);host.append(row)}}catch(err){error(err)}finally{e.target.value=''}};
+$('feedback-refresh').onclick=()=>loadFeedbackRuns();
+$('export-automatic').onclick=exportAutomaticFeedback;
 api('/api/health').then(p=>{$('app-version').textContent='版本 '+p.app_version+' · 本机运行 · 研发试用'}).catch(()=>{});
 
 let sidebarFrame=0;
-function resizeSidebar(){for(const [selector,variable] of [['.channel-sidebar','--sidebar-height'],['#event-panel','--event-panel-height']]){const sidebar=document.querySelector(selector);if(!sidebar||sidebar.hidden)continue;const top=Math.max(16,sidebar.getBoundingClientRect().top);sidebar.style.setProperty(variable,Math.max(selector==='.channel-sidebar'?120:180,window.innerHeight-top-16)+'px')}}
+function resizeSidebar(){
+ for(const [selector,variable] of [['.channel-sidebar','--sidebar-height'],['#event-panel','--event-panel-height']]){
+  const sidebar=document.querySelector(selector);
+  if(!sidebar||sidebar.hidden)continue;
+  if(selector==='#event-panel'&&eventPanelIsDrawer()){
+   const bottom=$('toggle-events').getBoundingClientRect().bottom;
+   if(Number.isFinite(bottom))sidebar.style.setProperty('--results-drawer-top',Math.ceil(bottom+6)+'px');
+  }
+  const top=Math.max(16,sidebar.getBoundingClientRect().top);
+  sidebar.style.setProperty(variable,Math.max(selector==='.channel-sidebar'?120:180,window.innerHeight-top-16)+'px');
+ }
+}
 function scheduleSidebarResize(){if(sidebarFrame)return;sidebarFrame=requestAnimationFrame(()=>{sidebarFrame=0;resizeSidebar()})}
 function scheduleEmbeddedAnalysisLayout(){
  if(!embeddedAnalysis||!embeddedAnalysisVisible||embeddedLayoutFrame)return;
@@ -672,7 +691,7 @@ function updateEventPanelChrome(){
  const open=isEventPanelOpen();
  $('event-panel').hidden=!open;document.body?.classList?.toggle('event-panel-collapsed',!open);
  $('event-panel-backdrop').hidden=!open||!eventPanelIsDrawer();
- $('toggle-events').ariaExpanded=String(open);$('toggle-events').textContent=open?'收起事件列表':'事件列表';
+ $('toggle-events').ariaExpanded=String(open);
 }
 function setEventPanelOpen(open){
  if(embeddedAnalysis&&eventPanelIsDrawer())embeddedEventDrawerOpen=open;
@@ -682,22 +701,37 @@ function setEventPanelOpen(open){
  }
  updateEventPanelChrome();
  overviewImage=null;cache=null;
- if(meta){scheduleSidebarResize();scheduleRender();loadWave(true)}
+ scheduleSidebarResize();
+ if(meta){scheduleRender();loadWave(true)}
 }
 $('toggle-events').onclick=()=>setEventPanelOpen(!isEventPanelOpen());
+const waveSettingsToggle=$('toggle-wave-settings'),waveSettingsPanel=$('wave-settings-panel');
+waveSettingsToggle.onclick=()=>{
+ const open=waveSettingsPanel.hidden;
+ waveSettingsPanel.hidden=!open;
+ waveSettingsToggle.ariaExpanded=String(open);
+ scheduleSidebarResize();
+};
 $('result-current').onclick=()=>setResultGroup(resultGroupForProfile($('scan-profile').value));
-$('close-event-panel').onclick=$('event-panel-backdrop').onclick=()=>setEventPanelOpen(false);
+function closeEventDrawer(){setEventPanelOpen(false);$('toggle-events').focus?.()}
+$('event-panel-backdrop').onclick=closeEventDrawer;
 window.addEventListener('resize',()=>{updateEventPanelChrome();scheduleSidebarResize()});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'&&isEventPanelOpen()&&eventPanelIsDrawer()&&!document.querySelector('dialog[open]'))setEventPanelOpen(false)});
+window.addEventListener('keydown',e=>{
+ if(e.key!=='Escape'||document.querySelector('dialog[open]'))return;
+ if(!waveSettingsPanel.hidden&&(waveSettingsPanel.contains?.(document.activeElement)||document.activeElement===waveSettingsToggle)){
+  waveSettingsToggle.onclick();waveSettingsToggle.focus();
+ }else if(isEventPanelOpen()&&eventPanelIsDrawer())closeEventDrawer();
+});
 eventPanelOpen=embeddedAnalysis||!eventPanelIsDrawer();
 try{const saved=localStorage.getItem('respiratory-event-panel-open-v1');if(saved!==null)eventPanelOpen=saved==='true'}catch(e){}
 updateEventPanelChrome();
+if(isEventPanelOpen()&&eventPanelIsDrawer())scheduleSidebarResize();
 
 if(embeddedAnalysis){
  for(const id of ['analysis-notes','scan-options','external-tools'])$(id).open=false;
  const narrow=window.matchMedia?.('(max-width:760px)');
  const toggle=$('toggle-channels'),close=$('close-channel-panel'),panel=$('channel-panel');
- let desktopOpen=true,narrowOpen=false;
+ let desktopOpen=false,narrowOpen=false;
  const isOpen=()=>narrow?.matches?narrowOpen:desktopOpen;
  function updateChannels(){
   if(!narrow?.matches)narrowOpen=false;
@@ -705,7 +739,6 @@ if(embeddedAnalysis){
   panel.hidden=!open;
   document.body.classList.toggle('channel-panel-collapsed',!open);
   toggle.setAttribute('aria-expanded',String(open));
-  toggle.textContent=open?'收起文件与通道':'文件与通道';
  }
  function setChannelsOpen(open){
   if(narrow?.matches)narrowOpen=open;

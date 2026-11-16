@@ -8,7 +8,7 @@
 
 ## 入口与接口边界
 
-- `/` 的用户运营总览使用 `GET /api/dashboard`。
+- `/` 的用户运营总览使用 `GET /api/dashboard`，接口字段可在统一服务的 `/docs` 中查看。
 - `/events` 保留直接添加本地 CSV 的入口；导航可返回用户运营总览。
 - 原本地记录统计迁至 `GET /api/recording-overview`，保留 `files`、`summary`、`current_recording` 结构，仅供记录工作区使用。CSV 覆盖时长不是设备实际使用时长，不得纳入用户使用时长指标。
 - 现有检测、事件、批次与导出接口继续服务当前记录。本轮不改变算法、扫描参数、保存逻辑或反馈格式。

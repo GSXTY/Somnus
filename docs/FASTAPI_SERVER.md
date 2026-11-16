@@ -7,7 +7,7 @@
 安装 `requirements.txt` 后，原来的“启动 AI Agent”启动文件仍可使用。命令行兼容已有选项：
 
 ```powershell
-python launcher.py --no-browser --port 8765 --data-dir .\data
+python launcher.py --no-browser --port 8765 --data-dir ./data
 ```
 
 可选位置参数仍可传入一份 CSV。没有文件时工作台和 AI 会话可正常打开，数据分析显示等待导入。默认监听 `127.0.0.1`，本机默认 `shared` 模式兼容原浏览器与无 Cookie 的本机 MCP；默认开发数据目录仍为项目的 `data/`，聊天继续使用原 `assistant.sqlite3`。冻结程序使用原来的 LocalAppData 路径，不会重建或清空已有事件库。模型环境配置继续沿用 `ai_assistant/README.md`。

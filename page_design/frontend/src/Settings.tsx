@@ -76,13 +76,13 @@ export function Settings({ autoRefresh, onAutoRefresh, dataConnection, appVersio
         <h3 className="settings-subheading">启动</h3>
         <div className="settings-card">
           <SettingRow title="启动页" detail="从桌面打开 Somnus 时显示的页面。">
-            <Select aria-label="启动页" value={startup} onChange={onStartupChange} options={[{ value: 'dashboard', label: '数据大盘' }, { value: 'chat', label: '最近会话' }]} />
+            <Select aria-label="启动页" value={startup} onChange={onStartupChange} options={[{ value: 'dashboard', label: '主页' }, { value: 'chat', label: '最近会话' }]} />
           </SettingRow>
         </div>
         <h3 className="settings-subheading">显示</h3>
         <div className="settings-card">
-          <SettingRow title="数据大盘自动刷新" detail="每小时刷新一次。页面隐藏时暂停。">
-            <Switch aria-label="数据大盘自动刷新" checked={autoRefresh} onChange={onAutoRefresh} />
+          <SettingRow title="主页自动刷新" detail="每小时刷新一次。页面隐藏时暂停。">
+            <Switch aria-label="主页自动刷新" checked={autoRefresh} onChange={onAutoRefresh} />
           </SettingRow>
           <SettingRow title="外观"><span>浅色</span></SettingRow>
         </div>

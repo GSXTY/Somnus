@@ -195,4 +195,3 @@ tbody tr:last-child td {border-bottom:0;}
 <div class="table"><table><thead><tr><th>时间</th><th>用户备注</th><th>识别号</th><th>操作</th>
 <th>HTTP 状态</th><th>耗时（毫秒）</th></tr></thead>
 <tbody>''' + ''.join(audit_rows) + '''</tbody></table></div></main></html>'''
-

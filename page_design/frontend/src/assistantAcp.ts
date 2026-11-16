@@ -10,11 +10,13 @@ export type ExternalReasoning = {
 export type ExternalSelection = { agentId: string; agentName: string; modelId?: string; modelName?: string };
 export type ExternalResult = { text: string; stopReason?: string; modelId?: string | null; modelName?: string | null; reasoningEffort?: string; reasoningName?: string; projectProposals?: FileProposal[]; usage?: ReplyUsage; contextUsage?: ContextUsage; recommendations?: DshRecommendation[] };
 
-export type TestApprovalDetails = { presetName?: string; executable: string; args: string[]; cwd: string };
+type TestApprovalDetails = { kind?: 'test'; presetName?: string; executable: string; args: string[]; cwd: string };
+type PowerShellApprovalDetails = { kind: 'powershell'; command: string; cwd: string; timeoutSeconds: number };
+export type DevelopmentApprovalDetails = TestApprovalDetails | PowerShellApprovalDetails;
 
 export type AcpPermission = {
   requestId: string; title: string; kind: string; expiresAt?: number;
-  details?: TestApprovalDetails;
+  details?: DevelopmentApprovalDetails;
   options: Array<{ id: string; name: string; kind: 'allow_once' | 'reject_once' }>;
 };
 
@@ -36,4 +38,3 @@ export function mainChatBridge(): MainChatBridge | undefined {
   const bridge = (window as Window & { vvmanAcp?: Partial<MainChatBridge> }).vvmanAcp;
   return bridge?.discoverModels && bridge.promptConversation && bridge.cancelConversation && bridge.resetConversation ? bridge as MainChatBridge : undefined;
 }
-

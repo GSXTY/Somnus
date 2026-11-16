@@ -121,7 +121,7 @@ class AcpLive {
     if (!this.turn.conversationId || this.closed || this.turn.signal.aborted || signal.aborted) {
       return Promise.resolve({ status: 'cancelled' });
     }
-    const category = kind === 'test' ? 'mcp' : kind;
+    const category = kind === 'test' || kind === 'powershell' ? 'mcp' : kind;
     if (!Object.hasOwn(this.approvalLimits, category) || this.approvalCounts[category] >= this.approvalLimits[category] ||
         this.approvalQueue.length + Number(Boolean(this.permission)) >= APPROVAL_QUEUE_LIMIT) {
       return Promise.resolve({ status: 'capacity' });

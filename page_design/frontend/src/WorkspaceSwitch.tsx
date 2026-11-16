@@ -6,11 +6,14 @@ import { CloseOutlined, EllipsisOutlined, FolderOutlined, PushpinOutlined, PlusO
 import { createWorkspace, updateWorkspace, removeWorkspace, workspaces as listWorkspaces } from './assistantApi';
 import type { ProjectToolsBridge } from './ProjectTools';
 import type { ProjectMemoryMode, ProjectSourceFolder, Workspace } from './assistantApi';
+import { DocumentPicker } from './DocumentLibrary';
+import { documentBridge } from './documentLibraryBridge';
 
 declare global {
   interface Window {
     vvmanProjects?: ProjectToolsBridge & {
       chooseDirectory: () => Promise<{ root_path: string; folder_grant: string } | null>;
+      chooseDocumentFolder?: (path: string) => Promise<{ root_path: string; folder_grant: string }>;
       openDirectory: (projectId: string, sourceIndex?: number) => Promise<void>;
     };
   }
@@ -41,6 +44,9 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
   const [archivedOpen, setArchivedOpen] = useState(false);
   const editorName = useRef<InputRef>(null);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const selected = useRef(value);
+  selected.current = value;
 
   function choose(id: string) {
     try { localStorage.setItem('ya70.workspace', id); } catch { /* optional preference */ }
@@ -48,17 +54,24 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
   }
   useEffect(() => {
     let alive = true;
-    listWorkspaces().then(list => {
-      if (!alive) return;
-      setProjects(list);
-      if (!list.some(project => project.id === value && !project.archived)) choose('default');
-    }).catch(() => { if (alive) setError('无法读取项目列表'); });
-    return () => { alive = false; };
+    let generation = 0;
+    function load() {
+      const current = ++generation;
+      listWorkspaces().then(list => {
+        if (!alive || current !== generation) return;
+        setProjects(list);
+        if (!list.some(project => project.id === selected.current && !project.archived)) choose('default');
+      }).catch(() => { if (alive && current === generation) setError('无法读取项目列表'); });
+    }
+    load();
+    window.addEventListener('somnus:projects-changed', load);
+    return () => { alive = false; window.removeEventListener('somnus:projects-changed', load); };
   }, []);
 
   function startEdit(project?: Workspace) {
     setError('');
     setInstructionsOpen(false);
+    setLibraryOpen(false);
     setEditor({
       project, name: project?.name || '', folders: sourcePaths(project).map(root_path => ({ root_path })),
       memory: project?.memory_mode || 'default', instructions: project?.instructions || '',
@@ -75,6 +88,7 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
   function update(project: Workspace) {
     setProjects(old => old.some(item => item.id === project.id)
       ? old.map(item => item.id === project.id ? project : item) : [...old, project]);
+    window.dispatchEvent(new Event('somnus:projects-changed'));
   }
   function save() {
     if (!editor?.name.trim()) return;
@@ -90,11 +104,13 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
       setEditor(null);
     });
   }
-  function pickFolder() {
+  function pickFolder(libraryPath?: string) {
     const bridge = window.vvmanProjects;
     if (!bridge || !editor || editor.folders.length >= 8) return;
     void run(async () => {
-      const folder = await bridge.chooseDirectory();
+      const folder = libraryPath === undefined
+        ? await bridge.chooseDirectory()
+        : await bridge.chooseDocumentFolder?.(libraryPath);
       if (!folder) return;
       setEditor(current => {
         if (!current || current.folders.some(item => item.root_path.toLowerCase() === folder.root_path.toLowerCase())) return current;
@@ -196,7 +212,13 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
                 aria-label={'移除来源文件夹 ' + folder.root_path}
                 onClick={() => setEditor(current => current && { ...current, folders: current.folders.filter(item => item.root_path !== folder.root_path) })} />
             </div>)}
-            <div className="project-editor-add"><Button icon={<PlusOutlined />} onClick={pickFolder} disabled={busy || !window.vvmanProjects || (editor?.folders.length || 0) >= 8}>添加本机文件夹</Button><small>{window.vvmanProjects ? '来自此设备' : '在 Windows 桌面版添加'}</small></div>
+            <div className="project-editor-add">
+              <Button icon={<PlusOutlined />} onClick={() => pickFolder()} disabled={busy || !window.vvmanProjects || (editor?.folders.length || 0) >= 8}>添加本机文件夹</Button>
+              {documentBridge() && window.vvmanProjects?.chooseDocumentFolder &&
+                <Button icon={<FolderOutlined />} onClick={() => setLibraryOpen(true)}
+                  disabled={busy || (editor?.folders.length || 0) >= 8}>从个人文档选择</Button>}
+              {!window.vvmanProjects && <small>在 Windows 桌面版添加</small>}
+            </div>
           </div>
           {editor?.folders.length === 8 && <small>一个项目最多关联 8 个来源文件夹。</small>}
         </div>
@@ -210,6 +232,11 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
         {error && <Alert type="error" showIcon message={error} />}
       </div>
     </Modal>
+    {editor && <DocumentPicker open={libraryOpen} kind="folder" title="选择项目来源文件夹"
+      onClose={() => setLibraryOpen(false)} onPick={(scope, entry) => {
+        setLibraryOpen(false);
+        if (scope === 'private' && entry.kind === 'folder') pickFolder(entry.path);
+      }} />}
     <Modal title="移除项目" open={Boolean(remove)} okText="移除项目" cancelText="取消"
       confirmLoading={busy} closable={!busy} maskClosable={!busy} keyboard={!busy} cancelButtonProps={{ disabled: busy }} okButtonProps={{ danger: true }}
       onCancel={() => { if (!busy) setRemove(null); }} onOk={() => {

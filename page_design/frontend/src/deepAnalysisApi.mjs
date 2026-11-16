@@ -41,4 +41,3 @@ export async function listAnalysisTasks(signal, limit = 20) {
   if (!Array.isArray(data.tasks)) throw new Error('任务列表格式无效');
   return data.tasks;
 }
-

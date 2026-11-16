@@ -103,4 +103,3 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
   assert(!findButton(tree, 'OpenMA 配置凭据'));
   assert(tree.some(node => node.props['aria-label'] === '发送给 ACP Agent 的消息'));
 });
-

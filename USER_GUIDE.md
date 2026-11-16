@@ -5,9 +5,11 @@
 - Windows x64：运行 `Somnus-Setup-版本-windows-x64.exe` 安装，从「开始」菜单启动 **Somnus**。使用便携目录时，保留整个目录并双击 `Somnus.exe`。
 - macOS：Apple 芯片选择 `electron-macos-arm64`，Intel 芯片选择 `electron-macos-x64`。Somnus 构建解压后双击 `Somnus.app`。历史试用包中的应用名称为 `RespiratoryViewer.app`。试用包采用临时签名，系统可能提示无法验证开发者。
 
-关闭 Electron 桌面窗口即可退出本机服务。手动更新时先关闭旧版，再启动新版。Windows 版本在「设置 → 通用 → 应用更新」可查看当前版本。配置了更新源时，可检查、下载并确认重启安装。
+Windows 上关闭主窗口会把 Somnus 留在系统托盘，打开托盘菜单可显示工作台或完全退出。更新前请从托盘选择「退出 Somnus」。macOS 关闭 Electron 桌面窗口会退出本机服务。
 
 左侧「项目」用于创建项目、切换项目和查看项目内的会话。原工作空间及其会话继续在对应项目下显示，内置项目显示为「默认项目」。
+
+DeepSeek Harness 通过 ACP 接入 Somnus 工作台。可在配置中心连接 DSH 账号、管理 DSH 插件，在会话中选择 DSH Agent。需要命令行操作时，可在插件市场选择「打开 DSH 终端」。
 
 ## 本机数据和配置
 
@@ -17,6 +19,8 @@
 - macOS：`~/Library/Application Support/VVFLY/RespiratoryViewer/`。如需使用 `.env`，放在该目录。启动环境设置 `AI_AGENT_DATA_DIR` 时，把 `.env` 放在指定目录。
 
 应用更新时保留数据目录和本机配置。需要迁移标记时，可使用现有 JSON 导出功能备份。
+
+Windows 托盘的「运行配置」可以建立并切换数据和设置独立的配置。新配置从空白开始，切回默认配置即可继续使用原会话、波形和扫描历史。「故障恢复」提供退回上次可用配置、安全模式、停用和恢复 DSH 扩展、导出启动诊断。工作台启动失败时会自动打开，也可用 `Somnus.exe --recovery` 进入。
 
 ## 波形查看与复核
 

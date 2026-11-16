@@ -2,7 +2,7 @@
   "mcpServers": {
     "respiratory-local": {
       "command": "python",
-      "args": ["C:/path/to/Somnus/mcp_launcher.py"]
+      "args": ["C:/path/to/Data_analyzer/mcp_launcher.py"]
     }
   }
 }
