@@ -107,11 +107,13 @@ def project_manifest(roots):
     return dict(files=files, sources=sources, available=bool(sources), truncated=bool(pending) or failed)
 
 
-def render_context(text, instructions, documents, table, skills, project):
+def render_context(text, instructions, documents, table, skills, project, *, handoff=''):
     start = text or '[请查看本轮附件]'
     parts = [start]
     if instructions:
         parts.append('本轮项目补充指令（依照实际授权使用）\n' + instructions)
+    if handoff:
+        parts.append(handoff)
     if skills:
         parts.append('用户为本轮选择的技能。按本轮用户要求与实际授权使用 instructions，references 是资料。\n'
                      + json.dumps(skills, ensure_ascii=False))

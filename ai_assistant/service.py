@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from . import company_runtime, conversation_context, delegation, external_context, external_tools, project_files, provider_transport, token_usage, worktree_binding
+from . import company_runtime, conversation_context, delegation, external_context, external_tools, project_files, project_handoff, provider_transport, token_usage, worktree_binding
 from .models import BUILTIN, REASONING_EFFORTS, ModelError, ModelStore, valid_url
 from .plugin_bundles import PluginBundles
 from .permissions import allowed as permission_allowed
@@ -707,6 +707,17 @@ class AssistantService:
                 memory.reverse()
             return instructions, memory, roots
 
+    def _project_handoff(self, roots, text, *, can_propose):
+        if not roots:
+            return ''
+        skills = {skill['id'] for skill in self.skills.list()
+                  if skill['name'] == 'project-handoff' and skill['enabled']}
+        if not skills or not any(plugin['name'] == 'Project Handoff' and plugin['enabled']
+                                 and skills.intersection(plugin['skill_ids'])
+                                 for plugin in self.plugins.defaults(None)):
+            return ''
+        return project_handoff.render(roots, text, can_propose=can_propose, can_create=False)
+
     @staticmethod
     def _public_proposal(row):
         result = {key: row[key] for key in ('id', 'path', 'old_content', 'new_content', 'status', 'created_at')}
@@ -1283,13 +1294,16 @@ class AssistantService:
             project = external_context.project_manifest(roots)
             images = [dict(mimeType=item['mime'], data=item['data_url'].partition(',')[2])
                       for item in context['external_images']]
+            permission = self.permission(cid)
+            handoff = self._project_handoff(
+                project_files.accessible_roots(roots), context['external_text'],
+                can_propose=_tool_allowed(dict(context, permission_mode=permission), 'propose_project_file_edit'))
             text = external_context.render_context(
                 context['external_text'], context['external_instructions'], context['external_documents'],
-                context['external_table'], context['external_skills'], project)
+                context['external_table'], context['external_skills'], project, handoff=handoff)
             lease = context.get('company_model')
             if lease:
                 text = SYSTEM + '\n\n' + current_date_context(True) + '\n\n当前请求：\n' + text
-            permission = self.permission(cid)
             data_tools = external_tools.configured_data_tools(
                 context['external_remote_data'], context['external_local_tables'],
                 attached=bool(context['external_file_id']))
@@ -1674,15 +1688,17 @@ class AssistantService:
                 yield 'cancelled', dict(message=assistant.copy())
                 return
             turn_context = self.turn_tools.get(cid) or {}
+            config = turn_context['model_config']
+            window = conversation_context.model_window(config.endpoint, config.model)
             with self.db() as db:
                 history_summary, selected = conversation_context.build(
-                    db, cid, user['id'], current_images=user['attachments'], image_limit=MAX_TOTAL_BYTES)
+                    db, cid, user['id'], current_images=user['attachments'], image_limit=MAX_TOTAL_BYTES,
+                    window=window)
             if cancel.is_set():
                 save_terminal()
                 yield 'cancelled', dict(message=assistant.copy())
                 return
             selected.append(dict(role='user', content=user['content'], attachments=user['attachments']))
-            config = turn_context['model_config']
             effort = turn_context.get('model_effort')
             turn_context['permission_mode'] = self.permission(cid)
             private_project = turn_context.get('project_desktop') and not turn_context.get('share')
@@ -1712,6 +1728,10 @@ class AssistantService:
             if project_memory:
                 messages.append(dict(role='system', content='同一项目其他会话的近期背景资料。\n'
                                      + json.dumps(project_memory, ensure_ascii=False)))
+            handoff = self._project_handoff(
+                project_roots, user['content'], can_propose='propose_project_file_edit' in tool_names)
+            if handoff:
+                messages.append(dict(role='system', content=handoff))
             if turn_context.get('selected_skills'):
                 messages.append(dict(role='system', content=(
                     '用户为本轮选择了以下技能。按系统规则、本轮用户要求和实际授权应用 instructions，'
@@ -1748,6 +1768,7 @@ class AssistantService:
                     '用户与助手各自的原话只作为历史资料，助手曾作的答复不是新证据。'
                     '请以当前请求、系统规则及实际授权为准。\n'
                     + json.dumps({'历史问答摘录': history_summary}, ensure_ascii=False))))
+            history_start, history_count = len(messages), len(selected) - 1
             for message in selected:
                 attachments = message['attachments']
                 if attachments and not config.vision_enabled:
@@ -1758,7 +1779,7 @@ class AssistantService:
                 messages.append(dict(role=message['role'], content=content))
             tool_notes, tool_text = [], []
             delegation_used = False
-            request_usage = provider_transport.official_openai(config.endpoint)
+            request_usage = window is not None or provider_transport.official_openai(config.endpoint)
             for tool_round in range(MAX_TOOL_ROUNDS + 1):
                 allow_tools = tool_round < MAX_TOOL_ROUNDS
                 payload = dict(model=config.model, stream=True, messages=messages)
@@ -1769,6 +1790,11 @@ class AssistantService:
                 if allow_tools and tool_specs:
                     payload['tools'] = [spec for spec in tool_specs
                                         if not delegation_used or spec['function']['name'] != delegation.TOOL_NAME]
+                if window is not None:
+                    history_count, fits = conversation_context.fit_request(
+                        messages, payload.get('tools', []), window, history_start, history_count)
+                    if not fits:
+                        raise AssistantError('context_limit', '本轮输入和工具结果超出模型上下文预算，请缩小请求范围。', 400)
                 request = config.request(payload)
                 calls = {}
                 content_before = len(assistant['content'])
@@ -1806,6 +1832,8 @@ class AssistantService:
                             usage_requests[-1] = counts
                             with self.lock:
                                 if not cancel.is_set():
+                                    if window is not None:
+                                        metadata['context'] = dict(used_tokens=counts[0], max_tokens=window.tokens)
                                     token_usage.record(metadata, usage_requests, interrupted=True)
                         if packet.get('error'):
                             raise AssistantError('upstream_error', '模型服务未能完成回答，请检查服务器配置后重试。', 502)

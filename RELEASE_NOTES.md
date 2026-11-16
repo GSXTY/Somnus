@@ -2,6 +2,11 @@
 
 当前 Electron 源码的 Windows 本机启动入口为 `dist/electron/win-unpacked/Somnus.exe`。构建与应用更新流程见 [维护与发布](docs/MAINTAINER.md)。
 
+## v0.3.0-beta.5
+
+- 默认插件包含 Project Handoff。绑定本地文件夹的项目会话可读取已有的 `docs/AI-HANDOFF.md`。说「更新交接」可生成草稿，允许修改时可提交文件修改建议。
+- 内置 Agent 按已识别的官方模型分配上下文，并预留本轮输入、工具和输出空间。
+
 ## 历史版本
 
 呼吸波形查看器 v0.3.0-beta.4（Windows x64 研发试用版）。

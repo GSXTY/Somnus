@@ -186,20 +186,25 @@ class SkillLibrary:
 
     def add(self, filename, raw):
         parsed = parse_upload(filename, raw)
-        references = parsed.pop('references')
-        item = dict(parsed, id=uuid.uuid4().hex, enabled=True, created_at=time.time(), reference_count=len(references))
         with self.database() as db:
             db.execute('BEGIN IMMEDIATE')
-            if db.execute('SELECT COUNT(*) FROM personal_skills').fetchone()[0] >= MAX_SKILLS:
-                raise SkillError('skill_library_full', f'最多保存 {MAX_SKILLS} 个技能。', 409)
-            try:
-                db.execute('''INSERT INTO personal_skills
-                    (id,name,description,enabled,created_at,instructions,references_json,reference_count,ignored_count)
-                    VALUES(:id,:name,:description,:enabled,:created_at,:instructions,:references_json,:reference_count,:ignored_count)''',
-                           dict(item, references_json=json.dumps(references, ensure_ascii=False)))
-            except sqlite3.IntegrityError as exc:
-                raise SkillError('skill_name_conflict', '已存在同名技能，请先移除旧版本或重命名。', 409) from exc
+            item = self.insert(db, parsed)
         return self._public(item)
+
+    @staticmethod
+    def insert(db, parsed):
+        references = parsed['references']
+        item = dict(parsed, id=uuid.uuid4().hex, enabled=True, created_at=time.time(), reference_count=len(references))
+        if db.execute('SELECT COUNT(*) FROM personal_skills').fetchone()[0] >= MAX_SKILLS:
+            raise SkillError('skill_library_full', f'最多保存 {MAX_SKILLS} 个技能。', 409)
+        try:
+            db.execute('''INSERT INTO personal_skills
+                (id,name,description,enabled,created_at,instructions,references_json,reference_count,ignored_count)
+                VALUES(:id,:name,:description,:enabled,:created_at,:instructions,:references_json,:reference_count,:ignored_count)''',
+                       dict(item, references_json=json.dumps(references, ensure_ascii=False)))
+        except sqlite3.IntegrityError as exc:
+            raise SkillError('skill_name_conflict', '已存在同名技能，请先移除旧版本或重命名。', 409) from exc
+        return item
 
     @staticmethod
     def _validate_id(skill_id):

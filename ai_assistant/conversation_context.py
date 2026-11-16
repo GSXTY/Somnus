@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import json
 import re
+from urllib.parse import urlsplit
 
 
 RECENT_TURNS = 12
@@ -16,6 +17,7 @@ MAX_PAIR_BYTES = 8_000
 MAX_PAIR_ESTIMATE = 2_700
 RESERVED_PAIR_BYTES = 1_250
 RESERVED_PAIR_ESTIMATE = 420
+LONG_HISTORY_ROWS = 2048
 CLIPPED = '\n[历史消息节选]\n'
 ASSISTANT_TASK_LINK = re.compile(r'\n*\[查看深度分析任务\]\(/#deep-analysis[^\n)]*\)\s*$')
 STAKE = re.compile(
@@ -37,10 +39,67 @@ class Turn:
     transport: str | None = None
 
 
+@dataclass(frozen=True)
+class ModelWindow:
+    tokens: int
+    output_reserve: int
+
+    @property
+    def history_budget(self):
+        # Reserve the rest for the current request, tools, images and token estimation.
+        return (self.tokens - self.output_reserve) * 4 // 5
+
+    @property
+    def input_budget(self):
+        return (self.tokens - self.output_reserve) * 9 // 10
+
+
+def model_window(endpoint, model):
+    try:
+        url = urlsplit(endpoint)
+        if url.scheme != 'https' or url.port not in (None, 443) or url.username is not None:
+            return None
+    except ValueError:
+        return None
+    if url.hostname == 'api.deepseek.com' and model in (
+            'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro'):
+        return ModelWindow(1_000_000, 131_072)
+    if url.hostname == 'api.openai.com':
+        if model == 'gpt-5.3-codex':
+            return ModelWindow(400_000, 128_000)
+        if model in ('gpt-5.4', 'gpt-5.4-2026-03-05', 'gpt-6-sol', 'gpt-6-astra',
+                     'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna'):
+            return ModelWindow(1_050_000, 128_000)
+    return None
+
+
 def _metrics(text):
     # A conservative planning estimate. The actual tokenizer depends on the model.
     non_ascii = sum(not char.isascii() for char in text)
     return len(text.encode('utf-8')), non_ascii + (len(text) - non_ascii + 3) // 4
+
+
+def _message_tokens(message):
+    content = message.get('content')
+    estimate = 8 + _metrics(json.dumps(
+        {key: value for key, value in message.items() if key != 'content'}, ensure_ascii=False))[1]
+    if isinstance(content, list):
+        # Encoded image bytes are not tokenized as text by the vision provider.
+        return estimate + sum(_metrics(part.get('text', ''))[1] if part['type'] == 'text' else 8192
+                              for part in content)
+    return estimate + _metrics(content or '')[1]
+
+
+def fit_request(messages, tools, window, history_start, history_count):
+    """Remove oldest whole pairs if tool traffic consumes the reserved request space."""
+    estimate = sum(map(_message_tokens, messages)) + _metrics(json.dumps(tools, ensure_ascii=False))[1]
+    removed = 0
+    while estimate > window.input_budget and removed < history_count:
+        start = history_start + removed
+        estimate -= _message_tokens(messages[start]) + _message_tokens(messages[start + 1])
+        removed += 2
+    del messages[history_start:history_start + removed]
+    return history_count - removed, estimate <= window.input_budget
 
 
 def _fits(text, byte_limit, estimate_limit):
@@ -74,7 +133,7 @@ def _clip(text, byte_limit, estimate_limit):
     return head.rstrip() + CLIPPED + tail.lstrip()
 
 
-def _sample(db, cid, before, *, text_only):
+def _sample(db, cid, before, *, text_only, last_rows=LAST_ROWS):
     # Index-backed scans from both ends keep early decisions available without loading
     # the whole transcript or any encoded attachments. Pair only adjacent messages.
     boundary = db.execute('SELECT rowid FROM messages WHERE id=? AND conversation_id=?', (before, cid)).fetchone()
@@ -89,7 +148,7 @@ def _sample(db, cid, before, *, text_only):
             ORDER BY rowid {order} LIMIT ?''', (EXCERPT_CHARS, cid, lower, stop, limit)).fetchall()
 
     first = read('ASC', 0, upper, FIRST_ROWS)
-    last = read('DESC', 0, upper, LAST_ROWS)
+    last = read('DESC', 0, upper, last_rows)
     middle = []
     if first and last and first[-1]['rowid'] < last[-1]['rowid']:
         start, stop = first[-1]['rowid'] + 1, last[-1]['rowid']
@@ -176,17 +235,27 @@ def previous_completed_reply(db, cid, before):
     return row['id'] if row else None
 
 
-def build(db, cid, before, *, text_only=False, current_images=None, image_limit=0):
-    turns = _sample(db, cid, before, text_only=text_only)
-    recent, prior = turns[-RECENT_TURNS:], turns[:-RECENT_TURNS]
+def build(db, cid, before, *, text_only=False, current_images=None, image_limit=0, window=None):
+    last_rows = LONG_HISTORY_ROWS if window is not None else LAST_ROWS
+    turns = _sample(db, cid, before, text_only=text_only, last_rows=last_rows)
+    if window is None:
+        recent, prior = turns[-RECENT_TURNS:], turns[:-RECENT_TURNS]
+        remaining_bytes, remaining_tokens = RECENT_BYTES, RECENT_ESTIMATE
+    else:
+        recent_limit = LONG_HISTORY_ROWS // 2
+        recent, prior = turns[-recent_limit:], turns[:-recent_limit]
+        remaining_tokens = window.history_budget
+        remaining_bytes = remaining_tokens * 3
     selected = []
-    remaining_bytes, remaining_tokens = RECENT_BYTES, RECENT_ESTIMATE
     image_count = len(current_images or [])
     image_bytes = sum(item['size'] for item in current_images or [])
     for index, turn in enumerate(reversed(recent)):
         # Only the recent window needs full text or the original images. An old
         # assistant can store 100k characters, so even this projection is bounded.
-        if text_only or current_images is None or turn.transport is not None:
+        if window is not None and min(remaining_bytes - 32, remaining_tokens - 16) <= 0:
+            prior.extend(recent[:len(recent) - index])
+            break
+        if text_only or current_images is None or turn.transport is not None or index >= RECENT_TURNS:
             body = db.execute('SELECT content FROM messages WHERE id=?', (turn.user_id,)).fetchone()[0]
             images = []
         else:
@@ -197,18 +266,23 @@ def build(db, cid, before, *, text_only=False, current_images=None, image_limit=
         if image_count + len(images) > 4 or image_bytes + batch_bytes > image_limit:
             # Keep the whole-pair image behavior and preserve explicit decisions from
             # skipped image turns without rebroadcasting their visual evidence.
-            prior.extend(Turn(item.user_id, item.reply_id, item.question, '')
-                         for item in recent[:len(recent) - index] if STAKE.search(item.question))
-            break
+            if window is None:
+                prior.extend(Turn(item.user_id, item.reply_id, item.question, '')
+                             for item in recent[:len(recent) - index] if STAKE.search(item.question))
+                break
+            images, batch_bytes = [], 0
         answer = db.execute('SELECT content FROM messages WHERE id=?', (turn.reply_id,)).fetchone()[0]
         if text_only or turn.transport is not None:
             answer = ASSISTANT_TASK_LINK.sub('', answer).rstrip()
             if not answer:
                 continue
         # Leave room for the other recent pairs when one turn is exceptionally large.
-        still_older = len(recent) - index - 1
-        byte_limit = min(MAX_PAIR_BYTES, remaining_bytes - 32 - still_older * RESERVED_PAIR_BYTES)
-        estimate_limit = min(MAX_PAIR_ESTIMATE, remaining_tokens - 16 - still_older * RESERVED_PAIR_ESTIMATE)
+        if window is None:
+            still_older = len(recent) - index - 1
+            byte_limit = min(MAX_PAIR_BYTES, remaining_bytes - 32 - still_older * RESERVED_PAIR_BYTES)
+            estimate_limit = min(MAX_PAIR_ESTIMATE, remaining_tokens - 16 - still_older * RESERVED_PAIR_ESTIMATE)
+        else:
+            byte_limit, estimate_limit = remaining_bytes - 32, remaining_tokens - 16
         qb, qt = _metrics(body)
         ab, at = _metrics(answer)
         if qb + ab > byte_limit or qt + at > estimate_limit:

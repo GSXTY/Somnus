@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Handoff"
+  short_description: "Keep cross-tool project context short"
+  default_prompt: "Use $project-handoff to preserve a compact project handoff before switching tools."

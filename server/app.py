@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app_version import APP_ID, APP_VERSION
 from agent_core.analytics import dashboard as user_dashboard
 from agent_core.workbench import dashboard as workbench_dashboard, user_detail
+from ai_assistant.bundled_defaults import install_bundled_defaults
 from ai_assistant.service import AssistantService
 from event_detection.patient_flow_v4 import VERSION as PATIENT_VERSION
 from mcp_connectors.asgi import create_router as create_mcp_router
@@ -147,6 +148,8 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
             app.state.assistant_service = AssistantService(folder / 'assistant.sqlite3')
         except Exception:
             app.state.assistant_service = None
+        if managed_desktop and app.state.assistant_service is not None:
+            install_bundled_defaults(app.state.assistant_service, ASSETS)
     else:
         from server.sessions import AssistantContexts, AssistantContextMiddleware
         contexts = AssistantContexts(folder)

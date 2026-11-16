@@ -1,0 +1,60 @@
+name: Somnus Windows package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          architecture: x64
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.25.0'
+      - name: Build workbench
+        working-directory: page_design/frontend
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Build Windows package
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r requirements-electron.txt
+          pnpm --dir electron install --frozen-lockfile
+          node --test electron/backend.test.cjs
+          python build_electron.py
+      - name: Verify packaged server and checksum installer
+        shell: pwsh
+        run: |
+          $version = python -c 'from app_version import APP_VERSION; print(APP_VERSION)'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $filename = "Somnus-Setup-$version-windows-x64.exe"
+          $installer = Join-Path 'dist/electron' $filename
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Missing Windows installer' }
+          python tests/electron_package_smoke.py dist/electron/win-unpacked/resources/backend/SomnusBackend.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $filename" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: somnus-windows-x64
+          path: |
+            dist/electron/Somnus-Setup-*-windows-x64.exe
+            dist/electron/Somnus-Setup-*-windows-x64.exe.sha256
+          compression-level: 0
+          if-no-files-found: error

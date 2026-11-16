@@ -39,6 +39,6 @@ flowchart TB
 
 ## 下载
 
-预发行版 `v0.3.0-beta.4` 提供 Windows x64，以及 macOS Apple Silicon（arm64）和 Intel（x64）版本。Windows 安装包未签名，macOS 应用使用临时签名，尚未经 Apple 公证。[下载与版本说明](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.4)
+预发行安装包提供 Windows x64、macOS Apple Silicon（arm64）和 Intel（x64）版本。Windows 安装包未签名，macOS 应用使用临时签名，尚未经 Apple 公证。[下载与版本说明](https://github.com/GSXTY/Somnus-Releases/releases)
 
 [维护指南](docs/MAINTAINER.md)

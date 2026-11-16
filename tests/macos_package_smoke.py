@@ -1,5 +1,6 @@
 """Verify an extracted macOS package using a synthetic recording and isolated storage."""
 import argparse
+from contextlib import closing
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -9,6 +10,7 @@ import platform
 import re
 import runpy
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -92,6 +94,16 @@ def verify_service(exe, folder, *, managed=False):
             assert detection['added'] >= 1
             assert detection['packet']['run_id']
             if managed:
+                # A clean desktop profile must receive the bundled default and its Skill.
+                database = (data_dir / 'assistant.sqlite3').as_uri() + '?mode=ro'
+                with closing(sqlite3.connect(database, uri=True)) as db:
+                    default = db.execute('SELECT enabled, skill_ids FROM default_plugins WHERE name=?',
+                                         ('Project Handoff',)).fetchone()
+                    assert default and default[0] == 1
+                    (skill_id,) = json.loads(default[1])
+                    skill = db.execute('SELECT name, enabled FROM personal_skills WHERE id=?',
+                                       (skill_id,)).fetchone()
+                    assert skill == ('project-handoff', 1)
                 process.stdin.close()
                 assert process.wait(timeout=15) == 0
                 assert not ready_file.exists()
