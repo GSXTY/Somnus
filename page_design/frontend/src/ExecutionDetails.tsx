@@ -1,25 +1,73 @@
 import { useState } from 'react';
 import { Alert, Button, Space, Tag } from 'antd';
 import type { AcpPermission } from './assistantAcp';
-import type { ExecutionSummary } from './assistantApi';
+import type { ChatMessage, ExecutionStep, ExecutionSummary } from './assistantApi';
 
 const stateLabels = { pending: '等待中', in_progress: '运行中', completed: '已完成', failed: '失败' };
+const replyLabels = {
+  streaming: { label: '回复中', color: 'processing' },
+  complete: { label: '回复完成', color: 'success' },
+  error: { label: '回复失败', color: 'error' },
+  cancelled: { label: '回复已停止', color: 'default' },
+};
 
-export function ExecutionDetails({ execution, active = false }: { execution: ExecutionSummary; active?: boolean }) {
+function legacyLocalStep(step: ExecutionStep) {
+  if (step.kind !== 'tool' || !/^local-call-call-\d+$/.test(step.id)) return step;
+  const [name, ...reason] = step.title.split(' · ');
+  return step.status === 'failed' && reason.length > 0
+    ? { ...step, title: name, failure_reason: step.failure_reason || reason.join(' · ') } : step;
+}
+
+export function normalizeExecutionSteps(steps: ExecutionStep[]): ExecutionStep[] {
+  const visible: ExecutionStep[] = [];
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index];
+    const next = steps[index + 1];
+    // Historical entries lack a shared call ID. Only merge adjacent DSH and
+    // bridge records when their terminal state, name and elapsed time agree.
+    if (step.kind === 'other' && /^call_/.test(step.id) && next?.kind === 'tool' &&
+        /^local-call-call-\d+$/.test(next.id) && (step.status === 'completed' || step.status === 'failed') &&
+        step.status === next.status && typeof step.duration_ms === 'number' &&
+        typeof next.duration_ms === 'number' && Math.abs(step.duration_ms - next.duration_ms) <= 100) {
+      const local = legacyLocalStep(next);
+      if (step.title === 'mcp__vv_man__' + local.title) {
+        visible.push({ ...local, failure_reason: local.failure_reason || step.failure_reason });
+        index++;
+        continue;
+      }
+    }
+    visible.push(legacyLocalStep(step));
+  }
+  return visible;
+}
+
+export function ExecutionDetails({ execution, replyStatus }: { execution: ExecutionSummary; replyStatus: ChatMessage['status'] }) {
   if (!execution.steps.length && !execution.plan.length && !execution.truncated) return null;
-  const latest = execution.steps[execution.steps.length - 1];
-  return <details className="assistant-execution assistant-task-card" open={active || undefined}>
-    <summary><span>{active ? '执行中' : '执行过程'}{execution.steps.length ? ' · ' + execution.steps.length + ' 项操作' : ''}
+  const steps = normalizeExecutionSteps(execution.steps);
+  const succeeded = steps.filter(step => step.status === 'completed').length;
+  const failed = steps.filter(step => step.status === 'failed').length;
+  const unknown = steps.length - succeeded - failed;
+  const reply = replyLabels[replyStatus];
+  return <details className="assistant-execution assistant-task-card">
+    <summary><span>执行过程{steps.length ? ' · ' + steps.length + ' 项操作' : ''}
       {execution.truncated ? ' · 部分活动已省略' : ''}</span>
-      {latest && <Tag color={latest.status === 'failed' ? 'error' : latest.status === 'completed' ? 'success' : 'processing'}>{stateLabels[latest.status]}</Tag>}
+      <Tag color={reply.color}>{reply.label}</Tag>
     </summary>
+    {steps.length > 0 && <div className="assistant-execution-counts">
+      <span>成功 {succeeded}</span>
+      <span>失败 {failed}</span>
+      {unknown > 0 && <span>未完成 {unknown}</span>}
+    </div>}
     {execution.plan.length > 0 && <section aria-label="计划">
       <strong>计划</strong>
       <ul>{execution.plan.map((entry, index) => <li key={index}>{entry.content} <Tag>{stateLabels[entry.status]}</Tag></li>)}</ul>
     </section>}
-    {execution.steps.length > 0 && <ol>{execution.steps.map(step => <li key={step.id}>
+    {steps.length > 0 && <ol>{steps.map(step => <li key={step.id}>
       <span>{step.title}</span> <Tag color={step.status === 'failed' ? 'error' : undefined}>{stateLabels[step.status]}</Tag>
       {typeof step.duration_ms === 'number' && <small>{(step.duration_ms / 1000).toFixed(1)} 秒</small>}
+      {step.status === 'failed' && <small className="assistant-execution-reason">
+        {step.failure_reason || '未记录具体原因'}
+      </small>}
     </li>)}</ol>}
   </details>;
 }

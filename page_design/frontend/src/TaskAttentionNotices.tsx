@@ -11,8 +11,9 @@ export function TaskAttentionNotices() {
       void desktop.takePending().then(items => {
         if (!live) return;
         for (const { key, title, hash, failed } of items) {
+          if (!failed) continue;
           notices.open({
-            key, type: failed ? 'warning' : 'success', message: title, duration: 10,
+            key, type: 'warning', message: title, duration: 10,
             actions: <Button size="small" type="link" onClick={() => {
               notices.destroy(key);
               if (window.location.hash === hash) window.dispatchEvent(new Event('hashchange'));

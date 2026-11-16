@@ -122,6 +122,31 @@ test('known tool and plan terminal events survive a noisy ACP activity limit', (
   assert.equal(updates.filter(event => event.acpActivityTruncated).length, 1);
 });
 
+test('DSH MCP wrappers correlate by tool and arguments in either arrival order', () => {
+  const events = [];
+  const live = new AcpLive({ onUpdate: event => events.push(event) });
+  const name = 'query_database';
+  const title = 'mcp__vv_man__' + name;
+  const rawInput = { query: 'SELECT private_value', rows: 3 };
+  const start = toolCallId => live.update({ sessionUpdate: 'tool_call', toolCallId, title, rawInput, status: 'in_progress' }, undefined, name);
+  const fail = toolCallId => live.update({ sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', content: [{ text: rawInput.query }] });
+  start('wrapper-first');
+  assert.equal(live.beginLocalMcp('first', name, { rows: 3, query: rawInput.query }), 'wrapper-first');
+  fail('wrapper-first');
+  live.endLocalMcp('first');
+  assert.equal(live.beginLocalMcp('second', name, rawInput), undefined);
+  start('local-first');
+  fail('local-first');
+  live.endLocalMcp('second');
+  start('no-local-dispatch');
+  fail('no-local-dispatch');
+  assert.deepEqual(events.map(event => [event.acpTool.id, event.acpTool.status]), [
+    ['wrapper-first', 'in_progress'], ['no-local-dispatch', 'in_progress'], ['no-local-dispatch', 'failed'],
+  ]);
+  assert.match(events.at(-1).acpTool.failure_reason, /DSH 未能完成/);
+  assert.doesNotMatch(JSON.stringify(events), /private_value/);
+});
+
 test('native managed-edit approval revalidates file scope and denies command or unverified Agent', async () => {
   const updates = [];
   const abort = new AbortController();
@@ -143,7 +168,7 @@ test('native managed-edit approval revalidates file scope and denies command or 
   assert.equal(await agents.requestPermission(current, 2, exec), null);
   assert.equal(await agents.requestPermission(current, 6, exec), null);
   assert.deepEqual(updates.map(event => event.acpTool), [
-    { id: 'exec', title: '此版本暂不支持终端命令', kind: 'execute', status: 'failed' },
+    { id: 'exec', title: '此版本暂不支持终端命令', kind: 'execute', status: 'failed', failure_reason: '此版本暂不支持终端命令' },
   ]);
   assert.equal(await agents.requestPermission(current, 3, { ...input, toolCall: { ...input.toolCall, rawInput: { command: 'x' } } }), null);
   const approve = async id => {
@@ -323,7 +348,7 @@ test('MCP and native edit approval limits are independent and repeated MCP invoc
     turn.live.respond(updates.at(-1).acpPermission.requestId, 'allow_once');
     assert.equal((await pending).isError, false);
   }
-  assert.match((await invoke(MAX_CALLS + 1)).content[0].text, /调用限制/);
+  assert.match((await invoke(MAX_CALLS + 1)).content[0].text, /达到上限/);
   assert.equal(calls.length, MAX_CALLS);
   await approveEdit();
   assert.deepEqual(await requestEdit(), { status: 'capacity' });

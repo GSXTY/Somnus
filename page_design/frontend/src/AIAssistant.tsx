@@ -632,7 +632,8 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         const started = timings.get(step.id);
         const duration = started === undefined || step.status === 'pending' || step.status === 'in_progress'
           ? undefined : Math.round(performance.now() - started);
-        const safe = { ...step, title: step.title.slice(0, 180), kind: step.kind.slice(0, 60), duration_ms: duration };
+        const safe = { ...step, title: step.title.slice(0, 180), kind: step.kind.slice(0, 60), duration_ms: duration,
+          failure_reason: step.status === 'failed' ? step.failure_reason?.trim().slice(0, 240) : undefined };
         const steps = execution.steps.slice();
         if (existing < 0) steps.push(safe);
         else steps[existing] = safe;
@@ -677,15 +678,15 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           publishExecution();
         }
         if (update.toolProgress) {
-          const { callId, name, status, message, taskId } = update.toolProgress;
-          let stepId = 'local-call-' + callId;
-          if (!callId) {
+          const { callId, traceId, name, status, message, taskId } = update.toolProgress;
+          let stepId = traceId || 'local-call-' + callId;
+          if (!traceId && !callId) {
             stepId = status === 'running' ? 'local-' + ++serial : progressIds.get(name) || 'local-' + ++serial;
             if (status === 'running') progressIds.set(name, stepId);
             else progressIds.delete(name);
           }
-          const title = status === 'error' && message ? name + ' · ' + message : name;
-          updateStep({ id: stepId, title, kind: 'tool', status: status === 'running' ? 'in_progress' : status === 'error' ? 'failed' : 'completed' });
+          updateStep({ id: stepId, title: name, kind: 'tool', status: status === 'running' ? 'in_progress' : status === 'error' ? 'failed' : 'completed',
+            failure_reason: status === 'error' ? message : undefined });
           publishExecution();
           if (status === 'complete' && taskId && /^[a-f0-9]{32}$/.test(taskId)) {
             analysisTasks.add(taskId);
@@ -920,6 +921,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           const step = [...steps].reverse().find(item => item.title === data.name && item.status === 'in_progress');
           if (step) {
             step.status = data.ok ? 'completed' : 'failed';
+            step.failure_reason = !data.ok ? data.failure_reason?.trim().slice(0, 240) : undefined;
             updateInternalExecution();
           }
           turn.toolNote = typeof data.summary === 'string' && data.summary ? data.summary : undefined;
@@ -1089,7 +1091,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         <div className="assistant-message-log" ref={log} onScroll={followLog} role="log" aria-live="polite" aria-label="会话消息"><div className="assistant-column-measure" aria-hidden="true" />{loading ? <div className="skeleton-list">{[0, 1, 2].map(index => <Skeleton key={index} active title={false} paragraph={{ rows: 2, width: ['92%', '68%'] }} />)}</div> : messages.length ? messages.map(message => {
           const notice = message.reply_meta?.mcp_approval_blocked || mcpBlocked[message.id];
           return <article key={message.id} className={`assistant-message ${message.role}`}><div className="assistant-message-main">{message.role === 'assistant' && message.status !== 'complete' && <div className="assistant-message-label"><small>{statusText[message.status]}</small></div>}{message.role === 'assistant' && (message.reply_meta?.execution || liveExecution?.assistantId === message.id) &&
-          <ExecutionDetails execution={message.reply_meta?.execution || liveExecution!.data} active={runningReply?.id === message.id} />}
+          <ExecutionDetails execution={message.reply_meta?.execution || liveExecution!.data} replyStatus={message.status} />}
           {runningReply?.id === message.id && liveTaskCards}
           {notice && <Alert type="warning" showIcon message={notice.reason} description={notice.tool_name} />}
           <div className="assistant-message-content">{message.content ? (message.role === 'assistant' ? <Markdown text={message.content} /> : message.content) : (message.status === 'streaming' ? '正在思考…' : message.attachments?.length ? '' : '未返回回答内容')}{message.attachments?.length ? <div className="assistant-message-images">{message.attachments.filter(image => isLocalImage(image.data_url)).map((image, index) => <img key={index} src={image.data_url} alt={image.name || '会话图片'} loading="lazy" />)}</div> : null}</div>{message.role === 'assistant' && message.reply_meta?.delegation && <DelegationOutcome result={message.reply_meta.delegation} />}{message.role === 'assistant' && message.reply_meta && <div className="assistant-reply-metadata">

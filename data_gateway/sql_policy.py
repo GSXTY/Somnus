@@ -6,15 +6,6 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 from agent_core.sql_access import SqlAccessError
 
 
-SAFE_FUNCTIONS = frozenset('''
-    ABS AVG CAST CEIL CEILING COALESCE CONCAT CONCAT_WS COUNT DATE DATE_ADD
-    DATE_DIFF DATE_FORMAT DATE_SUB DATE_TRUNC DAY EXTRACT FLOOR GREATEST IF
-    IFNULL LEAST LENGTH LOWER LTRIM MAX MIN MONTH NULLIF ROUND RTRIM STDDEV
-    SUBSTRING SUM TIME TIMESTAMP TIMESTAMP_ADD TIMESTAMP_DIFF TIMESTAMP_SUB
-    TRIM UPPER YEAR CURRENT_DATE CURRENT_TIMESTAMP DENSE_RANK LAG LEAD
-    RANK ROW_NUMBER STR_TO_DATE GROUP_CONCAT MOD STR_TO_TIME TIME_TO_STR
-    TS_OR_DS_TO_DATE TS_OR_DS_TO_TIMESTAMP
-'''.split())
 FORBIDDEN_NODE_KEYS = frozenset({
     'command', 'ddl', 'dml', 'hint', 'into', 'lock', 'parameter',
     'placeholder', 'sessionparameter', 'setitem', 'propertyeq', 'varmap',
@@ -38,10 +29,6 @@ def checked_sql(statement, settings):
                 raise SqlAccessError('远程 SQL 不支持递归查询。')
             if isinstance(node, exp.Dot) or (isinstance(node, exp.Column) and (node.db or node.catalog)):
                 raise SqlAccessError('远程 SQL 不允许跨库或限定命名空间。')
-            if isinstance(node, exp.Func):
-                name = node.name.upper() if isinstance(node, exp.Anonymous) else node.sql_name().upper()
-                if name not in SAFE_FUNCTIONS:
-                    raise SqlAccessError('远程 SQL 使用了未批准的函数。')
             if isinstance(node, exp.Table):
                 if node.db or node.catalog or not isinstance(node.this, exp.Identifier):
                     raise SqlAccessError('远程 SQL 不允许跨库、限定表名或表函数。')

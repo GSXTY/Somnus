@@ -293,6 +293,8 @@
 .assistant-execution ol, .assistant-execution ul { margin-block: 5px; padding-inline-start: 20px; }
 .assistant-execution li { margin-block: 4px; overflow-wrap: anywhere; }
 .assistant-execution small { color: var(--shell-muted); }
+.assistant-execution-counts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-block-start: 5px; }
+.assistant-execution-reason { display: block; white-space: pre-wrap; }
 .assistant-action-approval {
   width: min(var(--conversation-width), calc(100% - 28px));
   margin: 6px auto;

@@ -451,7 +451,10 @@ class AcpAgents {
     if (update?.sessionUpdate !== 'agent_message_chunk') {
       turn.recommendation?.observe(update);
       this.trackProjectPreflight(current, turn, update);
-      turn.live?.update(update);
+      const prefix = current.managedDsh && current.mcpName ? 'mcp__' + current.mcpName + '__' : '';
+      const name = prefix && typeof update?.title === 'string' && update.title.startsWith(prefix)
+        ? update.title.slice(prefix.length) : '';
+      turn.live?.update(update, undefined, current.mcp?.catalog.has(name) ? name : undefined);
       return;
     }
     if (params.update.content?.type !== 'text') return;

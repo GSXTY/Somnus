@@ -1,13 +1,20 @@
-# Somnus v0.3.0-beta.7
+# Somnus v0.3.0-beta.8
 
 Windows x64 桌面试用版。下载安装程序，退出托盘中正在运行的 Somnus 后安装。
+
+- 执行过程默认折叠。展开后可查看成功和失败次数及失败原因，回复状态独立显示。
+- 后台任务成功时移除工作台右上角的重复提示，继续通过 Windows 系统通知提醒。
+- 移除 SQL 函数白名单，继续检查只读语句、授权表和返回行数。通过独立数据网关查询时，由网关部署版本决定 SQL 策略。
+- 使用自己的 Codex 账号时，可通过配置好的数据网关查询获准的表。网关需启用 SQL，并为用户分配访问令牌。
+
+本次发布提供未签名的 Windows x64 安装程序，请从 GitHub 发布页手动下载。全新安装时可直接使用随附的 Codex ACP 适配器和 Node.js。DeepSeek Harness 与 CodeBuddy 可从已安装的官方本机运行时接入。
+
+## v0.3.0-beta.7
 
 - 托盘常驻、运行配置切换、独立故障恢复和分类任务通知。
 - 在 Somnus 内接入 DeepSeek Harness、Codex 及其他受支持的 ACP Agent；管理 Skill、插件和已授权的项目工具。
 - 公司默认 DeepSeek Flash 会话的窗口配置为 1,000,000 tokens。实际可用长度取决于上游和转发服务。
 - 提供项目工作树、差异审阅、授权 PowerShell、公司数据查询、深度分析及呼吸波形复核。
-
-本次发布提供未签名的 Windows x64 安装程序，请从 GitHub 发布页手动下载。全新安装时可直接使用随附的 Codex ACP 适配器和 Node.js。DeepSeek Harness 与 CodeBuddy 可从已安装的官方本机运行时接入。
 
 ## v0.3.0-beta.6
 

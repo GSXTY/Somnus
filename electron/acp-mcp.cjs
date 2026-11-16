@@ -45,16 +45,17 @@ function textResult(text) {
 }
 
 function controlledResult(result) {
-  if (!Array.isArray(result?.content)) return textResult('Somnus 工具返回了无效结果。');
+  const malformed = reason => ({ ...textResult(reason), reason });
+  if (!Array.isArray(result?.content)) return malformed('Somnus 工具返回了无效结果。');
   const content = [];
   let bytes = 0;
   for (const block of result.content.slice(0, 24)) {
     if (block?.type !== 'text' || typeof block.text !== 'string') continue;
     bytes += Buffer.byteLength(block.text);
-    if (bytes > RESULT_LIMIT) return textResult('Somnus 工具结果过大，请缩小查询范围。');
+    if (bytes > RESULT_LIMIT) return malformed('Somnus 工具结果过大，请缩小查询范围。');
     content.push({ type: 'text', text: block.text });
   }
-  if (!content.length && result.content.length) return textResult('Somnus 工具未提供可用文本结果。');
+  if (!content.length && result.content.length) return malformed('Somnus 工具未提供可用文本结果。');
   return { content, isError: Boolean(result.isError) };
 }
 
@@ -146,10 +147,19 @@ class SessionMcp {
       return textResult('此工具或参数未获准用于当前会话。');
     }
     if ((turn.toolCalls || 0) >= MAX_CALLS || this.pending.size >= MAX_IN_FLIGHT || this.pending.has(message.id)) {
-      return textResult('已达到本轮 Somnus 工具调用限制。');
+      const detail = (turn.toolCalls || 0) >= MAX_CALLS
+        ? '本轮 Somnus 工具调用已达到上限（16 次）。'
+        : this.pending.has(message.id) ? '收到重复的 Somnus 工具请求编号。' : '正在处理的 Somnus 工具请求已达到并发上限。';
+      const traceId = turn.live?.beginLocalMcp(null, name, args);
+      if (traceId) turn.onUpdate({
+        agentId: turn.agentId, conversationId: turn.conversationId, text: '',
+        toolProgress: { name, traceId, status: 'error', message: detail },
+      });
+      return textResult(detail);
     }
     turn.toolCalls = (turn.toolCalls || 0) + 1;
     const callId = 'call-' + turn.toolCalls;
+    const traceId = turn.live?.beginLocalMcp(callId, name, args);
     const request = new AbortController();
     const signal = AbortSignal.any([this.abort.signal, turn.signal, request.signal, ...(disconnectSignal ? [disconnectSignal] : [])]);
     this.pending.set(message.id, request);
@@ -160,7 +170,8 @@ class SessionMcp {
       terminal = status !== 'running';
       if (this.getTurn() === turn && !turn.signal.aborted) turn.onUpdate({
         agentId: turn.agentId, conversationId: turn.conversationId, text: '',
-        toolProgress: { name, callId, status, ...(taskId ? { taskId } : {}), ...(detail ? { message: detail } : {}) },
+        toolProgress: { name, callId, status, ...(traceId ? { traceId } : {}),
+          ...(taskId ? { taskId } : {}), ...(detail ? { message: detail } : {}) },
       });
     };
     const cancelled = () => {
@@ -190,21 +201,30 @@ class SessionMcp {
         turn.deadline?.progress();
         progress('running');
         const reply = await this.dispatch(turn, { name, arguments: args, ...(confirmed ? { confirmed } : {}) }, signal);
-        const result = controlledResult(reply);
+        const { reason, ...result } = controlledResult(reply);
         if (!active()) return cancelled();
         turn.deadline?.progress();
         progress(result.isError ? 'error' : 'complete', {
           taskId: result.isError ? undefined : resultTaskId(name, result.content),
-          detail: name === 'run_project_tests' && result.isError && typeof reply?.message === 'string'
-            ? reply.message.slice(0, 180) : undefined,
+          detail: result.isError
+            ? (reason || (typeof reply?.failure_reason === 'string' ? reply.failure_reason.slice(0, 180) :
+              typeof reply?.message === 'string' && ['run_project_tests', 'run_powershell'].includes(name)
+                ? reply.message.slice(0, 180) : '工具未返回可显示的失败原因。'))
+            : undefined,
         });
         return result;
-      } catch {
+      } catch (error) {
         if (!active()) return cancelled();
-        progress('error');
-        return textResult('Somnus 工具未完成。请检查当前权限、连接或参数。');
+        const detail = error?.name === 'AbortError'
+          ? 'Somnus 工具请求已超时或取消。'
+          : 'Somnus 工具未完成。请检查当前权限、连接或参数。';
+        progress('error', { detail });
+        return textResult(detail);
       }
-    }).finally(() => this.pending.delete(message.id));
+    }).finally(() => {
+      this.pending.delete(message.id);
+      turn.live?.endLocalMcp(callId);
+    });
     // Keep the dispatch slot and queue budget until the running request settles.
     this.dispatchQueue = scheduled.catch(() => {});
     let abortListener;

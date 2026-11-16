@@ -1,4 +1,4 @@
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { AcpError } = require('./acp-stdio.cjs');
 const { validId } = require('./acp-models.cjs');
 
@@ -18,6 +18,19 @@ const HISTORY_SUMMARY_BYTES = 4_800;
 const TERMINAL = new Set(['completed', 'failed']);
 const STATUS_RANK = { pending: 0, in_progress: 1, completed: 2, failed: 2 };
 
+function mcpFingerprint(name, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  try {
+    const payload = JSON.stringify(args, (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+        : value);
+    return createHash('sha256').update(name).update('\0').update(payload).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 function label(value, limit) {
   return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, ' ').trim().slice(0, limit) : '';
 }
@@ -30,6 +43,9 @@ class AcpLive {
   constructor(turn, mcpApprovalLimit = 0) {
     this.turn = turn;
     this.tools = new Map();
+    this.mcpWrappers = new Map();
+    this.localMcp = new Map();
+    this.matchedMcp = new Set();
     this.plan = [];
     this.events = 0;
     this.approvalLimits = { mcp: mcpApprovalLimit, edit: NATIVE_EDIT_LIMIT };
@@ -40,7 +56,24 @@ class AcpLive {
     turn.signal?.addEventListener('abort', this.abort, { once: true });
   }
 
-  update(update, localTitle) {
+  beginLocalMcp(callId, name, args) {
+    const fingerprint = mcpFingerprint(name, args);
+    const wrappers = [...this.mcpWrappers].filter(([, key]) => key === fingerprint);
+    if (fingerprint && wrappers.length === 1) {
+      const [[id]] = wrappers;
+      this.mcpWrappers.delete(id);
+      this.matchedMcp.add(id);
+      return id;
+    }
+    if (callId && fingerprint && !wrappers.length) this.localMcp.set(callId, fingerprint);
+    return undefined;
+  }
+
+  endLocalMcp(callId) {
+    this.localMcp.delete(callId);
+  }
+
+  update(update, localTitle, mcpToolName) {
     if (!update) return;
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
       const known = new Map();
@@ -77,18 +110,35 @@ class AcpLive {
     }
     if (!['tool_call', 'tool_call_update'].includes(update.sessionUpdate) || !validId(update.toolCallId)) return;
     const id = update.toolCallId;
+    if (this.matchedMcp.has(id)) return;
     const previous = this.tools.get(id);
     if (!previous && this.tools.size >= TOOL_LIMIT) {
       this.truncate();
       return;
     }
     if (previous && TERMINAL.has(previous.status)) return;
+    if (!previous && mcpToolName && update.sessionUpdate === 'tool_call' && !TERMINAL.has(update.status)) {
+      const fingerprint = mcpFingerprint(mcpToolName, update.rawInput);
+      const local = [...this.localMcp].filter(([, key]) => key === fingerprint);
+      if (fingerprint && local.length === 1) {
+        this.localMcp.delete(local[0][0]);
+        this.matchedMcp.add(id);
+        return;
+      }
+      if (fingerprint && !local.length) this.mcpWrappers.set(id, fingerprint);
+    }
     const item = {
       id, title: localTitle || label(update.title, 180) || previous?.title || 'Agent 工具',
       kind: TOOL_KIND.has(update.kind) ? update.kind : previous?.kind || 'other',
       status: TOOL_STATUS.has(update.status) ? update.status : previous?.status || 'pending',
     };
     if (previous && STATUS_RANK[item.status] < STATUS_RANK[previous.status]) item.status = previous.status;
+    if (TERMINAL.has(item.status)) this.mcpWrappers.delete(id);
+    if (item.status === 'failed') {
+      item.failure_reason = localTitle || (mcpToolName || previous?.title.startsWith('mcp__vv_man__')
+        ? 'DSH 未能完成 Somnus 工具调用，未返回可显示的原因。'
+        : '外部 Agent 未提供可显示的失败原因。');
+    }
     if (previous && item.title === previous.title && item.kind === previous.kind && item.status === previous.status) return;
     const progress = TOOL_STATUS.has(update.status) && (previous ? item.status !== previous.status : true);
     if (++this.events > ACTIVITY_LIMIT) {

@@ -20,7 +20,7 @@ function harness(file, name, props, api = {}) {
     useRef(current) { return state[cursor++] ??= { current }; },
   };
   const jsx = (type, input) => ({ type, props: input });
-  const antd = { Alert: 'Alert', Button: 'Button', Dropdown: 'Dropdown', Modal: 'Modal', Space: 'Space',
+  const antd = { Alert: 'Alert', Button: 'Button', Dropdown: 'Dropdown', Modal: 'Modal', Space: 'Space', Tag: 'Tag',
     message: { useMessage: () => [{ error() {} }, null] } };
   const imports = {
     react, antd, './assistantApi': api, '@ant-design/icons': { LockOutlined: 'Lock' },
@@ -56,6 +56,45 @@ test('full access requires separate confirmation before the per-conversation per
   assert.equal(view('Modal').props.open, false);
   const web = harness('PermissionSwitch', 'PermissionSwitch', { ...props, allowFullAccess: false });
   assert(!web('Dropdown').props.menu.items.some(item => item.key === 'full'));
+});
+
+test('execution folds until opened and reports the reply separately from completed and failed tools', () => {
+  const steps = [
+    { id: 'call_one', title: 'mcp__vv_man__query_database', kind: 'other', status: 'completed', duration_ms: 275 },
+    { id: 'local-call-call-1', title: 'query_database', kind: 'tool', status: 'completed', duration_ms: 250 },
+    { id: 'call_two', title: 'mcp__vv_man__query_database', kind: 'other', status: 'failed', duration_ms: 15 },
+    { id: 'local-call-call-2', title: 'query_database', kind: 'tool', status: 'failed', duration_ms: 3 },
+    { id: 'modern', title: 'read_file', kind: 'tool', status: 'failed', failure_reason: '文件不存在' },
+  ];
+  const props = { execution: { steps, plan: [] }, replyStatus: 'complete' };
+  const view = harness('ExecutionDetails', 'ExecutionDetails', props);
+  const text = node => Array.isArray(node) ? node.map(text).join('') :
+    typeof node === 'string' || typeof node === 'number' ? String(node) : node?.props ? text(node.props.children) : '';
+  assert.equal(view('details').props.open, undefined);
+  assert.match(text(view('summary')), /3 项操作.*回复完成/);
+  assert.doesNotMatch(text(view('summary')), /成功|失败/);
+  const counts = view('details').props.children.find(node => node?.props.className === 'assistant-execution-counts');
+  assert.match(text(counts), /成功 1.*失败 2/);
+  assert.match(text(view('ol')), /未记录具体原因.*文件不存在/);
+  assert.doesNotMatch(text(view('ol')), /mcp__vv_man__/);
+  assert.equal(steps.length, 5);
+  props.replyStatus = 'streaming';
+  assert.equal(view('details').props.open, undefined);
+  assert.match(text(view('summary')), /回复中/);
+  props.replyStatus = 'error';
+  assert.match(text(view('summary')), /回复失败/);
+});
+
+test('historic execution keeps ambiguous adjacent operations separate', () => {
+  const steps = [
+    { id: 'call_one', title: 'mcp__vv_man__query_database', kind: 'other', status: 'failed', duration_ms: 15 },
+    { id: 'local-call-call-1', title: 'query_database', kind: 'tool', status: 'completed', duration_ms: 3 },
+    { id: 'call_two', title: 'mcp__vv_man__query_database', kind: 'other', status: 'failed', duration_ms: 350 },
+    { id: 'local-call-call-2', title: 'query_database · 查询失败', kind: 'tool', status: 'failed', duration_ms: 5 },
+  ];
+  const view = harness('ExecutionDetails', 'ExecutionDetails', { execution: { steps, plan: [] }, replyStatus: 'complete' });
+  assert.equal(nodes(view('ol')).filter(item => item.type === 'li').length, 4);
+  assert(view('small', props => props.className === 'assistant-execution-reason' && props.children === '查询失败'));
 });
 
 test('PowerShell approval shows exact command, working directory and timeout before continuing', async () => {

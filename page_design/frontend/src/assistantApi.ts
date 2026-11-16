@@ -8,7 +8,7 @@ export type ChatAttachment = { name: string; data_url: string; mime: string; siz
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 export type Provider = { id: string; group_id?: string; name: string; model: string; base_url: string; builtin?: boolean; api_key_masked?: string;
   configured?: boolean; vision_enabled?: boolean; reasoning_efforts?: ReasoningEffort[]; };
-export type ExecutionStep = { id: string; title: string; kind: string; status: 'pending' | 'in_progress' | 'completed' | 'failed'; duration_ms?: number };
+export type ExecutionStep = { id: string; title: string; kind: string; status: 'pending' | 'in_progress' | 'completed' | 'failed'; duration_ms?: number; failure_reason?: string };
 export type ExecutionPlanItem = { content: string; status: 'pending' | 'in_progress' | 'completed' };
 export type ExecutionApproval = {
   id: string; kind: 'mcp' | 'edit' | 'test'; status: 'approved' | 'rejected' | 'closed' | 'pending'; at: number;
@@ -49,7 +49,7 @@ type DotRelay = {
   createTask(conversationId: string, prompt: string): Promise<{ task: DotTask }>;
   disconnect(): Promise<HostedDotState>;
 };
-export type ChatEvent = { type: string; data: { conversation_id?: string; user_message?: ChatMessage; assistant_message?: ChatMessage; message?: ChatMessage | string; conversation?: Conversation; text?: string; code?: string; name?: string; arguments?: string; summary?: string; ok?: boolean; proposal?: FileProposal; id?: string; tool_name?: string; reason?: string; arguments_preview?: string; status?: McpApproval['status'] | DelegationResult['status']; task?: string; context?: string; agent_id?: string; agent_name?: string; result?: string } };
+export type ChatEvent = { type: string; data: { conversation_id?: string; user_message?: ChatMessage; assistant_message?: ChatMessage; message?: ChatMessage | string; conversation?: Conversation; text?: string; code?: string; name?: string; arguments?: string; summary?: string; ok?: boolean; failure_reason?: string; proposal?: FileProposal; id?: string; tool_name?: string; reason?: string; arguments_preview?: string; status?: McpApproval['status'] | DelegationResult['status']; task?: string; context?: string; agent_id?: string; agent_name?: string; result?: string } };
 const root = '/api/assistant';
 export class ApiError extends Error {
   code?: string;

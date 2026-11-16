@@ -329,9 +329,11 @@ test('parallel same-name ACP tool calls resolve independent entries and legacy p
     onUpdate(listener) { onUpdate = listener; return () => {}; },
     async promptConversation() {
       const emit = toolProgress => onUpdate({ agentId: 'agent', conversationId: first.id, text: '', toolProgress });
-      emit({ callId: 'call-1', name: 'run_report', status: 'running' });
+      onUpdate({ agentId: 'agent', conversationId: first.id, text: '',
+        acpTool: { id: 'acp-report', title: 'mcp__vv_man__run_report', kind: 'other', status: 'in_progress' } });
+      emit({ callId: 'call-1', traceId: 'acp-report', name: 'run_report', status: 'running' });
       emit({ callId: 'call-2', name: 'run_report', status: 'running' });
-      emit({ callId: 'call-1', name: 'run_report', status: 'complete' });
+      emit({ callId: 'call-1', traceId: 'acp-report', name: 'run_report', status: 'complete' });
       emit({ callId: 'call-2', name: 'run_report', status: 'error', message: '本次 MCP 调用已拒绝' });
       assert(h.find('div', props => props.className === 'assistant-tool-note' && props.children.includes('本次 MCP 调用已拒绝')));
       emit({ name: 'legacy', status: 'running' });
@@ -355,8 +357,10 @@ test('parallel same-name ACP tool calls resolve independent entries and legacy p
   textarea(h).props.onChange({ target: { value: '生成报告' } });
   button(h, '发送').props.onClick();
   await flush();
-  assert.equal(execution.steps.map(step => step.title + ':' + step.status).join(','), 'run_report:completed,run_report · 本次 MCP 调用已拒绝:failed,legacy:completed');
-  assert.equal(h.find('ExecutionDetails').props.execution.steps[1].title, 'run_report · 本次 MCP 调用已拒绝');
+  assert.equal(execution.steps.map(step => step.title + ':' + step.status).join(','), 'run_report:completed,run_report:failed,legacy:completed');
+  assert.equal(execution.steps[0].id, 'acp-report');
+  assert.equal(h.find('ExecutionDetails').props.execution.steps[1].failure_reason, '本次 MCP 调用已拒绝');
+  assert.equal(h.find('ExecutionDetails').props.replyStatus, 'complete');
   assert(!h.find('div', props => props.className === 'assistant-tool-note'));
   assert(h.find('button', props => props.className === 'assistant-token-usage').props['aria-label'].includes('输入 1,234 · 输出 0'));
   assert(h.find('button', props => props.className === 'assistant-token-usage').props['aria-label'].includes('部分回复的用量未完整返回'));

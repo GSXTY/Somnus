@@ -53,6 +53,33 @@ class ToolError(ValueError):
     pass
 
 
+REMOTE_FAILURES = {
+    '数据网关未授权此操作。',
+    '数据网关没有找到所请求的资源。',
+    '数据网关拒绝了查询或文件，请检查请求范围和格式。',
+    '远程数据工具当前不可用。',
+    '远程数据网关未配置或配置无效。',
+    '表格超过网关上传限制。',
+    '数据请求过大。',
+}
+
+
+def safe_sql_failure(error):
+    # Driver errors can contain SQL, local paths or connection details.
+    message = str(error).lower()
+    if 'no such column' in message or 'unknown column' in message:
+        return '数据库拒绝查询：字段名不存在。'
+    if 'syntax error' in message or 'sql syntax' in message:
+        return '数据库拒绝查询：SQL 语法错误。'
+    if 'timeout' in message or 'timed out' in message or '查询超时' in message:
+        return '数据库查询超时。请缩小查询范围。'
+    if message.startswith('连接数据库失败'):
+        return '无法连接数据库。请检查数据源连接。'
+    if message.startswith('查询失败'):
+        return '数据库未能执行查询。请核对字段和查询范围。'
+    return '只读查询未通过校验或执行失败。请核对授权表、字段及查询范围。'
+
+
 def configured_data_tools(remote, local_deep, *, attached):
     remote_mode = getattr(remote, 'mode', 'local')
     if remote_mode != 'local':
@@ -104,11 +131,15 @@ def response(text, *, error=False):
     return dict(content=[dict(type='text', text=text)], isError=error)
 
 
+def failure(reason):
+    return dict(response(reason, error=True), failure_reason=reason)
+
+
 def _json_response(data):
     text = json.dumps(data, ensure_ascii=False, default=str)
     if len(text) <= MAX_RESULT_CHARS:
         return response(text)
-    return response('工具结果超过大小限制。请缩小查询或查看 Somnus 中的完整结果。', error=True)
+    return failure('工具结果超过大小限制。请缩小查询或查看 Somnus 中的完整结果。')
 
 
 def _text(arguments, key, limit, *, optional=False):
@@ -139,7 +170,11 @@ def _query(source, arguments, *, analysis=False):
     settings = replace(settings, max_rows=min(settings.max_rows, maximum))
     if question:
         statement = propose_sql(question, schema(settings))
-    checked = checked_sql(statement, settings)
+    try:
+        checked = checked_sql(statement, settings)
+    except SqlAccessError as exc:
+        # The AST validator reports only fixed policy messages.
+        raise ToolError(str(exc)) from exc
     # AST provenance is already checked (CTE names are not physical tables).
     result = run(checked, replace(settings, allowed_tables=()))
     if len(result['rows']) >= settings.max_rows:
@@ -231,7 +266,7 @@ def _analysis_packet(task, *, full=False):
 
 def call_data_tool(name, arguments, *, remote, local_deep, attached, stores, known_tasks, on_task):
     if set(arguments) - FIELDS[name]:
-        return response('工具参数无效。', error=True)
+        return failure('工具参数无效。')
     try:
         remote_mode = getattr(remote, 'mode', 'local')
         source = '远程只读网关' if remote_mode == 'remote' else '本机配置的授权只读数据库'
@@ -265,10 +300,14 @@ def call_data_tool(name, arguments, *, remote, local_deep, attached, stores, kno
         on_task(task['id'])
         return _json_response(_analysis_packet(task))
     except ToolError as exc:
-        return response(str(exc), error=True)
-    except SqlAccessError:
-        return response('只读查询未通过校验或执行失败。请核对授权表、字段及查询范围。', error=True)
+        return failure(str(exc))
+    except SqlAccessError as exc:
+        return failure(safe_sql_failure(exc))
     except AnalysisError as exc:
-        return response(f'深度分析请求失败（{exc.code}）。请检查表格和分析服务状态。', error=True)
-    except (OSError, ImportError, ValueError, KeyError, TypeError):
-        return response('数据工具未返回可用结果。请在 Somnus 检查数据连接或分析服务。', error=True)
+        if re.fullmatch(r'[a-z_]{1,48}', str(exc.code)):
+            return failure(f'深度分析请求失败（{exc.code}）。请检查表格和分析服务状态。')
+        return failure('深度分析请求失败。请检查表格和分析服务状态。')
+    except (OSError, ImportError, ValueError, KeyError, TypeError) as exc:
+        if isinstance(exc, ValueError) and str(exc) in REMOTE_FAILURES:
+            return failure(str(exc))
+        return failure('数据工具未返回可用结果。请在 Somnus 检查数据连接或分析服务。')

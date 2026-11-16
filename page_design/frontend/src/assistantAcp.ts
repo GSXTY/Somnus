@@ -31,7 +31,7 @@ type MainChatBridge = {
   cancelConversation(conversationId: string): Promise<void>;
   resetConversation(conversationId: string): Promise<void>;
   respondPermission?(conversationId: string, requestId: string, optionId: string | null): Promise<void>;
-  onUpdate(listener: (event: { agentId: string; conversationId?: string; text: string; contextUsage?: ContextUsage; acpActivityTruncated?: boolean; acpTool?: ExecutionStep; acpPlan?: { entries: ExecutionPlanItem[] }; acpPermission?: AcpPermission; acpPermissionClosed?: { requestId: string }; toolProgress?: { callId?: string; name: string; status: 'running' | 'complete' | 'error'; message?: string; taskId?: string } }) => void): () => void;
+  onUpdate(listener: (event: { agentId: string; conversationId?: string; text: string; contextUsage?: ContextUsage; acpActivityTruncated?: boolean; acpTool?: ExecutionStep; acpPlan?: { entries: ExecutionPlanItem[] }; acpPermission?: AcpPermission; acpPermissionClosed?: { requestId: string }; toolProgress?: { callId?: string; traceId?: string; name: string; status: 'running' | 'complete' | 'error'; message?: string; taskId?: string } }) => void): () => void;
 };
 
 export function mainChatBridge(): MainChatBridge | undefined {

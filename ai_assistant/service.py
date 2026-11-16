@@ -1466,17 +1466,17 @@ class AssistantService:
         with self.lock:
             event, context = self._external_turn(cid, turn_id, agent_id)
             if name in external_tools.NATIVE_PROJECT_TOOLS:
-                return external_tools.response('此项目工具由 Windows 桌面运行。', error=True)
+                return external_tools.failure('此项目工具由 Windows 桌面运行。')
             advertised = set(context.get('external_advertised_tools', ()))
             current = self.permission(cid)
             dispatch = dict(mcp_registry=context.get('mcp_registry'), permission_mode=current, available_tools=advertised,
                             plugin_mcp_ids=context.get('plugin_mcp_ids'))
             if name not in advertised or not _tool_allowed(dispatch, name):
-                return external_tools.response('此工具不在当前回合授权范围内。', error=True)
+                return external_tools.failure('此工具不在当前回合授权范围内。')
             if context.get('external_tool_running'):
-                return external_tools.response('当前工具调用仍在执行。', error=True)
+                return external_tools.failure('当前工具调用仍在执行。')
             if context.get('external_tool_calls', 0) >= 48:
-                return external_tools.response('本轮已达到工具调用上限。', error=True)
+                return external_tools.failure('本轮已达到工具调用上限。')
             context['external_tool_running'] = True
             context['external_tool_calls'] = context.get('external_tool_calls', 0) + 1
             local = context['external_local_tables']
@@ -1489,7 +1489,7 @@ class AssistantService:
                 result = run_chat_tool(name, json.dumps(arguments, ensure_ascii=False), dispatch, confirmed=confirmed is True)
                 return external_tools.response(result['content'], error=not result['ok'])
             if name not in external_tools.DATA_NAMES:
-                return external_tools.response('此工具不在当前回合授权范围内。', error=True)
+                return external_tools.failure('此工具不在当前回合授权范围内。')
             with self.db() as db:
                 tasks = {row['id'] for row in db.execute('SELECT id FROM external_analysis_tasks WHERE conversation_id=? AND agent_id=?',
                                                         (cid, agent_id))}
@@ -1648,6 +1648,10 @@ class AssistantService:
                 duration = item.get('duration_ms')
                 if key == 'steps' and type(duration) is int and 0 <= duration <= 86400000:
                     summary['duration_ms'] = duration
+                if key == 'steps' and item['status'] == 'failed':
+                    reason = execution_trace.clean_failure_reason(item.get('failure_reason'))
+                    if reason:
+                        summary['failure_reason'] = reason
                 output.append(summary)
             result[key] = output
         if 'approvals' in value:
@@ -2053,11 +2057,13 @@ class AssistantService:
                             outcome_tool = run_chat_tool(name, arguments, dispatch, confirmed=confirmed)
                         tool_notes.append(f"{slot['name']}：{outcome_tool['summary']}")
                         tool_text.append(outcome_tool['content'])
+                        reason = execution_trace.tool_failure_reason(outcome_tool) if not outcome_tool['ok'] else None
                         with self.db() as db:
-                            execution_trace.finish(db, trace_id, 'completed' if outcome_tool['ok'] else 'failed')
+                            execution_trace.finish(db, trace_id, 'completed' if outcome_tool['ok'] else 'failed', failure_reason=reason)
                         if outcome_tool.get('proposal'):
                             yield 'file_proposal', dict(proposal=outcome_tool['proposal'])
-                        yield 'tool_result', dict(name=slot['name'], ok=outcome_tool['ok'], summary=outcome_tool['summary'])
+                        yield 'tool_result', dict(name=slot['name'], ok=outcome_tool['ok'], summary=outcome_tool['summary'],
+                                                  **({'failure_reason': reason} if reason else {}))
                         messages.append(dict(role='tool', tool_call_id=slot['id'] or f'call_{index}', content=outcome_tool['content']))
                     if outcome == 'cancelled':
                         break

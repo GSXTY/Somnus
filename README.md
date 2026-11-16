@@ -6,7 +6,7 @@
   <p><strong>面向项目协作、公司数据分析和呼吸波形复核的 Windows 桌面工作台。</strong></p>
 
   <p>
-    <a href="https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.7"><img alt="下载 Windows x64" src="https://img.shields.io/badge/下载-Windows%20x64-176d61?style=for-the-badge" /></a>
+    <a href="https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.8"><img alt="下载 Windows x64" src="https://img.shields.io/badge/下载-Windows%20x64-176d61?style=for-the-badge" /></a>
     <a href="https://github.com/GSXTY/Somnus-Releases/releases"><img alt="发布版本" src="https://img.shields.io/github/v/release/GSXTY/Somnus-Releases?include_prereleases&style=for-the-badge&label=Release" /></a>
   </p>
 
@@ -24,9 +24,9 @@ Somnus 将项目文件、AI 会话、数据工具和波形复核放在同一个�
 
 | 平台 | 下载 | 安装方式 |
 | --- | --- | --- |
-| **Windows x64** | [Windows 安装包](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.7) | 在发布页下载 `Somnus-Setup-*-windows-x64.exe`，安装后从「开始」菜单打开 **Somnus**。 |
+| **Windows x64** | [Windows 安装包](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.8) | 在发布页下载 `Somnus-Setup-*-windows-x64.exe`，安装后从「开始」菜单打开 **Somnus**。 |
 
-更新前，请在系统托盘选择「退出 Somnus」，再运行新版安装程序。Windows 版关闭窗口后会继续在托盘运行。发布页列有更新记录。v0.3.0-beta.7 安装包面向 Windows x64。 [使用说明](USER_GUIDE.md) · [发布历史](https://github.com/GSXTY/Somnus-Releases/releases)
+更新前，请在系统托盘选择「退出 Somnus」，再运行新版安装程序。Windows 版关闭窗口后会继续在托盘运行。发布页列有更新记录。v0.3.0-beta.8 安装包面向 Windows x64。 [使用说明](USER_GUIDE.md) · [发布历史](https://github.com/GSXTY/Somnus-Releases/releases)
 
 ## 工作台预览
 

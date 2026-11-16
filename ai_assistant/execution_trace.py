@@ -14,13 +14,45 @@ TOOL_KINDS = {
     'switch_mode': '切换模式',
 }
 APPROVAL_KINDS = {'mcp': 'MCP 工具确认', 'edit': '文件编辑确认', 'test': '项目测试确认'}
+TOOL_FAILURES = {
+    '参数错误': '工具参数无效。',
+    '权限不足': '当前会话权限不足。',
+    '工具不可用': '当前会话未启用此工具。',
+    '缺少项目目录': '当前项目没有已授权的目录。',
+    '项目文件操作失败': '项目文件操作失败。请检查文件是否存在、权限或版本。',
+    'MCP 工具不可用': '当前会话未启用 MCP 工具。',
+    '演示模式已限制': '对外演示模式禁用了此工具。',
+    '请在本机桌面版确认': '此操作需要从本机桌面版确认。',
+    '抓取失败': '无法抓取网页。请检查地址和网络。',
+    '已达到委派上限': '本轮已达到委派次数上限。',
+    '权限不可用': '当前权限模式无法执行此操作。',
+    '项目不可用': '当前项目目录不可用。',
+    '请求已取消': '项目工具请求已取消。',
+    '请求已结束': '项目工具请求已取消或超时。',
+}
+
+
+def clean_failure_reason(value):
+    if (not isinstance(value, str) or not 0 < len(value) <= 180
+            or any(ord(char) < 32 or 0x202a <= ord(char) <= 0x202e
+                   or 0x2066 <= ord(char) <= 0x2069 or 0xd800 <= ord(char) <= 0xdfff for char in value)):
+        return None
+    return value.strip() or None
+
+
+def tool_failure_reason(result):
+    # Registry and model error content can contain arguments, credentials or file paths.
+    summary = result.get('summary')
+    return (TOOL_FAILURES.get(summary) if isinstance(summary, str) else None) or '工具未返回可显示的失败原因。'
 
 
 def initialize(db):
     db.execute('''CREATE TABLE IF NOT EXISTS execution_trace(
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL,
         kind TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
-        at REAL NOT NULL, duration_ms INTEGER)''')
+        at REAL NOT NULL, duration_ms INTEGER, failure_reason TEXT)''')
+    if 'failure_reason' not in {row[1] for row in db.execute('PRAGMA table_info(execution_trace)')}:
+        db.execute('ALTER TABLE execution_trace ADD COLUMN failure_reason TEXT')
     db.execute('''CREATE INDEX IF NOT EXISTS execution_trace_conversation
                   ON execution_trace(conversation_id, at)''')
     db.execute("UPDATE execution_trace SET status='interrupted' WHERE status='pending'")
@@ -33,10 +65,11 @@ def start(db, cid, turn_id, kind, title, *, event_id=None):
     return event_id
 
 
-def finish(db, event_id, status):
-    db.execute('''UPDATE execution_trace SET status=?,
+def finish(db, event_id, status, *, failure_reason=None):
+    reason = clean_failure_reason(failure_reason) if status == 'failed' else None
+    db.execute('''UPDATE execution_trace SET status=?, failure_reason=?,
                   duration_ms=MAX(0,ROUND((?-at)*1000))
-                  WHERE id=? AND status='pending' ''', (status, time.time(), event_id))
+                  WHERE id=? AND status='pending' ''', (status, reason, time.time(), event_id))
 
 
 def finish_turn(db, cid, turn_id, status):
@@ -107,6 +140,10 @@ def _reply_events(row):
             duration = step.get('duration_ms')
             if type(duration) is int and 0 <= duration <= 86400000:
                 event['duration_ms'] = duration
+            if status == 'failed':
+                reason = clean_failure_reason(step.get('failure_reason'))
+                if reason:
+                    event['failure_reason'] = reason
             yield event
     for index, approval in enumerate(approvals(execution.get('approvals'))):
         yield dict(id=f'{turn_id}:approval:{index}', kind='approval', turn_id=turn_id,
@@ -114,7 +151,7 @@ def _reply_events(row):
 
 
 def conversation(db, cid):
-    events = [dict(row) for row in db.execute('''SELECT id,turn_id,kind,title,status,at,duration_ms
+    events = [dict(row) for row in db.execute('''SELECT id,turn_id,kind,title,status,at,duration_ms,failure_reason
         FROM execution_trace WHERE conversation_id=? ORDER BY at DESC, id DESC LIMIT ?''', (cid, LIMIT + 1))]
     rows = db.execute('''SELECT id,created_at,reply_meta FROM messages
                          WHERE conversation_id=? AND role='assistant' AND reply_meta IS NOT NULL
