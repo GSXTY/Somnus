@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -24,6 +25,49 @@ VARIABLE = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
 MODEL_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 MAX_SERVERS = 16
 MAX_CONFIG = 512 * 1024
+DESKTOP_MCP_ID = 'agent-desktop'
+
+
+def desktop_mcp_command(data_dir=None):
+    resources = ROOT.parent.parent if getattr(sys, 'frozen', False) else ROOT / 'dist/electron/win-unpacked/resources'
+    candidates = [resources / 'agents/agent-desktop/agent-desktop.exe']
+    roaming = os.getenv('SOMNUS_DESKTOP_ROAMING_DIR', '')
+    profile = Path(roaming) if roaming and Path(roaming).is_absolute() else Path(data_dir) if data_dir else None
+    if profile:
+        modules = profile / 'dsh-home/mcp/agent-desktop/node_modules'
+        alias = modules / 'agent-desktop/bin/agent-desktop-win32-x64.exe'
+        try:
+            # pnpm links the public package name to this one versioned package
+            # inside the same profile. Validate every canonical component.
+            resolved_modules = modules.resolve(strict=True)
+            resolved = alias.resolve(strict=True)
+            relative = resolved.relative_to(resolved_modules)
+            parts = relative.parts
+            pnpm = (len(parts) == 6 and parts[0] == '.pnpm'
+                    and re.fullmatch(r'agent-desktop@\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?', parts[1], re.I)
+                    and parts[2:] == ('node_modules', 'agent-desktop', 'bin', 'agent-desktop-win32-x64.exe'))
+            plain = parts == ('agent-desktop', 'bin', 'agent-desktop-win32-x64.exe')
+            if resolved_modules == modules and (pnpm or plain):
+                current = modules
+                for part in parts:
+                    current = current / part
+                    if current.is_symlink() or current.is_junction():
+                        raise OSError('Unexpected desktop MCP path link')
+                if resolved.is_file():
+                    return str(alias)
+        except (OSError, ValueError):
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.resolve(strict=True) == candidate:
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _mcp_name(value):
+    return value.strip().casefold().replace('_', '-') if isinstance(value, str) else ''
 
 
 class ConfigError(ValueError):
@@ -102,7 +146,7 @@ def _validate(server_id, fields):
 
 
 class Registry:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, *, desktop_builtin=False, data_builtins=None, data_inventory=None):
         isolated = os.getenv('SOMNUS_PROFILE_CONFIG_ONLY')
         override = '' if isolated else os.getenv('MCP_CONFIG', '').strip()
         self.path = Path(override).expanduser().resolve() if override else Path(data_dir).resolve() / 'mcp.json'
@@ -115,7 +159,28 @@ class Registry:
         self.pending = set()
         self.closed = False
         self.error = None
+        self.desktop_builtin = desktop_builtin
+        self.data_builtins = dict(data_builtins or {})
+        self.data_inventory = data_inventory
+        self.reserved_configs = {}
         self._load()
+        if self.desktop_builtin:
+            command = desktop_mcp_command(data_dir)
+            self.configs[DESKTOP_MCP_ID] = {
+                'name': DESKTOP_MCP_ID, 'transport': 'stdio', 'enabled': True, 'command': command,
+                'args': ['mcp'], 'env': {}, 'timeout': 25, 'tool_permissions': {},
+            }
+
+    def _reserved(self, server_id, name=None):
+        ids = {*self.data_builtins, *([DESKTOP_MCP_ID] if self.desktop_builtin else [])}
+        return server_id in self.reserved_configs or _mcp_name(server_id) in ids or _mcp_name(name) in ids
+
+    def _assert_editable(self, server_id, name=None):
+        if self._reserved(server_id, name):
+            raise ConfigError('内置 MCP 无法修改或删除。', 409)
+
+    def _personal_count(self):
+        return len(self.configs) + len(self.reserved_configs) - int(self.desktop_builtin)
 
     def _load(self):
         source = self.path if self.path.exists() else self.legacy
@@ -129,12 +194,17 @@ class Registry:
             if not isinstance(entries, dict) or len(entries) > MAX_SERVERS:
                 raise ConfigError('MCP 配置格式无效。')
             for server_id, entry in entries.items():
-                self.configs[server_id] = _validate(server_id, entry)
+                config = _validate(server_id, entry)
+                target = self.reserved_configs if self._reserved(server_id, config['name']) else self.configs
+                target[server_id] = config
         except (AttributeError, OSError, ValueError, RecursionError):
             self.error = '无法读取 MCP 配置，请检查本机 mcp.json。'
             self.configs = {}
 
     def _save(self, configs):
+        if self.desktop_builtin or self.data_builtins:
+            configs = {**self.reserved_configs, **{key: value for key, value in configs.items()
+                       if not self.desktop_builtin or key != DESKTOP_MCP_ID}}
         data = json.dumps({'servers': configs}, ensure_ascii=False, indent=2) + '\n'
         if len(data.encode('utf-8')) > MAX_CONFIG:
             raise ConfigError('MCP 配置总大小超过限制。')
@@ -152,8 +222,11 @@ class Registry:
                 temporary.unlink(missing_ok=True)
 
     def list(self):
+        data = self.data_inventory() if self.data_inventory else self.data_builtins
         with self.lock:
-            return {'servers': [self._public(key, value) for key, value in self.configs.items()], 'error': self.error}
+            return {'servers': [*deepcopy(list(data.values())),
+                                *(self._public(key, value) for key, value in self.configs.items())],
+                    'error': self.error}
 
     def enabled_states(self):
         with self.lock:
@@ -165,6 +238,11 @@ class Registry:
         # Arguments are needed for editing. Explicit credentials belong in env
         # or headers, which are write-only and never returned.
         status = result.get('status', 'idle') if config['enabled'] or tested else 'disabled'
+        if self.desktop_builtin and server_id == DESKTOP_MCP_ID:
+            visible.update(builtin=True, command=config['command'] or '')
+            if not config['command']:
+                status = 'unavailable'
+                result = {'error': '未找到本机 DSH agent-desktop 组件。'}
         return {**visible, 'id': server_id, 'status': status,
                 'env_names': sorted(config.get('env', {})), 'header_names': sorted(config.get('headers', {})),
                 'tools': [{'name': item['name'], 'description': item.get('description', '')[:900],
@@ -175,10 +253,11 @@ class Registry:
         if not isinstance(fields, dict):
             raise ConfigError('连接配置须为对象。')
         with self.lock:
+            self._assert_editable(server_id, fields.get('name'))
             if self.closed or self.error:
                 raise ConfigError(self.error or 'MCP 服务正在关闭。', 503)
             previous = self.configs.get(server_id)
-            if create and (previous or len(self.configs) >= MAX_SERVERS):
+            if create and (previous or self._personal_count() >= MAX_SERVERS):
                 raise ConfigError('服务器标识已存在或数量已达上限。', 409)
             if not create and previous is None:
                 raise ConfigError('未找到此 MCP 服务器。', 404)
@@ -204,13 +283,14 @@ class Registry:
             if not isinstance(fields, dict):
                 raise ConfigError('连接配置须为对象。')
             fields = dict(fields, enabled=False)
+            self._assert_editable(server_id, fields.get('name'))
             if 'transport' not in fields and 'type' in fields:
                 fields['transport'] = fields['type']
             imported[server_id] = _validate(server_id, fields)
         with self.lock:
             if self.closed or self.error:
                 raise ConfigError(self.error or 'MCP 服务正在关闭。', 503)
-            if len(self.configs) + len(imported) > MAX_SERVERS or self.configs.keys() & imported.keys():
+            if self._personal_count() + len(imported) > MAX_SERVERS or self.configs.keys() & imported.keys():
                 raise ConfigError('服务器标识已存在或数量已达上限，未导入任何连接。', 409)
             next_configs = {**self.configs, **imported}
             self._save(next_configs)
@@ -219,6 +299,7 @@ class Registry:
 
     def remove(self, server_id):
         with self.lock:
+            self._assert_editable(server_id)
             if self.closed or self.error:
                 raise ConfigError(self.error or 'MCP 服务正在关闭。', 503)
             if server_id not in self.configs:
@@ -249,6 +330,8 @@ class Registry:
         with self.lock:
             config = self.configs.get(server_id)
             if not config or self.closed or (not test and not config['enabled']):
+                return
+            if self.desktop_builtin and server_id == DESKTOP_MCP_ID and not config['command']:
                 return
             existing = self.connections.get(server_id)
             if existing and not test:
@@ -287,6 +370,9 @@ class Registry:
                 self._close(server)
 
     def test(self, server_id):
+        if server_id in self.data_builtins:
+            data = self.data_inventory() if self.data_inventory else self.data_builtins
+            return deepcopy(data[server_id])
         with self.lock:
             if server_id not in self.configs:
                 raise ConfigError('未找到此 MCP 服务器。', 404)
@@ -322,6 +408,7 @@ class Registry:
         with self.lock:
             pending = [server_id for server_id, config in self.configs.items()
                        if config['enabled'] and server_id not in self.connections
+                       and (server_id != DESKTOP_MCP_ID or not self.desktop_builtin or config['command'])
                        and (server_ids is None or server_id in server_ids)]
         if pending:
             pool = ThreadPoolExecutor(max_workers=min(4, len(pending)))

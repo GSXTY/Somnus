@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { AcpAgents } = require('./acp-agents.cjs');
-const { eligibleAuthUrl, openDeepSeekHarness } = require('./acp-ipc.cjs');
+const { eligibleAuthUrl } = require('./acp-ipc.cjs');
 
 test('delegation uses a fresh tool-free ACP session for the confirmed managed target', { skip: process.platform !== 'win32' }, async t => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'vvman-delegation-test-'));
@@ -98,18 +98,6 @@ test('OpenMA browser API key prompts are unavailable and official browser links 
   assert.equal((await agents.probe(openma.id)).authentication, 'required');
   await assert.rejects(agents.authenticate(openma.id, 'browser'), /未提供/);
   assert.equal(opened, 0);
-});
-
-test('DeepSeek opens only the vendor app protocol or official website', async () => {
-  const links = [];
-  const shell = { openExternal: async url => links.push(url) };
-  const app = { getApplicationNameForProtocol: url => {
-    assert.equal(url, 'dsh://open');
-    return 'DeepSeek Harness';
-  } };
-  assert.equal(await openDeepSeekHarness(app, shell), 'desktop');
-  assert.equal(await openDeepSeekHarness({ getApplicationNameForProtocol: () => '' }, shell), 'website');
-  assert.deepEqual(links, ['dsh://open', 'https://www.deepseek.com/harness/']);
 });
 
 test('ACP main-chat routes advertised model selections and isolates native sessions', { skip: process.platform !== 'win32' }, async t => {
@@ -287,7 +275,11 @@ test('parallel managed ACP chats isolate startup, tools, approvals, cancellation
   assert.equal(currentB.connection.failure, undefined);
   agents.resetConversation('delta');
   assert.equal((await d.result).stopReason, 'cancelled');
-  assert.deepEqual(c.updates.concat(d.updates), []);
+  for (const [chat, conversationId] of [[c, 'charlie'], [d, 'delta']]) {
+    assert.deepEqual(chat.updates.map(({ acpStage, conversationId, text }) => [acpStage, conversationId, text]), [
+      ['preparing', conversationId, ''], ['connecting', conversationId, ''],
+    ]);
+  }
 
   agents.cancelConversation('alpha');
   const cancelled = await a.result;

@@ -63,11 +63,11 @@ export function ManagedDshAccount({ connected, disabled }: { connected: boolean;
       <Tag color={signedIn ? 'success' : pending ? 'processing' : undefined}>
         {status ? accountLabels[status.state] : check && !error ? '检查账号状态…' : '账号状态待检查'}
       </Tag>
-      {status?.version && <small>DSH {status.version}</small>}
+      {status?.version && <small>版本 {status.version}</small>}
     </div>
     {pending && <p>请在浏览器中完成授权，随后返回 Somnus。</p>}
     {status?.message && !pending && <p>{status.message}</p>}
-    {signedIn && <p>{connected ? '可在下方验证 ACP 会话。' : '连接运行时后，可在聊天框的模型菜单选择官方 DSH。'}</p>}
+    {signedIn && <p>{connected ? '可在下方验证 ACP 会话。' : '连接运行时后，可在聊天框的模型菜单选择 DeepSeek 官方 Agent。'}</p>}
     <Space wrap>
       {signIn && !signedIn && status && status.state !== 'unavailable' &&
         <Button type="primary" disabled={disabled || Boolean(busy) || pending} loading={busy === 'login'}
@@ -78,3 +78,4 @@ export function ManagedDshAccount({ connected, disabled }: { connected: boolean;
     {error && <Alert type="error" showIcon message={error} />}
   </section>;
 }
+

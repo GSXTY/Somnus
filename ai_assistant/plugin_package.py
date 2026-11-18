@@ -108,7 +108,7 @@ def export(bundles, fields, registry):
     skills = []
     with bundles.database() as db:
         for skill_id in skill_ids:
-            row = db.execute('SELECT * FROM personal_skills WHERE id=?', (skill_id,)).fetchone()
+            row = bundles.skills.get(db, skill_id)
             if row is None:
                 raise BundleError('plugin_reference_missing', '导出过程中有 Skill 被移除，请重新检查。', 409)
             skills.append(stored_skill(row))
@@ -118,7 +118,7 @@ def export(bundles, fields, registry):
     return {'package': package, 'sha256': hashlib.sha256(canonical(package)).hexdigest()}
 
 
-def _review(db, minimum, manifest, skills, mcp_states):
+def _review(db, minimum, manifest, skills, mcp_states, skill_library_instance):
     checks = [{'id': 'manifest', 'status': 'pass', 'message': '已核对插件包格式和文本限制。'}]
     compatible = version_key(APP_VERSION) >= version_key(minimum)
     checks.append({'id': 'somnus_version', 'status': 'pass' if compatible else 'fail',
@@ -126,7 +126,12 @@ def _review(db, minimum, manifest, skills, mcp_states):
     skill_states, mcp_requirements, existing = {}, {}, {}
     for skill in skills:
         name = skill['name']
-        row = db.execute('SELECT * FROM personal_skills WHERE name=?', (name,)).fetchone()
+        if name == 'ppt-master':
+            skill_states[name] = 'conflict'
+            checks.append({'id': 'skill:' + name, 'status': 'fail', 'message': 'Somnus 不再导入 ppt-master。'})
+            continue
+        row = skill_library_instance.handoff if name == skill_library.HANDOFF_NAME else db.execute(
+            'SELECT * FROM personal_skills WHERE name=?', (name,)).fetchone()
         if row is None:
             state, label, status = 'new', '将导入内置文本', 'pass'
         elif stored_skill(row) == skill:
@@ -165,7 +170,7 @@ def preflight(bundles, package, registry):
         return {'ok': False, 'checks': [{'id': error.code, 'status': 'fail', 'message': str(error)}]}
     _, mcp_states = bundles._states(registry)
     with bundles.database() as db:
-        report, _ = _review(db, *parsed, mcp_states)
+        report, _ = _review(db, *parsed, mcp_states, bundles.skills)
     return report
 
 
@@ -175,7 +180,7 @@ def install(bundles, package, registry):
     _, manifest, skills = parsed
     with bundles.database() as db:
         db.execute('BEGIN IMMEDIATE')
-        report, existing = _review(db, *parsed, mcp_states)
+        report, existing = _review(db, *parsed, mcp_states, bundles.skills)
         if not report['ok']:
             problem = next(check['message'] for check in report['checks'] if check['status'] == 'fail')
             raise BundleError('plugin_preflight_failed', problem, 409)

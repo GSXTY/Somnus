@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { InputRef } from 'antd';
 import { Alert, Button, Dropdown, Input, Modal, Select } from 'antd';
-import { CloseOutlined, EllipsisOutlined, FolderOutlined, PushpinOutlined, PlusOutlined } from '@ant-design/icons';
+import { CloseOutlined, EllipsisOutlined, FolderAddOutlined, FolderOutlined, PushpinOutlined, PlusOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { createWorkspace, updateWorkspace, removeWorkspace, workspaces as listWorkspaces } from './assistantApi';
 import type { ProjectToolsBridge } from './ProjectTools';
 import type { ProjectMemoryMode, ProjectSourceFolder, Workspace } from './assistantApi';
@@ -14,13 +14,15 @@ declare global {
     vvmanProjects?: ProjectToolsBridge & {
       chooseDirectory: () => Promise<{ root_path: string; folder_grant: string } | null>;
       chooseDocumentFolder?: (path: string) => Promise<{ root_path: string; folder_grant: string }>;
-      openDirectory: (projectId: string, sourceIndex?: number) => Promise<void>;
+      openDirectory: (projectId: string, sourceIndex?: number, target?: 'explorer' | 'vscode' | 'git-bash' | 'terminal') => Promise<void>;
     };
   }
 }
 
 const defaultProject: Workspace = { id: 'default', name: '默认项目', conversation_count: 0 };
-type Props = { value: string; onChange: (id: string) => void; disabled?: boolean; compact: boolean; children?: ReactNode };
+type Props = { value: string; onChange: (id: string) => void; disabled?: boolean; children?: ReactNode;
+  onSearch?: () => void; onSettings?: () => void;
+  chooser?: { open: boolean; onOpenChange: (open: boolean) => void } };
 type Editor = {
   project?: Workspace; name: string; folders: ProjectSourceFolder[];
   memory: ProjectMemoryMode; instructions: string;
@@ -34,9 +36,8 @@ function sourcePaths(project?: Workspace) {
   return project?.source_folders ?? (project?.root_path ? [project.root_path] : []);
 }
 
-export function WorkspaceSwitch({ value, onChange, disabled, compact, children }: Props) {
+export function WorkspaceSwitch({ value, onChange, disabled, chooser, onSearch, onSettings, children }: Props) {
   const [projects, setProjects] = useState<Workspace[]>([defaultProject]);
-  const [chooserOpen, setChooserOpen] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [remove, setRemove] = useState<Workspace | null>(null);
   const [busy, setBusy] = useState(false);
@@ -162,9 +163,19 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
     </div>;
   }
   const archived = projects.filter(project => project.archived);
-  const projectList = <section className="nav-project-section" aria-label="项目">
-    <header><h2>项目</h2><Button type="text" size="small" icon={<PlusOutlined />}
-      disabled={disabled || busy} onClick={() => startEdit()} aria-label="新建项目" title="新建项目" /></header>
+  const projectList = <section className="nav-project-section" aria-label="工作区">
+    <header><h2>工作区</h2><div className="nav-workspace-actions">
+      {onSearch && <Button type="text" size="small" icon={<SearchOutlined />}
+        onClick={onSearch} aria-label="搜索会话" title="搜索会话" />}
+      {onSettings && <Button type="text" size="small" icon={<SettingOutlined />} disabled={disabled || busy}
+        onClick={() => {
+          const project = projects.find(item => item.id === value && item.id !== 'default' && !item.archived);
+          if (project) startEdit(project);
+          else { chooser?.onOpenChange(false); onSettings(); }
+        }} aria-label="工作区设置" title="工作区设置" />}
+      <Button type="text" size="small" icon={<FolderAddOutlined />}
+        disabled={disabled || busy} onClick={() => startEdit()} aria-label="新建项目" title="新建项目" />
+    </div></header>
     {!editor && !remove && error && <Alert type="error" showIcon message={error} />}
     <div className="nav-project-list">
       {projects.filter(project => !project.archived).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))).map(row)}
@@ -175,11 +186,11 @@ export function WorkspaceSwitch({ value, onChange, disabled, compact, children }
   </section>;
 
   return <>
-    {compact ? <button type="button" className="nav-project-compact" aria-label="项目" title="项目"
-      onClick={() => setChooserOpen(true)}><FolderOutlined /></button> : projectList}
-    <Modal title="项目" open={compact && chooserOpen} footer={null} onCancel={() => setChooserOpen(false)}>
-      {compact && chooserOpen && projectList}
-    </Modal>
+    {chooser ? <><button type="button" className="nav-project-compact" aria-label="项目" title="项目"
+      aria-expanded={chooser.open} aria-haspopup="dialog" onClick={() => chooser.onOpenChange(true)}><FolderOutlined /></button>
+      <Modal title="项目" open={chooser.open} footer={null} onCancel={() => chooser.onOpenChange(false)}>
+        {chooser.open && projectList}
+      </Modal></> : projectList}
     <Modal className="project-editor" width={640} centered title={editor?.project ? '编辑项目' : '新建项目'} open={Boolean(editor)}
       onCancel={() => { if (!busy) setEditor(null); }}
       afterOpenChange={open => { if (open) editorName.current?.focus(); }}

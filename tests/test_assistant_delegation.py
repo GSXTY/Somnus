@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ai_assistant import delegation
+from ai_assistant import company_runtime, delegation
 from ai_assistant.asgi import create_router
 from ai_assistant.service import AssistantError, AssistantService, Config
 
@@ -92,6 +92,27 @@ class DelegationTests(unittest.TestCase):
         with self.assertRaisesRegex(AssistantError, '已结束'):
             self.service.complete_delegation(self.cid, request['id'], {'status': 'declined'})
 
+    def test_persisted_limits_allow_two_steps_and_hide_tool_afterward(self):
+        settings = self.service.delegation_settings({'max_calls': 2, 'agent_ids': [AGENT_ID]})
+        self.assertEqual(AssistantService(self.service.path).delegation_settings(), settings)
+        with self.mock_upstream(tool_calls(3), response({'content': '复核已完成'}, 'stop')):
+            requests = []
+            for event, data in self.service.stream(self.cid, *self.begin()):
+                if event == 'delegation_request':
+                    requests.append(data['id'])
+                    self.service.complete_delegation(self.cid, data['id'], {'status': 'complete', 'result': '17'})
+        self.assertEqual(len(set(requests)), 2)
+        self.assertNotIn(delegation.TOOL_NAME, [tool['function']['name'] for tool in self.requests[1]['tools']])
+        self.assertIn('最多委派 2 次', self.requests[1]['messages'][-1]['content'])
+
+    def test_disabled_settings_remove_delegation_tool(self):
+        self.service.delegation_settings({'enabled': False})
+        with self.mock_upstream(response({'content': '自行完成'}, 'stop')):
+            list(self.service.stream(self.cid, *self.begin()))
+        self.assertNotIn(delegation.TOOL_NAME, [tool['function']['name'] for tool in self.requests[0].get('tools', [])])
+        with self.assertRaises(AssistantError):
+            self.service.delegation_settings({'max_calls': True})
+
     def test_web_cannot_supply_an_agent_or_complete_a_request(self):
         app = FastAPI()
         app.state.assistant_service = self.service
@@ -102,3 +123,19 @@ class DelegationTests(unittest.TestCase):
                 'content': '委派', 'delegation_agents': [{'id': AGENT_ID, 'name': AGENTS[AGENT_ID]}],
             }).status_code, 403)
             self.assertEqual(client.post(root + '/delegations/test', json={'status': 'declined'}).status_code, 403)
+            self.assertEqual(client.get('/api/assistant/delegation-settings').status_code, 403)
+            self.assertEqual(client.patch('/api/assistant/delegation-settings', json={'enabled': False}).status_code, 403)
+
+    def test_company_relay_parallel_capacity_and_reuse(self):
+        lease = company_runtime.ModelLease(self.service.config, {
+            'subagents': {'maxDepth': 1, 'maxActiveSubagents': 2},
+        })
+        body = {'model': 'mock', 'stream': True, 'messages': [{'role': 'user', 'content': 'test'}]}
+        for _ in range(3):
+            self.assertIsNotNone(lease.authorize(lease.token, body))
+        self.assertIsNone(lease.authorize(lease.token, body))
+        lease.release()
+        self.assertIsNotNone(lease.authorize(lease.token, body))
+        for _ in range(32):
+            lease.release()
+            self.assertIsNotNone(lease.authorize(lease.token, body))

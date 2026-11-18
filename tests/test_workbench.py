@@ -1,6 +1,9 @@
+from contextlib import closing
 from datetime import datetime
 import json
 from pathlib import Path
+import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -9,12 +12,117 @@ from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler
 
 from agent_core.workbench import MODELS, dashboard, user_detail, reporting_quality
+from agent_core.sql_access import SqlSettings
 from event_detection import viewer
 
 NOW = datetime.fromisoformat('2026-11-09T15:00:00+08:00')
 
 
 class WorkbenchDataTests(unittest.TestCase):
+    def test_live_snore_models_use_their_own_dated_summary_rows(self):
+        tables = ('statistics_ya43', 'statistics_ya46')
+        settings = SqlSettings('mysql://example.invalid/db', allowed_tables=tables)
+        with closing(sqlite3.connect(':memory:')) as database:
+            database.create_function('regexp', 2, lambda pattern, value: bool(value and re.search(pattern, value)))
+            for table in tables:
+                database.execute(f'CREATE TABLE {table}(record_date VARCHAR, userid INT, deviceid VARCHAR, snore_count INT)')
+                database.execute(f"INSERT INTO {table} VALUES ('2026-11-08', 1, 'a', 4)")
+                database.execute(f"INSERT INTO {table} VALUES ('2026-11-01', 2, 'z', 2), ('2026-11-09', 2, 'z', 2)")
+            database.execute('ALTER TABLE statistics_ya43 ADD COLUMN success_count int')
+            database.execute("UPDATE statistics_ya43 SET success_count=3 WHERE record_date='2026-11-08'")
+            database.execute("""INSERT INTO statistics_ya46 VALUES ('2026-11-08 17:00:00', 1, 'b', 7),
+                             ('2026-11-02', 2, 'q', 1), ('2026-11-08-invalid', 2, 'bad', 900)""")
+
+            def query(_settings, sql, params=()):
+                if 'information_schema.columns' in sql:
+                    self.assertIn(params[0], tables)
+                    return [('record_date', 'varchar'), ('userid', 'bigint'), ('deviceid', 'varchar'),
+                            ('snore_count', 'int'), *([('success_count', 'int')] if params[0] == tables[0] else [])]
+                return database.execute(sql.replace('%s', '?'), params).fetchall()
+
+            with (patch('agent_core.live_dashboard._rows', side_effect=query),
+                  patch('agent_core.live_dashboard.device_types', return_value=[])):
+                for model, expected in [('YA43', [1, 1, 1, 4, 3]), ('YA46', [2, 1, 2, 11])]:
+                    data = dashboard({'source': ['live'], 'model': [model]}, NOW, settings=settings)
+                    self.assertEqual(data['source']['mode'], 'live')
+                    self.assertEqual(data['model_scope'], [model])
+                    self.assertEqual(
+                        [metric['value'] for metric in data['home']['metrics']], expected,
+                    )
+                    points = data['home']['charts'][0]['points']
+                    self.assertEqual((points[0]['date'], points[-1]['date']), ('2026-11-02', '2026-11-08'))
+                    self.assertGreater(sum(point['value'] for point in points), 0)
+                    self.assertTrue(all(value['value'] is None for value in data['kpis'].values()))
+                    self.assertIn(dict(value=model, label=model, home_only=True), data['model_options'])
+
+    def test_live_snore_models_preserve_discovery_reason_without_manufacturing_metrics(self):
+        settings = SqlSettings('mysql://example.invalid/db', allowed_tables=('statistics_ya43',))
+        query = {'source': ['live'], 'model': ['YA43']}
+        for metadata, expected in [
+            ([], '字段结构'),
+            ([('start_time', 'datetime')], '缺少已确认'),
+            ([('record_date', 'int'), ('userid', 'bigint'), ('deviceid', 'varchar'),
+              ('snore_count', 'int')], 'record_date 类型'),
+        ]:
+            with self.subTest(metadata=metadata):
+                with (patch('agent_core.live_dashboard.available', return_value=True),
+                      patch('agent_core.live_dashboard.device_types', return_value=[]),
+                      patch('agent_core.live_dashboard._rows', return_value=metadata) as rows):
+                    result = dashboard(query, NOW, settings=settings)
+                self.assertIn(expected, result['source']['label'])
+                self.assertEqual(result['home'], {'metrics': [], 'charts': []})
+                self.assertEqual(rows.call_count, 1)
+        with patch('agent_core.live_dashboard.available', return_value=False):
+            result = dashboard(query, NOW, settings=settings)
+        self.assertIn('连接', result['source']['label'])
+        self.assertEqual(result['model_options'], [dict(value='YA43', label='YA43', home_only=True)])
+        with patch('agent_core.live_dashboard.available') as probe:
+            result = dashboard({'source': ['live'], 'model': ['YA46']}, NOW, settings=settings)
+        probe.assert_not_called()
+        self.assertIn('白名单', result['source']['label'])
+
+    def test_live_ya50_uses_daily_reports_without_double_counting_or_estimating_events(self):
+        settings = SqlSettings('mysql://example.invalid/db', allowed_tables=('resp_statistics',))
+        with closing(sqlite3.connect(':memory:')) as database:
+            database.execute('CREATE TABLE resp_statistics(record_date TEXT, userid TEXT, treat_time INT, breath_event_index REAL)')
+            database.executemany('INSERT INTO resp_statistics VALUES (?, ?, ?, ?)', (
+                ('2026-11-08', 'a', 60, 3), ('2026-11-08', 'a', 90, 3),
+                ('2026-11-08', 'b', 30, 7), ('2026-11-08', None, 60, 1),
+                ('2026-11-08', '', 60, 1), ('2026-11-08', 'c', 0, 2),
+                ('2026-11-07', 'a', 30, None), ('2026-11-09', 'a', 240, 99),
+            ))
+
+            def query(_settings, sql, params=()):
+                return database.execute(sql.replace('%s', '?'), params).fetchall()
+
+            with patch('agent_core.live_dashboard._rows', side_effect=query):
+                data = dashboard({'source': ['live'], 'model': ['YA50']}, NOW, settings=settings)
+
+        self.assertEqual(data['source']['mode'], 'live')
+        self.assertEqual(data['model_scope'], ['YA50'])
+        self.assertIn({'value': 'YA50', 'label': 'YA50'}, data['model_options'])
+        self.assertEqual(len(data['daily']), 7)
+        self.assertEqual(data['kpis']['active_users']['value'], 2)
+        self.assertEqual(data['kpis']['active_users']['previous'], 1)
+        self.assertEqual(data['kpis']['treatment_hours']['value'], 2.0)
+        self.assertEqual(data['kpis']['avg_ahi']['value'], 5.0)
+        self.assertIn('呼吸事件指数', data['kpis']['avg_ahi']['label'])
+        self.assertIsNone(data['kpis']['reported_events']['value'])
+        self.assertTrue(all(day['event_count'] is None for day in data['daily']))
+
+    def test_live_ya50_reports_unavailable_when_database_cannot_be_verified(self):
+        settings = SqlSettings('mysql://example.invalid/db', allowed_tables=('resp_statistics',))
+        with (patch('agent_core.live_dashboard.available', return_value=True),
+              patch('agent_core.live_dashboard.device_types', return_value=[]),
+              patch('agent_core.live_dashboard._rows', side_effect=RuntimeError('private connection detail'))):
+            data = dashboard({'source': ['live'], 'model': ['YA50']}, NOW, settings=settings)
+
+        self.assertEqual(data['source']['mode'], 'unconfigured')
+        self.assertEqual(data['daily'], [])
+        self.assertIsNone(data['kpis']['active_users']['value'])
+        self.assertEqual(data['model_options'], [{'value': 'YA50', 'label': 'YA50'}])
+        self.assertNotIn('private connection detail', str(data))
+
     def test_reporting_loss_uses_additive_counters_and_weighted_rate(self):
         whole=dashboard({},NOW)['data_quality']
         parts=[dashboard({'model':[model]},NOW)['data_quality'] for model in MODELS]

@@ -29,7 +29,8 @@ def main():
     except Exception:
         print('pywebview 未安装：打包后的程序将在默认浏览器中打开界面。')
     for folder,names in (('event_detection',('index.html','viewer.js','annotation-model.js')),
-                         ('page_design',('dashboard.html','dashboard.js','dashboard.css','events.css','vendor/bootstrap.min.css','vendor/bootstrap.LICENSE'))):
+                         ('page_design',('dashboard.html','dashboard.js','dashboard.css','events.css','vendor/bootstrap.min.css','vendor/bootstrap.LICENSE')),
+                         ('skills/project-handoff', ('SKILL.md',))):
         for name in names:
             destination=Path(folder)/Path(name).parent
             command+=['--add-data',f'{ROOT/folder/name}:{destination}']

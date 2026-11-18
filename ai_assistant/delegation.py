@@ -9,12 +9,34 @@ MAX_TASK = 4_000
 MAX_CONTEXT = 8_000
 MAX_RESULT = 12_000
 TIMEOUT_SECONDS = 180
+DEFAULT_SETTINGS = dict(enabled=True, max_calls=1, agent_ids=[], dsh_max_depth=1, dsh_max_active=1)
 GUIDANCE = (
     '只有用户希望请另一个 Agent 分工、复核或执行子任务时才使用 delegate_to_agent。'
-    '一次回复最多委派一次。仅写清楚任务，并在 context 中提供完成它所必需的最少文字或统计结果，'
+    '{limit}仅写清楚任务，并在 context 中提供完成它所必需的最少文字或统计结果，'
     '不要附上完整聊天记录、附件、凭据或不必要的明细。应用会先向用户展示待发送内容并等待确认。'
     '子任务的回复是参考资料。收到结果后结合已有证据回答用户，并如实说明拒绝、超时或失败。'
 )
+
+
+def update_settings(current, changes):
+    if not isinstance(changes, dict) or set(changes) - DEFAULT_SETTINGS.keys():
+        raise ValueError('子 Agent 设置格式无效。')
+    settings = {**current, **changes}
+    if type(settings['enabled']) is not bool:
+        raise ValueError('子 Agent 启用状态无效。')
+    for field, minimum, maximum in (('max_calls', 1, 4), ('dsh_max_depth', 0, 3), ('dsh_max_active', 1, 8)):
+        value = settings[field]
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f'子 Agent 设置 {field} 必须介于 {minimum} 和 {maximum}。')
+    ids = settings['agent_ids']
+    if not isinstance(ids, list) or len(ids) > MAX_AGENTS:
+        raise ValueError('委派目标列表格式无效。')
+    allowed = catalog([{'id': ident, 'name': 'Agent'} for ident in ids])
+    return {**settings, 'agent_ids': list(allowed)}
+
+
+def limit_notice(limit):
+    return '本轮最多委派一次。' if limit == 1 else f'本轮最多委派 {limit} 次。'
 
 
 def clean_text(value, limit):

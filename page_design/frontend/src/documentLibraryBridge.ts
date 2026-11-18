@@ -9,6 +9,8 @@ type DocumentFile = { name: string; size: number; mimeType: string; dataBase64: 
 type DocumentBridge = {
   list(scope: DocumentScope, folder?: string): Promise<DocumentListing>;
   createFolder(folder: string, name: string): Promise<DocumentListing>;
+  createFile?(folder: string, name: string, content?: string): Promise<DocumentListing>;
+  deleteEntry?(path: string): Promise<DocumentListing>;
   importFiles(folder: string): Promise<DocumentListing>;
   openFile(scope: DocumentScope, path: string): Promise<void>;
   readFile(scope: DocumentScope, path: string): Promise<DocumentFile>;

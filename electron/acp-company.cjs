@@ -10,7 +10,7 @@ const SHIPPED = new Set([
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const DEEPSEEK_FLASH_MODELS = new Set(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']);
 
-async function companyProfile(cwd, profile, config, endpoint) {
+async function companyProfile(cwd, profile, config, endpoint, managedHome, maxParallelToolCalls) {
   if (!profile || !config || typeof config.model !== 'string' ||
       !/^[0-9a-f]{64}$/.test(config.token) || !endpoint?.startsWith('http://127.0.0.1:')) {
     throw new AcpError('公司模型会话授权未就绪。');
@@ -18,6 +18,7 @@ async function companyProfile(cwd, profile, config, endpoint) {
   const home = path.join(cwd, 'company-home');
   const dir = path.join(home, 'profiles', 'acp');
   const sourceModules = path.join(path.dirname(profile.file), 'node_modules');
+  const managedSkillDirs = managedHome ? [path.join(managedHome, 'skills')] : [];
   await mkdir(dir, { recursive: true });
   const dependencies = {};
   const bundles = [];
@@ -54,6 +55,9 @@ async function companyProfile(cwd, profile, config, endpoint) {
         input: config.vision ? ['text', 'image'] : ['text'] }],
     } } } },
     { id: 'acp', config: { provider: 'vvman-company', model: config.model } },
+    ...(config.subagents ? [{ id: 'subagent', config: config.subagents }] : []),
+    ...(maxParallelToolCalls == null ? [] : [{ id: 'agent-loop', config: { maxParallelToolCalls } }]),
+    { id: 'skill-filesystem', config: { dshHome: home, customSkillDirs: managedSkillDirs } },
   ]));
   return { home, token: config.token, bundles };
 }

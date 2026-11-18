@@ -8,10 +8,12 @@ export function readProjectLaunch(location) {
 
 export function readWorkspaceView(location) {
   const hash = location.hash.replace(/^#/, '');
+  if (hash === 'dsh-chat') return 'assistant';
   if (/^deep-analysis\?task=[a-f0-9]{32}$/.test(hash)) return 'deep-analysis';
   if (/^assistant\?conversation=[a-f0-9]{32}$/.test(hash) || readProjectLaunch(location)) return 'assistant';
   if (routed.has(hash) || standard.has(hash)) return hash;
   const query = new URLSearchParams(location.search).get('view');
+  if (query === 'dsh-chat') return 'assistant';
   return routed.has(query) || standard.has(query) ? query : 'dashboard';
 }
 

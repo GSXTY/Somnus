@@ -22,7 +22,7 @@ AUDIT_LIMIT = 10_000
 AUDIT_DISPLAY_LIMIT = 100
 AUDIT_OPERATIONS = {
     'dashboard': '数据看板', 'user_detail': '查看用户详情', 'sql_schema': '查看数据库结构',
-    'sql_query': '执行只读查询', 'sql_ask': '生成并执行只读查询',
+    'sql_query': '执行只读查询', 'sql_ask': '生成并执行只读查询', 'sql_propose': '生成 SQL',
     'deep_status': '分析服务状态', 'deep_sample': '分析样例', 'deep_upload': '上传分析文件',
     'deep_list': '查看分析任务', 'deep_create': '创建分析任务', 'deep_task': '查看分析任务详情',
     'deep_cancel': '取消分析任务', 'deep_artifact': '读取分析产物',

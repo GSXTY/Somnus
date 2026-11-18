@@ -13,6 +13,8 @@ MAX_SELECTED = 3
 MAX_MANIFEST_BYTES = 32 * 1024
 ITEM_ID = re.compile(r'[a-f0-9]{32}')
 MANIFEST_FIELDS = {'name', 'description', 'version', 'skill_ids', 'mcp_ids'}
+HANDOFF_PLUGIN_NAME = 'Project Handoff'
+HANDOFF_PLUGIN_ID = uuid.uuid5(uuid.NAMESPACE_URL, 'somnus:plugin:project-handoff').hex
 RELEASE_VERSION = re.compile(r'(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}'
                              r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
                              r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', re.ASCII)
@@ -53,7 +55,10 @@ def _manifest(fields, *, embedded_skills=False):
     servers = _ids(fields.get('mcp_ids', []), MCP_ID, 16)
     if not skills and not servers and not embedded_skills:
         raise BundleError('invalid_plugin_references', '请至少选择一个已安装的 Skill 或 MCP。')
-    return dict(name=_text(fields.get('name'), 80, required=True),
+    name = _text(fields.get('name'), 80, required=True)
+    if name.casefold() == HANDOFF_PLUGIN_NAME.casefold():
+        raise BundleError('builtin_plugin', 'Project Handoff 是内置插件，无法替换。', 409)
+    return dict(name=name,
                 description=_text(fields.get('description', ''), 500),
                 version=_text(fields.get('version', '1.0.0'), 48, required=True),
                 skill_ids=skills, mcp_ids=servers)
@@ -86,7 +91,18 @@ class PluginBundles:
             )''')
 
     def _states(self, registry):
-        return {skill['id']: skill['enabled'] for skill in self.skills.list()}, _mcp_states(registry)
+        return self.skills.states(), _mcp_states(registry)
+
+    @staticmethod
+    def _handoff(row):
+        return bool(row and row['name'].strip().casefold() == HANDOFF_PLUGIN_NAME.casefold())
+
+    @classmethod
+    def _assert_editable(cls, db, plugin_id, *, default=False):
+        table = 'default_plugins' if default else 'personal_plugins'
+        row = db.execute(f'SELECT name FROM {table} WHERE id=?', (plugin_id,)).fetchone()
+        if plugin_id == HANDOFF_PLUGIN_ID or cls._handoff(row):
+            raise BundleError('builtin_plugin', '内置插件无法修改或删除。', 409)
 
     @staticmethod
     def _public(row, states):
@@ -102,18 +118,21 @@ class PluginBundles:
     def list(self, registry):
         states = self._states(registry)
         with self.database() as db:
-            return [self._public(row, states) for row in db.execute('SELECT * FROM personal_plugins ORDER BY created_at,id')]
+            return [self._public(row, states) for row in db.execute('SELECT * FROM personal_plugins ORDER BY created_at,id')
+                    if not self._handoff(row)]
 
     def defaults(self, registry):
         states = self._states(registry)
         with self.database() as db:
-            return [self._public(row, states) for row in db.execute('SELECT * FROM default_plugins ORDER BY published_at,id')]
+            return [self._public(row, states) for row in db.execute(
+                'SELECT * FROM default_plugins ORDER BY published_at,id') if not self._handoff(row)]
 
     def publish_default(self, plugin_id, registry):
         self._require_id(plugin_id)
         states = self._states(registry)
         with self.database() as db:
             db.execute('BEGIN IMMEDIATE')
+            self._assert_editable(db, plugin_id)
             personal = db.execute('SELECT * FROM personal_plugins WHERE id=?', (plugin_id,)).fetchone()
             if personal is None:
                 raise BundleError('plugin_not_found', '插件不存在。', 404)
@@ -134,6 +153,8 @@ class PluginBundles:
     def remove_default(self, plugin_id):
         self._require_id(plugin_id)
         with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._assert_editable(db, plugin_id, default=True)
             if not db.execute('DELETE FROM default_plugins WHERE id=?', (plugin_id,)).rowcount:
                 raise BundleError('plugin_not_found', '默认插件不存在。', 404)
         return {'removed': True}
@@ -247,6 +268,8 @@ class PluginBundles:
             raise BundleError('invalid_plugin', '插件启用状态无效。')
         states = self._states(registry)
         with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._assert_editable(db, plugin_id)
             row = db.execute('UPDATE personal_plugins SET enabled=? WHERE id=? RETURNING *',
                              (enabled, plugin_id)).fetchone()
             if not row:
@@ -256,6 +279,8 @@ class PluginBundles:
     def remove(self, plugin_id):
         self._require_id(plugin_id)
         with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._assert_editable(db, plugin_id)
             if not db.execute('DELETE FROM personal_plugins WHERE id=?', (plugin_id,)).rowcount:
                 raise BundleError('plugin_not_found', '插件不存在。', 404)
         return {'removed': True}
@@ -266,11 +291,15 @@ class PluginBundles:
         skills, servers = [], set()
         with self.database() as db:
             for plugin_id in ids:
+                if plugin_id == HANDOFF_PLUGIN_ID:
+                    continue
                 row = db.execute('SELECT * FROM personal_plugins WHERE id=? AND enabled=1', (plugin_id,)).fetchone()
                 if row is None:
                     row = db.execute('SELECT * FROM default_plugins WHERE id=? AND enabled=1', (plugin_id,)).fetchone()
                 if not row:
                     raise BundleError('plugin_unavailable', '所选插件已停用或移除，请重新选择。', 409)
+                if self._handoff(row):
+                    continue
                 skills.extend(item for item in json.loads(row['skill_ids']) if states[0].get(item))
                 servers.update(item for item in json.loads(row['mcp_ids']) if states[1].get(item))
         return list(dict.fromkeys(skills)), frozenset(servers)

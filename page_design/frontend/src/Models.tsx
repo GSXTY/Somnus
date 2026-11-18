@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Checkbox, Input, Modal, Popconfirm, Select, Spin, Tag } from 'antd';
 import { ApiOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import {
-  listProviders, removeModel, saveModel, saveModelSupplier, setDefaultModel, testModelConnection,
+  listProviders, removeCompanyProviderKey, removeModel, saveCompanyProvider, saveModel, saveModelSupplier, setDefaultModel, testModelConnection,
 } from './assistantApi';
 import type { Provider, ProviderConnectionTest, ReasoningEffort } from './assistantApi';
 import { describeError } from './errors.mjs';
@@ -10,7 +10,7 @@ import './models.css';
 
 type Supplier = { id: string; name: string; baseUrl: string; builtin?: boolean; groupId?: string; models: Provider[] };
 type Editor = {
-  kind: 'new-supplier' | 'supplier' | 'new-model' | 'model';
+  kind: 'new-supplier' | 'supplier' | 'new-model' | 'model' | 'company';
   supplier?: Supplier;
   id?: string;
   name: string;
@@ -27,24 +27,26 @@ function groupProviders(providers: Provider[]) {
     const id = row.group_id || (row.builtin ? row.id : JSON.stringify([row.name, row.base_url]));
     const group = groups.get(id);
     if (group) group.models.push(row);
-    else groups.set(id, { id, name: row.builtin ? '公司默认' : row.name, baseUrl: row.base_url, builtin: row.builtin, groupId: row.group_id, models: [row] });
+    else groups.set(id, { id, name: row.builtin ? 'DeepSeek' : row.name, baseUrl: row.base_url, builtin: row.builtin, groupId: row.group_id, models: [row] });
   }
   return [...groups.values()];
 }
 
 function makeEditor(kind: Editor['kind'], supplier?: Supplier, model?: Provider): Editor {
   return {
-    kind, supplier, id: model?.id, name: supplier?.name || '', base_url: supplier?.baseUrl || '',
+    kind, supplier, id: model?.id, name: supplier?.name || '',
+    base_url: supplier?.baseUrl || '',
     api_key: '', model: model?.model || '', vision_enabled: Boolean(model?.vision_enabled),
     reasoning_efforts: model?.reasoning_efforts || [],
   };
 }
 
-const editorTitles = { 'new-supplier': '添加供应商', supplier: '编辑供应商', 'new-model': '添加模型', model: '编辑模型' };
+const editorTitles = { 'new-supplier': '添加供应商', supplier: '编辑供应商', 'new-model': '添加模型', model: '编辑模型', company: 'DeepSeek API Key' };
+const deepSeekKeyPage = 'https://platform.deepseek.com/api_keys';
 const effortNames = { low: '低', medium: '中', high: '高' };
 const effortOptions = (Object.keys(effortNames) as ReasoningEffort[]).map(value => ({ value, label: effortNames[value] }));
 
-export function Models() {
+export function Models({ windowsDesktop = false }: { windowsDesktop?: boolean } = {}) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [active, setActive] = useState('');
   const [selected, setSelected] = useState('');
@@ -86,7 +88,7 @@ export function Models() {
     setEditor(makeEditor(kind, group, model));
   }
   async function submit() {
-    if (!editor || busy) return;
+    if (!editor || busy || editor.kind === 'company' && !editor.api_key.trim()) return;
     setBusy(true);
     setEditError('');
     const { kind, supplier: group, id, model, vision_enabled, reasoning_efforts, name, base_url, api_key } = editor;
@@ -94,7 +96,10 @@ export function Models() {
       const modelFields = { model: model.trim(), vision_enabled, reasoning_efforts };
       const supplierFields = { name: name.trim(), base_url: base_url.trim(), ...(api_key ? { api_key } : {}) };
       let preferredId = group?.id;
-      if (kind === 'supplier' && group?.groupId) {
+      if (kind === 'company') {
+        await saveCompanyProvider(api_key.trim());
+        if (id) setOutcomes(old => Object.fromEntries(Object.entries(old).filter(([key]) => key !== id)));
+      } else if (kind === 'supplier' && group?.groupId) {
         await saveModelSupplier(group.groupId, supplierFields);
         setOutcomes({});
       } else {
@@ -107,6 +112,18 @@ export function Models() {
       setQuery('');
       await load(undefined, preferredId);
     } catch (failure) { setEditError(describeError(failure, '无法保存配置')); }
+    finally { setBusy(false); }
+  }
+
+  async function removeCompanyKey() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await removeCompanyProviderKey();
+      setOutcomes({});
+      await load();
+    } catch (failure) { setError(describeError(failure, '无法移除密钥')); }
     finally { setBusy(false); }
   }
 
@@ -133,7 +150,10 @@ export function Models() {
   }
 
   const supplierEditor = editor?.kind === 'supplier' || editor?.kind === 'new-supplier';
-  const modelEditor = editor?.kind !== 'supplier';
+  const companyEditor = editor?.kind === 'company';
+  const managedCompany = Boolean(supplier?.builtin && supplier.models.some(item => item.requires_api_key));
+  const keyConfigured = Boolean(supplier?.models.some(item => item.api_key_masked && item.api_key_masked !== '未配置'));
+  const modelEditor = editor?.kind !== 'supplier' && !companyEditor;
   const locked = busy || Boolean(testing);
   return <div className="provider-page">
     {error && <Alert type="error" showIcon message={error} />}
@@ -152,14 +172,25 @@ export function Models() {
       <section className="provider-detail" aria-label="供应商详情">
         {supplier ? <>
           <div className="provider-detail-head">
-            <div><h2>{supplier.name}</h2><div>{supplier.builtin ? '由公司配置' : '兼容 OpenAI 的 API'}</div></div>
+            <div><h2>{supplier.name}</h2><div>{managedCompany ? '使用 DeepSeek 开放平台' : supplier.builtin ? '默认供应商' : '兼容 OpenAI 的 API'}</div></div>
+            {managedCompany && windowsDesktop && <div className="provider-model-actions">
+              <Button disabled={locked} onClick={() => edit('company', supplier, supplier.models[0])}>
+                {keyConfigured ? '更换 API Key' : '填写 API Key'}
+              </Button>
+              {keyConfigured && <Popconfirm title="移除 DeepSeek API Key？" description="重新填写密钥前，默认模型将暂停使用。"
+                okText="移除" cancelText="取消" onConfirm={removeCompanyKey}>
+                <Button disabled={locked}>移除 API Key</Button>
+              </Popconfirm>}
+            </div>}
             {!supplier.builtin && supplier.groupId && <Button disabled={locked} onClick={() => edit('supplier', supplier)}>编辑供应商</Button>}
           </div>
           <dl className="provider-credentials">
             <div><dt>接口地址</dt><dd>{supplier.baseUrl || '未配置'}</dd></div>
-            <div><dt>API Key</dt><dd>{supplier.models.some(item => item.api_key_masked && item.api_key_masked !== '未配置') ? '已配置' : '未配置'}</dd></div>
+            <div><dt>API Key</dt><dd>{keyConfigured ? '已配置' : '未配置'}</dd></div>
             <div><dt>连接配置</dt><dd>{supplier.models.some(item => item.configured) ? '可测试' : '待配置'}</dd></div>
           </dl>
+          {managedCompany && !keyConfigured && <Alert type="warning" showIcon message="尚未填写 DeepSeek API Key" />}
+          {managedCompany && <p className="small-note">使用你在 DeepSeek 开放平台创建的 API Key。查询数据库仍需单独配置数据网关。</p>}
           <div className="provider-models-head"><h3>模型</h3>{!supplier.builtin && supplier.groupId &&
             <Button size="small" icon={<PlusOutlined />} disabled={locked} onClick={() => edit('new-model', supplier)}>添加模型</Button>}</div>
           <div className="provider-models">{supplier.models.map(model => {
@@ -188,12 +219,20 @@ export function Models() {
     </div>
     <Modal title={editor && editorTitles[editor.kind]} open={Boolean(editor)} onCancel={() => { if (!busy) setEditor(undefined); }}
       onOk={() => void submit()} okText="保存" cancelText="取消" confirmLoading={busy}
-      okButtonProps={{ disabled: !editor || Boolean(supplierEditor && (!editor.name.trim() || !editor.base_url.trim())) || Boolean(modelEditor && !editor.model.trim()) }}>
+      okButtonProps={{ disabled: !editor || Boolean(supplierEditor && (!editor.name.trim() || !editor.base_url.trim())) ||
+        Boolean(companyEditor && !editor.api_key.trim()) ||
+        Boolean(modelEditor && !editor.model.trim()) }}>
       {editor && <div className="provider-editor">
         {supplierEditor && <>
           <label>供应商名称<Input value={editor.name} onChange={event => setEditor({ ...editor, name: event.target.value })} /></label>
           <label>接口地址<Input placeholder="https://api.example.com/v1" value={editor.base_url} onChange={event => setEditor({ ...editor, base_url: event.target.value })} /></label>
           <label>API Key<Input.Password autoComplete="new-password" placeholder={editor.kind === 'supplier' ? '留空保留现有密钥' : '输入 API Key'}
+            value={editor.api_key} onChange={event => setEditor({ ...editor, api_key: event.target.value })} /></label>
+        </>}
+        {companyEditor && <>
+          <p>在 DeepSeek 开放平台创建密钥，再粘贴到下方。</p>
+          <a href={deepSeekKeyPage} target="_blank" rel="noreferrer">打开 DeepSeek API Keys</a>
+          <label>API Key<Input.Password autoComplete="new-password" placeholder="粘贴 DeepSeek API Key"
             value={editor.api_key} onChange={event => setEditor({ ...editor, api_key: event.target.value })} /></label>
         </>}
         {modelEditor && <>

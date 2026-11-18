@@ -74,6 +74,7 @@ test('named runtime profile isolates settings, DSH and data from the unchanged d
   assert.equal(named.manager.active.id, id);
   assert.equal(named.manager.environment().SOMNUS_PROFILE_CONFIG_ONLY, '1');
   assert.equal(named.manager.environment().AI_AGENT_DATA_DIR, store.resolve(id).dataDir);
+  assert.equal(named.manager.environment().SOMNUS_DESKTOP_ROAMING_DIR, store.resolve(id).roamingDir);
   assert.equal(fs.readFileSync(legacy, 'utf8'), 'existing agents');
   assert.equal(fs.existsSync(path.join(named.manager.active.roamingDir, 'external-acp-agents.json')), false);
   for (const mode of ['acp', 'web']) {
@@ -119,7 +120,8 @@ test('broken registry recovers named profile folders and safe mode keeps the tem
   await next.use('safe');
   assert.deepEqual(next.restarts[0], ['--user-data-dir=' + root, '--safe-mode']);
   const safe = controller(root, { ...options, 'safe-mode': true });
-  assert.deepEqual(safe.manager.environment(), { AI_AGENT_DATA_DIR: path.join(root, 'data'), SOMNUS_PROFILE_CONFIG_ONLY: 'safe' });
+  assert.deepEqual(safe.manager.environment(), { SOMNUS_DESKTOP_ROAMING_DIR: safe.manager.active.roamingDir,
+    AI_AGENT_DATA_DIR: path.join(root, 'data'), SOMNUS_PROFILE_CONFIG_ONLY: 'safe' });
   safe.manager.markHealthy();
   assert.equal(store.read().lastHealthy, null);
 });

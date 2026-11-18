@@ -1,6 +1,7 @@
 import { Dropdown } from 'antd';
 import { DeleteOutlined, EditOutlined, EllipsisOutlined, LoadingOutlined } from '@ant-design/icons';
 import type { Conversation } from './assistantApi';
+import type { DragEvent } from 'react';
 
 type Props = {
   items: Conversation[];
@@ -9,11 +10,12 @@ type Props = {
   loading: boolean;
   runningIds?: ReadonlyMap<string, unknown>;
   onOpen: (id: string) => void;
+  onReferenceDrag?: (event: DragEvent<HTMLButtonElement>, id: string) => void;
   onRename: (item: Conversation) => void;
   onDelete: (item: Conversation) => void;
 };
 
-export function RecentSessions({ items, activeId, locked, loading, runningIds, onOpen, onRename, onDelete }: Props) {
+export function RecentSessions({ items, activeId, locked, loading, runningIds, onOpen, onReferenceDrag, onRename, onDelete }: Props) {
   return <div className="nav-recent" aria-label="最近会话">
     <div className="nav-caption">最近会话</div>
     {!items.length && <small className="nav-recent-empty">{loading ? '正在读取会话…' : '还没有会话'}</small>}
@@ -34,6 +36,8 @@ export function RecentSessions({ items, activeId, locked, loading, runningIds, o
         <Dropdown menu={menu} trigger={['contextMenu']} disabled={locked || running}>
           <button type="button" className="nav-recent-item" title={title} aria-description={running ? '生成中' : undefined}
             aria-current={item.id === activeId ? 'true' : undefined}
+            draggable={Boolean(onReferenceDrag && !locked && item.id !== activeId && item.message_count)}
+            onDragStart={event => onReferenceDrag?.(event, item.id)}
             aria-disabled={locked} onClick={() => { if (!locked) onOpen(item.id); }}>
             <span>{title}</span>{running && <LoadingOutlined aria-hidden="true" />}
           </button>

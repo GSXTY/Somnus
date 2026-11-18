@@ -1,0 +1,32 @@
+.somnus-next-workbench {
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  padding: clamp(24px, 4vw, 48px);
+  padding-inline-start: max(clamp(24px, 4vw, 48px), var(--dsh-frame-leading-clearance, 0px));
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+}
+
+.somnus-next-workbench-content {
+  width: min(100%, 800px);
+  margin-inline: auto;
+}
+
+.somnus-next-workbench-content h1 { margin: 0; font-size: 24px; font-weight: 600; }
+.somnus-next-workbench-content h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.somnus-next-workbench-content p { margin: 6px 0 14px; color: var(--dsw-alias-label-secondary); }
+
+.somnus-next-workbench-pages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin-block: 24px;
+}
+
+.somnus-next-workbench-pages section {
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+}

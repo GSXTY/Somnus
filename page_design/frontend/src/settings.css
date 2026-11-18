@@ -14,6 +14,12 @@
 .data-page-nav button[aria-current=page] { background: var(--shell-selected); color: var(--shell-ink); font-weight: 600; }
 
 .settings-workspace-panel { overflow: auto; }
+.settings-page, .desktop-settings-dialog {
+  --settings-control-fill: #f5f6f7;
+  --settings-control-hover: #eceef1;
+  --settings-control-ink: #151517;
+  --settings-row-line: #e8e9eb;
+}
 .settings-page {
   display: grid;
   grid-template-columns: 215px minmax(0, 1fr);
@@ -49,18 +55,91 @@
 }
 .settings-sidebar nav button:hover { background: var(--shell-hover); }
 .settings-sidebar nav button[aria-current=page] { background: var(--shell-selected); font-weight: 600; }
-.settings-content { width: min(100%, 800px); padding: 24px clamp(16px, 4vw, 52px) 36px; }
+.settings-content { width: min(100%, 800px); padding: 24px clamp(16px, 4vw, 52px) 36px; container-type: inline-size; }
 .settings-content h2 { margin: 0 0 18px; font-size: 23px; font-weight: 600; }
 .settings-content .settings-subheading { margin: 20px 0 8px; font-size: 13px; font-weight: 600; }
-.settings-card { border: 1px solid var(--shell-line); border-radius: 8px; }
-.settings-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 13px 15px; }
-.settings-row + .settings-row { border-top: 1px solid var(--shell-line); }
-.settings-row h3 { margin: 0; font-size: 13px; font-weight: 600; }
-.settings-row p { margin: 3px 0 0; color: var(--shell-muted); font-size: 12px; }
-.settings-row-action { flex-shrink: 0; }
-.settings-row-action .ant-btn { height: 28px; }
+.settings-row { display: flex; justify-content: space-between; align-items: center; gap: clamp(10px, 5cqi, 40px); padding: 16px 0; }
+.settings-row > :first-child { flex: 1 1 auto; min-width: 0; }
+.settings-row + .settings-row { border-top: 1px solid var(--settings-row-line); }
+.settings-row h3 { margin: 0; color: var(--settings-control-ink); font-size: 14px; line-height: 22px; font-weight: 500; }
+.settings-row p { margin: 4px 0 0; color: #696e76; font-size: 12px; line-height: 18px; }
+.settings-row-action { display: flex; justify-content: flex-end; flex: none; min-width: 0; max-width: min(50%, 285px); }
+.settings-row-action > .ant-select { max-width: 100%; height: 36px; }
+.settings-row-action > .ant-select .ant-select-selector,
+.settings-row-action > .ant-btn {
+  min-height: 36px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--settings-control-fill);
+  color: var(--settings-control-ink);
+  font-size: 14px;
+  line-height: 22px;
+  box-shadow: none;
+}
+.settings-row-action > .ant-select .ant-select-selector { padding-inline: 14px 30px; }
+.settings-row-action > .ant-select .ant-select-selection-item { padding-inline-end: 0; }
+.settings-row-action > .ant-select .ant-select-arrow { inset-inline-end: 13px; color: #5f6369; }
+.settings-row-action > .ant-btn { max-width: 100%; padding-inline: 14px; }
+.settings-row-action > .ant-btn > span:not(.ant-btn-icon) { overflow: hidden; text-overflow: ellipsis; }
+.settings-row-action > .ant-select:hover:not(.ant-select-disabled) .ant-select-selector,
+.settings-row-action > .ant-select.ant-select-open .ant-select-selector,
+.settings-row-action > .ant-btn:hover:not(:disabled) { background: var(--settings-control-hover); color: var(--settings-control-ink); }
+.settings-row-action > .ant-select.ant-select-focused:not(.ant-select-disabled) .ant-select-selector {
+  border: 0;
+  outline: 2px solid #3964fe;
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.settings-row-action > .ant-btn:disabled, .settings-row-action > .ant-select.ant-select-disabled { opacity: .55; }
+.settings-row-action > .ant-switch {
+  width: 36px; min-width: 36px; height: 20px; border-radius: 999px;
+  background: #d2d5da;
+}
+.settings-row-action > .ant-switch:hover:not(:disabled) { background: #c6cacf; }
+.settings-row-action > .ant-switch[aria-checked=true],
+.settings-row-action > .ant-switch[aria-checked=true]:hover:not(:disabled) { background: var(--settings-control-ink); }
+.settings-row-action > .ant-switch .ant-switch-handle { width: 16px; height: 16px; inset-inline-start: 2px; }
+.settings-row-action > .ant-switch[aria-checked=true] .ant-switch-handle { inset-inline-start: 18px; }
+.settings-row-action > .ant-switch .ant-switch-handle::before { border-radius: 50%; box-shadow: none; }
+.settings-selector-menu.ant-select-dropdown { padding: 5px; border: 1px solid #e8e9eb; border-radius: 12px; }
+.settings-selector-menu .ant-select-item { border-radius: 7px; }
+.settings-selector-menu .ant-select-item-option-selected:not(.ant-select-item-option-disabled) { background: #eceef1; color: #151517; }
 .settings-shortcuts { padding: 12px 15px; }
 .settings-shortcuts .shortcut-list { margin: 0; }
+.desktop-settings-dialog .ant-modal-content { overflow: hidden; padding: 0; }
+.desktop-settings-dialog .ant-modal-header { margin: 0; padding: 14px 20px; border-bottom: 1px solid var(--shell-line); }
+.settings-page-embedded { height: min(760px, 77dvh); min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+.settings-page-embedded .settings-sidebar { min-width: 0; overflow-y: auto; position: relative; padding: 16px 12px; gap: 12px; }
+.settings-page-embedded .settings-sidebar h1 { display: none; }
+.settings-page-embedded .settings-content {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding: 20px clamp(18px, 3vw, 42px) 28px;
+}
+.settings-page-embedded .settings-content:focus-visible { outline-offset: -3px; }
+.configuration-center .settings-toolbar-button,
+.desktop-settings-dialog .ant-modal-close {
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid var(--settings-row-line, #e8e9eb);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--settings-control-ink, #151517);
+  box-shadow: none;
+}
+.configuration-center .settings-toolbar-button { padding-inline: 10px; font-size: 13px; }
+.desktop-settings-dialog .ant-modal-close { width: 30px; top: 11px; inset-inline-end: 18px; }
+.configuration-center .settings-toolbar-button:hover:not(:disabled),
+.desktop-settings-dialog .ant-modal-close:hover { background: var(--settings-control-fill, #f5f6f7); color: var(--settings-control-ink, #151517); }
+.desktop-app-menu-trigger { flex-shrink: 0; }
+@media (max-width: 660px) {
+  .settings-page-embedded { grid-template-rows: auto minmax(0, 1fr); }
+  .settings-page-embedded .settings-sidebar { max-height: 28dvh; }
+}
 
 @media (max-width: 660px) {
   .settings-page { grid-template-columns: minmax(0, 1fr); }

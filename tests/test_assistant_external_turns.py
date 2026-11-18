@@ -1,6 +1,7 @@
 """Exercise desktop ACP transcript endpoints without launching an external Agent."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import hashlib
 import hmac
 import io
@@ -16,9 +17,9 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ai_assistant import external_context, project_files
+from ai_assistant import company_runtime, external_context, project_files
 from ai_assistant.asgi import create_router
-from ai_assistant.service import AssistantService, Config
+from ai_assistant.service import AssistantError, AssistantService, Config
 from deep_analysis.config import Config as DeepConfig
 from deep_analysis.service import DeepAnalysisService
 
@@ -34,6 +35,8 @@ class ExternalTurnsTest(unittest.TestCase):
         self.path = Path(temp.name) / 'assistant.sqlite3'
         self.config = Config('http://model.invalid/v1', 'internal-model', 'secret')
         self.service = AssistantService(self.path, self.config)
+        self.individual_key = "company-individual-key-fixture"
+        self.service.models.set_company_key(dict(api_key=self.individual_key))
         app = FastAPI()
         self.app = app
         app.state.session_mode = 'shared'
@@ -58,6 +61,331 @@ class ExternalTurnsTest(unittest.TestCase):
         response = self.client.post(self.external, json=self.input, headers=self.desktop)
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
+
+    def test_queue_reservation_rejects_duplicate_across_repository_reopen(self):
+        self.input['queue_id'] = '4' * 32
+        self.begin()
+        reopened = AssistantService(self.path, self.config)
+        self.app.state.assistant_service = reopened
+        retry = self.client.post(self.external, headers=self.desktop, json=self.input)
+        self.assertEqual(retry.status_code, 409, retry.text)
+        self.assertIn('queue_already_submitted', retry.text)
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute('SELECT role FROM messages WHERE id=?', (self.input['queue_id'],)).fetchall()
+        self.assertEqual(rows, [('user',)])
+
+    def test_provider_queue_reservation_rejects_duplicate_across_repository_reopen(self):
+        context = {'queue_id': '5' * 32}
+        user, _, _ = self.service.begin(self.cid, 'queued provider request', tool_context=context)
+        self.assertEqual(user['id'], context['queue_id'])
+        reopened = AssistantService(self.path, self.config)
+        with self.assertRaises(AssistantError) as duplicate:
+            reopened.begin(self.cid, 'queued provider request', tool_context=context)
+        self.assertEqual(duplicate.exception.code, 'queue_already_submitted')
+
+    def test_native_steer_reserves_and_commits_exact_authorized_turn_text(self):
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            self.input['agent_id'] = company_runtime.AGENT_ID
+            turn = self.begin()['turn_id']
+            route = f'{self.external}/{turn}/steers'
+            self.assertEqual(self.client.post(route, json={'content': 'denied'}).status_code, 403)
+            reserved = self.client.post(route, headers=self.desktop, json={'content': 'Focus on the test results'})
+            self.assertEqual(reserved.status_code, 201, reserved.text)
+            steer_id = reserved.json()['steer_id']
+            endpoint = f'{route}/{steer_id}'
+            body = {'agent_id': company_runtime.AGENT_ID}
+            self.assertEqual(self.client.post(endpoint + '/prepare', headers=self.desktop, json=body).status_code, 403)
+            self.assertEqual(self.client.post(endpoint + '/finish', headers=self.native,
+                json={**body, 'accepted': True}).status_code, 409)
+            prepared = self.client.post(endpoint + '/prepare', headers=self.native, json=body)
+            self.assertEqual(prepared.json(), {'content': 'Focus on the test results'})
+            self.assertEqual(self.client.post(endpoint + '/prepare', headers=self.native, json=body).status_code, 409)
+            committed = self.client.post(endpoint + '/finish', headers=self.native, json={**body, 'accepted': True})
+            self.assertEqual(committed.status_code, 200, committed.text)
+            self.assertEqual(committed.json()['message']['id'], steer_id)
+            self.assertEqual(self.client.post(endpoint + '/finish', headers=self.native,
+                json={**body, 'accepted': True}).status_code, 409)
+            reopened = AssistantService(self.path, self.config)
+            self.assertEqual(reopened.get(self.cid)['messages'][-1]['content'], 'Focus on the test results')
+            self.assertEqual(len(reopened.get(self.cid)['messages']), 3)
+
+    def test_conversation_creation_sets_permission_atomically(self):
+        endpoint = '/api/assistant/conversations'
+        count = len(self.service.conversations())
+        denied = self.client.post(endpoint, json={'permission_mode': 'full'})
+        self.assertEqual(denied.status_code, 403, denied.text)
+        invalid = self.client.post(endpoint, headers=self.desktop, json={'permission_mode': 'unsupported'})
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+        self.assertEqual(len(self.service.conversations()), count)
+        for mode in ('read_only', 'workspace_write', 'full'):
+            request = {'permission_mode': mode} if mode != 'read_only' else {}
+            response = self.client.post(endpoint, headers=self.desktop, json=request)
+            self.assertEqual(response.status_code, 201, response.text)
+            conversation = response.json()['conversation']
+            self.assertEqual(conversation['permission_mode'], mode)
+            self.assertEqual(AssistantService(self.path, self.config).permission(conversation['id']), mode)
+
+    def test_desktop_subagent_settings_reach_company_native_runtime(self):
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            settings_path = '/api/assistant/delegation-settings'
+            updated = self.client.patch(settings_path, headers=self.desktop, json={
+                'dsh_max_depth': 3, 'dsh_max_active': 2, 'max_calls': 4,
+            })
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(self.client.get(settings_path, headers=self.desktop).json(), updated.json())
+            self.assertEqual(self.client.patch(settings_path, headers=self.desktop,
+                                               json={'dsh_max_depth': 6}).status_code, 400)
+            self.input['agent_id'] = company_runtime.AGENT_ID
+            turn_id = self.begin()['turn_id']
+            prepared = self.client.post(f'{self.external}/{turn_id}/prepare', headers=self.native,
+                                        json={'agent_id': company_runtime.AGENT_ID})
+            self.assertEqual(prepared.status_code, 200, prepared.text)
+            self.assertEqual(prepared.json()['company_model'], self.config.model)
+            self.assertNotIn(self.individual_key, prepared.text)
+            runtime = self.client.post('/api/assistant/company-web-runtime', headers=self.native)
+            self.assertEqual(runtime.json()['subagents'], {'maxDepth': 3, 'maxActiveSubagents': 2})
+            legacy = f'{self.external}/{turn_id}/company-provider/chat/completions'
+            self.assertEqual(self.client.post(legacy, headers=self.native, json={}).status_code, 404)
+
+    def test_native_execution_persists_nested_steps_beyond_acp_limit(self):
+        step = dict(title='子任务', kind='subagent', status='completed')
+        steps = [dict(step, id='root')] + [
+            dict(step, id=f'child-{index}', parent_id='root') for index in range(45)
+        ]
+        steps[-1]['parent_id'] = 'missing'
+        body = dict(content='已检查', status='complete', execution={'steps': steps})
+        acp = self.begin()['turn_id']
+        self.assertEqual(self.client.post(f'{self.external}/{acp}/finish', headers=self.desktop, json=body).status_code, 400)
+        self.assertEqual(self.client.post(f'{self.external}/{acp}/finish', headers=self.desktop,
+                                         json={'content': 'ACP 完成', 'status': 'complete'}).status_code, 200)
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            self.input['agent_id'] = company_runtime.AGENT_ID
+            native = self.begin()['turn_id']
+            finished = self.client.post(f'{self.external}/{native}/finish', headers=self.desktop, json=body)
+        self.assertEqual(finished.status_code, 200, finished.text)
+        reopened = AssistantService(self.path, self.config)
+        saved = reopened.get(self.cid)['messages'][-1]['reply_meta']['execution']['steps']
+        self.assertEqual(len(saved), len(steps))
+        self.assertEqual(saved[44]['parent_id'], 'root')
+        self.assertNotIn('parent_id', saved[-1])
+
+    def test_company_web_relay_is_native_issued_and_revocable(self):
+        runtime_path = '/api/assistant/company-web-runtime'
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1', 'ANALYTICS_SQL_TABLES': ''}):
+            self.assertEqual(self.client.post(runtime_path, headers=self.desktop).status_code, 403)
+            granted = self.client.post(runtime_path, headers=self.native)
+            self.assertEqual(granted.status_code, 200, granted.text)
+            first = granted.json()
+            self.assertEqual(set(first), {'id', 'token', 'model', 'vision', 'subagents', 'revision', 'models'})
+            self.assertNotIn(self.config.api_key, granted.text)
+            first_route = f"{runtime_path}/{first['id']}"
+            provider_path = first_route + '/provider/chat/completions'
+            headers = {'Authorization': 'Bearer ' + first['token']}
+            body = {'model': first['model'], 'stream': True, 'messages': [{'role': 'user', 'content': 'mock'}]}
+            self.assertEqual(self.client.post(provider_path, json=body).status_code, 403)
+            self.assertEqual(self.client.post(provider_path, headers={**headers, 'Origin': 'https://example.test'},
+                                             json=body).status_code, 403)
+            self.assertEqual(self.client.post(provider_path, headers={**headers, 'X-Forwarded-For': '127.0.0.1'},
+                                             json=body).status_code, 403)
+            self.assertEqual(self.client.post(provider_path, headers=headers,
+                                             json={**body, 'model': 'unauthorized-model'}).status_code, 403)
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(b'data: [DONE]\n\n')) as upstream:
+                reply = self.client.post(provider_path, headers=headers, json=body)
+                self.assertEqual((reply.status_code, reply.content), (200, b'data: [DONE]\n\n'))
+                self.assertEqual(upstream.call_args.args[0].get_header('Authorization'), 'Bearer ' + self.individual_key)
+            previous = self.service.company_web_runtime
+            second = self.client.post(runtime_path, headers=self.native).json()
+            self.assertTrue(previous[1].is_set())
+            self.assertEqual(self.client.delete(first_route, headers=self.native).json(), {'revoked': False})
+            self.assertEqual(self.client.post(provider_path, headers=headers, json=body).status_code, 403)
+            second_route = f"{runtime_path}/{second['id']}"
+            self.assertEqual(self.client.delete(second_route, headers=self.desktop).status_code, 403)
+            self.assertEqual(self.client.delete(second_route, headers=self.native).json(), {'revoked': True})
+            self.assertEqual(self.client.post(second_route + '/provider/chat/completions',
+                                             headers={'Authorization': 'Bearer ' + second['token']},
+                                             json=body).status_code, 403)
+
+    def test_company_issued_key_is_required_and_keeps_fixed_native_provider(self):
+        path = '/api/assistant/company-provider'
+        runtime = '/api/assistant/company-web-runtime'
+        sql_env = {'VV_MAN_COMPANY_DSH': '1', 'ANALYTICS_SQL_TABLES': 'company_private'}
+        with patch.dict(os.environ, sql_env):
+            self.service.models.set_company_key(None)
+            # Old arbitrary endpoint entries are never interpreted as a company key.
+            self.service.models.path.write_text(json.dumps({
+                'active': 'deepseek', 'providers': [], 'company_override': {'api_key': 'foreign-key'},
+            }), encoding='utf-8')
+            self.assertFalse(self.client.get('/api/assistant/company-runtime', headers=self.native).json()['ready'])
+            missing = self.client.get('/api/assistant/models', headers=self.desktop).json()['providers'][0]
+            self.assertTrue(missing['requires_api_key'])
+            self.assertFalse(missing['configured'])
+            self.assertEqual(missing['model'], self.config.model)
+            self.assertEqual(self.client.post(runtime, headers=self.native).status_code, 503)
+            self.assertEqual(self.client.patch(path, json={'api_key': 'unauthorized'}).status_code, 403)
+            self.assertEqual(self.client.patch(path, headers=self.desktop, json={
+                'api_key': 'new-company-key', 'base_url': 'https://foreign.invalid/v1',
+            }).status_code, 400)
+            saved = self.client.patch(path, headers=self.desktop, json={'api_key': 'new-company-key'})
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertTrue(saved.json()['has_api_key'])
+            self.assertNotIn('new-company-key', saved.text)
+            self.assertNotIn(self.config.api_key, saved.text)
+            self.assertEqual(saved.json()['base_url'], self.config.base_url)
+            current = self.client.post(runtime, headers=self.native).json()
+            self.assertEqual(current['model'], self.config.model)
+            self.assertTrue(current['data']['available'])
+            self.input['agent_id'] = company_runtime.AGENT_ID
+            turn_id = self.begin()['turn_id']
+            endpoint = f'{self.external}/{turn_id}'
+            self.assertEqual(self.client.delete(path, headers=self.desktop).status_code, 409)
+            prepared = self.client.post(endpoint + '/prepare', headers=self.native,
+                                        json={'agent_id': company_runtime.AGENT_ID}).json()
+            self.assertEqual(prepared['company_revision'], current['revision'])
+            self.assertIn('query_database', {item['name'] for item in prepared['tools']})
+            body = {'model': self.config.model, 'stream': True, 'messages': [{'role': 'user', 'content': 'fixture'}]}
+            relay = runtime + '/' + current['id'] + '/provider/chat/completions'
+            headers = {'Authorization': 'Bearer ' + current['token']}
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(b'data: [DONE]\n\n')) as upstream:
+                result = self.client.post(relay, headers=headers, json=body)
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(upstream.call_args.args[0].get_header('Authorization'), 'Bearer new-company-key')
+                self.assertTrue(upstream.call_args.args[0].full_url.startswith(self.config.base_url))
+            self.assertEqual(self.client.post(endpoint + '/finish', headers=self.desktop,
+                             json={'content': 'completed', 'status': 'complete'}).status_code, 200)
+            self.assertTrue(AssistantService(self.path, self.config).company_key_view()['has_api_key'])
+            removed = self.client.delete(path, headers=self.desktop).json()
+            self.assertFalse(removed['has_api_key'])
+            self.assertEqual(self.client.post(relay, headers=headers, json=body).status_code, 403)
+            self.assertEqual(self.client.post(runtime, headers=self.native).status_code, 503)
+
+    def test_company_web_mcp_reuses_sql_scope_and_expires_with_host(self):
+        db_path = self.path.with_name('authorized.sqlite3')
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.executescript('CREATE TABLE allowed (value INTEGER); INSERT INTO allowed VALUES (17);'
+                             'CREATE TABLE hidden (value INTEGER); INSERT INTO hidden VALUES (42);')
+        settings = {'VV_MAN_COMPANY_DSH': '1', 'ANALYTICS_SQL_TABLES': 'allowed',
+                    'ANALYTICS_DB_URL': 'sqlite:///' + db_path.as_posix(),
+                    'ANALYTICS_SQL_AUDIT': str(db_path.with_suffix('.jsonl'))}
+        with patch.dict(os.environ, settings):
+            issued = self.client.post('/api/assistant/company-web-runtime', headers=self.native).json()
+            self.assertTrue(issued['data']['available'])
+            self.assertNotEqual(issued['data']['token'], issued['token'])
+            base = f"/api/assistant/company-web-runtime/{issued['id']}"
+            headers = {'Authorization': 'Bearer ' + issued['data']['token']}
+
+            def call(method, params=None, **options):
+                return self.client.post(base + '/mcp', headers=options.get('headers', headers), json={
+                    'jsonrpc': '2.0', 'id': 'test', 'method': method, 'params': params or {},
+                })
+
+            self.assertEqual(call('tools/list', headers={'Authorization': 'Bearer ' + issued['token']}).status_code, 403)
+            self.assertEqual(call('tools/list', headers={**headers, 'Origin': 'https://different.test'}).status_code, 403)
+            init = call('initialize', {'protocolVersion': '2025-06-18'}).json()
+            self.assertEqual(init['result']['protocolVersion'], '2025-06-18')
+            self.assertEqual(self.client.post(base + '/mcp', headers=headers, json={
+                'jsonrpc': '2.0', 'method': 'notifications/initialized',
+            }).status_code, 202)
+            tools = call('tools/list').json()['result']['tools']
+            self.assertEqual([tool['name'] for tool in tools], ['list_database_schema', 'query_database'])
+            schema = call('tools/call', {'name': 'list_database_schema'}).json()['result']
+            self.assertEqual([table['table'] for table in json.loads(schema['content'][0]['text'])['tables']], ['allowed'])
+            query = call('tools/call', {'name': 'query_database', 'arguments': {
+                'sql': 'SELECT value FROM allowed',
+            }}).json()['result']
+            self.assertFalse(query['isError'], query)
+            self.assertEqual(json.loads(query['content'][0]['text'])['rows'], [[17]])
+            for sql in ('SELECT value FROM hidden', 'DELETE FROM allowed'):
+                denied = call('tools/call', {'name': 'query_database', 'arguments': {'sql': sql}})
+                self.assertTrue(denied.json()['result']['isError'])
+            self.assertTrue(call('tools/call', {'name': 'run_powershell'}).json()['result']['isError'])
+            self.assertEqual(self.client.delete(base, headers=self.native).json(), {'revoked': True})
+            self.assertEqual(call('tools/list').status_code, 403)
+
+    def test_company_web_builtins_use_separate_leases_and_sql_tools(self):
+        db_dir = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1])
+        self.addCleanup(db_dir.cleanup)
+        db_path = Path(db_dir.name) / 'authorized.sqlite3'
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.executescript('CREATE TABLE allowed (value INTEGER); INSERT INTO allowed VALUES (17);'
+                             'CREATE TABLE hidden (value INTEGER); INSERT INTO hidden VALUES (42);')
+        settings = {'VV_MAN_COMPANY_DSH': '1', 'ANALYTICS_SQL_TABLES': 'allowed',
+                    'ANALYTICS_DB_URL': 'sqlite:///' + db_path.as_posix(),
+                    'ANALYTICS_SQL_AUDIT': str(db_path.with_suffix('.jsonl'))}
+        with patch.dict(os.environ, settings):
+            self._assert_company_web_mcp_split()
+
+    def test_dsh_next_builtins_remain_registered_and_fail_closed_without_data_access(self):
+        remote = type('UnavailableGateway', (), {'mode': 'invalid'})()
+        issued = self.service.dsh_next_runtime.open(remote)
+        tokens = {row['id']: row['token'] for row in issued['data_servers']}
+        self.assertEqual(set(tokens), {'database', 'text-to-sql'})
+        self.assertEqual(len(set(tokens.values())), 2)
+
+        def call(server, token, method, params=None):
+            body = {'jsonrpc': '2.0', 'id': 'test', 'method': method, 'params': params or {}}
+            return self.service.dispatch_dsh_next_mcp(issued['id'], token, body, server)['result']
+
+        def denied(server, token):
+            with self.assertRaises(AssistantError) as rejected:
+                call(server, token, 'tools/list')
+            self.assertEqual(rejected.exception.status, 403)
+
+        expected_tools = {'database': ['list_database_schema', 'execute_read_only_sql'], 'text-to-sql': ['propose_sql']}
+        for server, names in expected_tools.items():
+            token = tokens[server]
+            self.assertEqual(call(server, token, 'initialize')['serverInfo']['name'], server)
+            self.assertEqual([tool['name'] for tool in call(server, token, 'tools/list')['tools']], names)
+            result = call(server, token, 'tools/call', {'name': names[0]})
+            self.assertTrue(result['isError'])
+        denied('database', tokens['text-to-sql'])
+        self.assertTrue(self.service.dsh_next_runtime.close(issued['id']))
+        denied('database', tokens['database'])
+
+    def _assert_company_web_mcp_split(self):
+        issued = self.service.start_company_web_runtime()
+        tokens = {entry['id']: entry['token'] for entry in issued['data_servers']}
+        self.assertEqual(set(tokens), {'database', 'text-to-sql'})
+        self.assertEqual(len(set([issued['token'], issued['data']['token'], *tokens.values()])), 4)
+        def call(server, method, params=None, *, token=None):
+            body = {'jsonrpc': '2.0', 'id': 'test', 'method': method, 'params': params or {}}
+            return self.service.dispatch_company_web_mcp(issued['id'], token or tokens[server], body, server)['result']
+
+        def invoke(server, name, arguments):
+            return call(server, 'tools/call', {'name': name, 'arguments': arguments})
+
+        def denied(server, token=None):
+            with self.assertRaises(AssistantError) as rejected:
+                call(server, 'tools/list', token=token)
+            self.assertEqual(rejected.exception.status, 403)
+
+        for server, names in [('database', ['list_database_schema', 'execute_read_only_sql']),
+                              ('text-to-sql', ['propose_sql'])]:
+            self.assertEqual(call(server, 'initialize')['serverInfo']['name'], server)
+            tools = call(server, 'tools/list')['tools']
+            self.assertEqual([tool['name'] for tool in tools], names)
+        denied('database', tokens['text-to-sql'])
+        denied('text-to-sql', issued['data']['token'])
+        denied('unknown', tokens['database'])
+        self.assertTrue(invoke('database', 'execute_read_only_sql', {'question': 'denied'})['isError'])
+        self.assertTrue(invoke('text-to-sql', 'execute_read_only_sql', {'sql': 'SELECT value FROM allowed'})['isError'])
+        with (patch('ai_assistant.external_tools.propose_sql', return_value='SELECT value FROM allowed') as propose,
+              patch('ai_assistant.external_tools.run') as execute):
+            proposal = invoke('text-to-sql', 'propose_sql', {'question': 'List values'})
+            self.assertFalse(proposal['isError'], proposal)
+            sql = json.loads(proposal['content'][0]['text'])['sql']
+            self.assertIn('LIMIT', sql)
+            self.assertEqual([table['table'] for table in propose.call_args.args[1]], ['allowed'])
+            propose.return_value = 'SELECT value FROM hidden'
+            self.assertTrue(invoke('text-to-sql', 'propose_sql', {'question': 'List values'})['isError'])
+            execute.assert_not_called()
+        query = invoke('database', 'execute_read_only_sql', {'sql': sql})
+        self.assertFalse(query['isError'], query)
+        self.assertEqual(json.loads(query['content'][0]['text'])['rows'], [[17]])
+        for sql in ('SELECT value FROM hidden', 'DELETE FROM allowed'):
+            self.assertTrue(invoke('database', 'execute_read_only_sql', {'sql': sql})['isError'])
+        self.assertEqual(self.service.stop_company_web_runtime(issued['id']), {'revoked': True})
+        denied('database')
+        denied('text-to-sql')
 
     def test_desktop_terminal_and_restart_restore_transcript(self):
         self.assertEqual(self.client.post(self.external, json=self.input).status_code, 403)
@@ -372,6 +700,147 @@ class ExternalTurnsTest(unittest.TestCase):
         self.assertNotRegex(json.dumps([summary, recent]), 'ERROR_SECRET|ERROR_REPLY|CANCEL_SECRET|CANCEL_REPLY|CURRENT_QUESTION')
         self.assertEqual(packet['text'], 'Unchanged CURRENT_QUESTION')
 
+    def test_company_model_and_effort_are_scoped_to_each_native_turn(self):
+        self.config.base_url = 'https://api.deepseek.com/v1'
+        self.config.model = 'deepseek-flash'
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            rows = self.client.get('/api/assistant/models', headers=self.desktop).json()['company_models']
+            self.assertEqual([(item['model'], item['vision']) for item in rows],
+                             [('deepseek-flash', True), ('deepseek-v4-pro', False)])
+            self.assertEqual(rows[0]['reasoning_efforts'], ['none', 'low', 'high', 'max'])
+            inputs = {**self.input, 'agent_id': company_runtime.AGENT_ID}
+            self.assertEqual(self.client.post(self.external, headers=self.desktop,
+                json={**inputs, 'company_model': 'foreign'}).status_code, 400)
+            self.assertEqual(self.client.post(self.external, headers=self.desktop,
+                json={**inputs, 'reasoning_effort': 'xhigh'}).status_code, 400)
+
+            first = self.external
+            second_id = self.service.create()['id']
+            second = self.external.replace(self.cid, second_id)
+            choices = [(first, 'deepseek-v4-pro', 'max'), (second, 'deepseek-flash', 'none')]
+            turns = [
+                (route, model, effort, self.client.post(route, headers=self.desktop,
+                    json={**inputs, 'company_model': model, 'reasoning_effort': effort}).json()['turn_id'])
+                for route, model, effort in choices
+            ]
+            for route, model, effort, turn_id in turns:
+                prepared = self.client.post(f'{route}/{turn_id}/prepare', headers=self.native,
+                                            json={'agent_id': company_runtime.AGENT_ID}).json()
+                self.assertEqual((prepared['company_model'], prepared['company_reasoning_effort']), (model, effort))
+
+            path = '/api/assistant/company-web-runtime'
+            grant = self.client.post(path, headers=self.native).json()
+            route = f"{path}/{grant['id']}/provider/responses"
+            headers = {'Authorization': 'Bearer ' + grant['token']}
+            with patch('ai_assistant.service.urlopen', side_effect=lambda *_args, **_kwargs:
+                       Upstream(b'event: response.completed\ndata: {"type":"response.completed"}\n\n')) as upstream:
+                for _, model, effort in choices:
+                    reply = self.client.post(route, headers=headers, json=dict(
+                        model=model, stream=True, input='fixture', reasoning={'effort': effort}))
+                    self.assertEqual(reply.status_code, 200, reply.text)
+                    wire = json.loads(upstream.call_args.args[0].data)
+                    self.assertEqual((wire['model'], wire['reasoning']['effort']), (model, effort))
+                rejected = self.client.post(route, headers=headers, json=dict(
+                    model='deepseek-v4-pro', stream=True, input='fixture', reasoning={'effort': 'xhigh'}))
+                self.assertEqual(rejected.status_code, 403)
+
+    def test_company_native_responses_relay_keeps_images_tools_and_streaming_events(self):
+        self.config.base_url = 'https://api.deepseek.com/v1/chat/completions'
+        self.config.model = 'deepseek-flash'
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            root = '/api/assistant/company-web-runtime'
+            issued = self.client.post(root, headers=self.native).json()
+            runtime = root + '/' + issued['id']
+            endpoint = runtime + '/provider/responses'
+            headers = {'Authorization': 'Bearer ' + issued['token']}
+            inputs = [
+                {'role': 'user', 'content': [{'type': 'input_text', 'text': 'Read the image'},
+                    {'type': 'input_image', 'image_url': 'data:image/png;base64,AA=='}]},
+                {'type': 'function_call', 'call_id': 'call_1', 'name': 'search', 'arguments': '{}'},
+                {'type': 'function_call_output', 'call_id': 'call_1', 'output': 'found'},
+            ]
+            tools = [{'type': 'function', 'name': 'search', 'parameters': {'type': 'object'}}]
+            body = dict(model='deepseek-flash', input=inputs, tools=tools, stream=True,
+                        store=True, background=True, max_output_tokens=100_000)
+            stream = (b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",'
+                      b'"delta":"arrived"}\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n')
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(stream)) as upstream:
+                result = self.client.post(endpoint, headers=headers, json=body)
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.content, stream)
+                request = upstream.call_args.args[0]
+                self.assertEqual(request.full_url, 'https://api.deepseek.com/v1/responses')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer ' + self.individual_key)
+                sent = json.loads(request.data)
+                self.assertEqual(sent['input'], inputs)
+                self.assertEqual(sent['tools'], tools)
+                self.assertEqual(sent['max_output_tokens'], company_runtime.MAX_OUTPUT_TOKENS)
+                self.assertFalse(sent['store'])
+                self.assertNotIn('background', sent)
+                self.assertEqual(self.client.post(endpoint, json=body).status_code, 403)
+                for change in ({'model': 'wrong-model'}, {'previous_response_id': 'remote-state'},
+                               {'input': [{'type': 'item_reference', 'id': 'remote'}]},
+                               {'tools': [{'type': 'mcp', 'server_url': 'https://invalid.test'}]}):
+                    rejected = self.client.post(endpoint, headers=headers, json={**body, **change})
+                    self.assertEqual(rejected.status_code, 403, rejected.text)
+                self.assertEqual(upstream.call_count, 1)
+                self.assertEqual(self.client.delete(runtime, headers=self.native).status_code, 200)
+                self.assertEqual(self.client.post(endpoint, headers=headers, json=body).status_code, 403)
+
+    def test_company_connection_test_requires_responses_feedback(self):
+        self.config.base_url = 'https://api.deepseek.com'
+        self.config.model = 'deepseek-flash'
+        endpoint = '/api/assistant/models/deepseek/test'
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            raw = (b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+                   b'event: response.completed\ndata: {"type":"response.completed"}\n\n')
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(raw)) as upstream:
+                result = self.client.post(endpoint, headers=self.desktop)
+                self.assertTrue(result.json()['ok'], result.text)
+                request = upstream.call_args.args[0]
+                self.assertEqual(request.full_url, 'https://api.deepseek.com/responses')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer ' + self.individual_key)
+                self.assertNotIn('Authorization', request.headers)
+                self.assertEqual(json.loads(request.data)['input'], 'Reply OK.')
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(b'data: [DONE]\n\n')):
+                result = self.client.post(endpoint, headers=self.desktop)
+                self.assertFalse(result.json()['ok'], result.text)
+
+    def test_official_deepseek_flash_sends_native_image_through_same_company_relay(self):
+        from PIL import Image
+        image = io.BytesIO()
+        Image.new('RGB', (2, 2), 'white').save(image, format='PNG')
+        data_url = 'data:image/png;base64,' + base64.b64encode(image.getvalue()).decode('ascii')
+        self.config.base_url = 'https://api.deepseek.com/v1'
+        self.config.model = 'deepseek-flash'
+        self.config.vision_enabled = False
+        self.input.update(agent_id=company_runtime.AGENT_ID,
+                          attachments=[{'name': 'sample.png', 'data_url': data_url}])
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            self.assertTrue(self.service.status(desktop=True)['capabilities']['vision'])
+            turn = self.begin()['turn_id']
+            prepared = self.client.post(f'{self.external}/{turn}/prepare', headers=self.native,
+                                        json={'agent_id': company_runtime.AGENT_ID}).json()
+            self.assertEqual(prepared['images'][0]['mimeType'], 'image/png')
+            self.assertEqual(prepared['images'][0]['data'], data_url.partition(',')[2])
+            runtime_path = '/api/assistant/company-web-runtime'
+            runtime = self.client.post(runtime_path, headers=self.native).json()
+            self.assertTrue(runtime['vision'])
+            body = dict(model='deepseek-flash', stream=True, messages=[dict(role='user', content=[
+                dict(type='text', text='Inspect this screenshot'),
+                dict(type='image_url', image_url={'url': data_url}),
+            ])])
+            with patch('ai_assistant.service.urlopen', return_value=Upstream(b'data: [DONE]\n\n')) as upstream:
+                response = self.client.post(runtime_path + '/' + runtime['id'] + '/provider/chat/completions',
+                                            headers={'Authorization': 'Bearer ' + runtime['token']}, json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                request = upstream.call_args.args[0]
+                self.assertEqual(request.full_url, 'https://api.deepseek.com/v1/chat/completions')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer ' + self.individual_key)
+                self.assertEqual(json.loads(request.data)['messages'], body['messages'])
+            self.config.base_url = 'https://api.deepseek.com.example.test/v1'
+            self.assertFalse(self.service.status(desktop=True)['capabilities']['vision'])
+
     def test_native_prepare_uses_only_authorized_attachments(self):
         from PIL import Image
         image = io.BytesIO()
@@ -385,15 +854,24 @@ class ExternalTurnsTest(unittest.TestCase):
                                     content=b'day,amount\nMonday,TABLE_MARKER\nTuesday,15\n')
         self.assertEqual(uploaded.status_code, 201, uploaded.text)
         table_id = uploaded.json()['file']['id']
-        args = {'agent_id': self.input['agent_id']}
-        started = self.client.post(self.external, headers=self.desktop, json={
-            **self.input, 'content': '', 'file_ids': [document['id']], 'skill_ids': [skill['id']],
+        args = {'agent_id': company_runtime.AGENT_ID}
+        request = {
+            **self.input, **args, 'content': '', 'file_ids': [document['id']], 'skill_ids': [skill['id']],
             'analysis_file_id': table_id,
             'attachments': [{'name': 'sample.png', 'data_url': 'data:image/png;base64,' + encoded}],
-        })
+        }
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            self.config.vision_enabled = False
+            rejected = self.client.post(self.external, headers=self.desktop, json=request)
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertIn('company_vision_unavailable', rejected.text)
+            self.assertEqual(self.service.get(self.cid)['messages'], [])
+            self.config.vision_enabled = True
+            started = self.client.post(self.external, headers=self.desktop, json=request)
         self.assertEqual(started.status_code, 201, started.text)
         packet = started.json()
         self.assertEqual(packet['user_message']['attachments'][0]['mime'], 'image/png')
+        self.assertEqual(packet['assistant_message']['reply_meta']['transport'], 'dsh-native')
         route = f"{self.external}/{packet['turn_id']}/prepare"
         self.assertEqual(self.client.post(route, headers=self.desktop, json=args).status_code, 403)
         self.assertEqual(self.client.post(route, headers=self.native, json={'agent_id': 'wrong'}).status_code, 409)
@@ -405,12 +883,79 @@ class ExternalTurnsTest(unittest.TestCase):
         for marker in ('DOC_MARKER', 'SKILL_MARKER', 'TABLE_MARKER'):
             self.assertIn(marker, result['text'])
         self.assertNotIn('OMITTED_DOC', result['text'])
+        self.assertEqual(result['company_model'], self.config.model)
+        self.assertNotIn(self.individual_key, prepared.text)
         self.assertFalse(result['project']['available'])
+        finished = self.client.post(route.replace('/prepare', '/finish'), headers=self.desktop,
+                                    json={'content': 'Received all attachments', 'status': 'complete'})
+        self.assertEqual(finished.status_code, 200, finished.text)
         other = self.service.external_table_store().upload('other_owner', 'private.csv', b'item\nunrelated\n')
-        self.service.cancel(self.cid)
         wrong_owner = self.client.post(self.external, headers=self.desktop,
                                        json={**self.input, 'analysis_file_id': other['id']})
         self.assertEqual(wrong_owner.status_code, 404)
+
+    def test_native_prepare_scopes_personal_plugin_tools_to_selected_turn(self):
+        class Registry:
+            def enabled_states(self):
+                return {'personal': True, 'other': True}
+
+            def specs(self, *, server_ids=None):
+                active = {name for name, enabled in self.enabled_states().items() if enabled}
+                return [
+                    dict(type='function', function=dict(name=f'mcp__{server}__read', description='Read notes',
+                                                        parameters={'type': 'object'}))
+                    for server in sorted(active if server_ids is None else active & set(server_ids))
+                ]
+
+            def tool_policy(self, _name):
+                return 'read'
+
+            def call(self, name, _arguments, *, permission_mode, confirmed, server_ids=None):
+                if name != 'mcp__personal__read' or server_ids not in (None, {'personal'}):
+                    raise AssertionError('MCP scope was not passed through')
+                return dict(ok=True, content='personal value')
+
+        registry = Registry()
+        self.app.state.mcp_registry = registry
+        skill = self.service.skills.add(
+            'SKILL.md', b'---\nname: personal-notes\ndescription: Read personal notes\n---\nPLUGIN_SKILL_MARKER')
+        manifest = {'name': 'Personal notes', 'skill_ids': [skill['id']], 'mcp_ids': ['personal']}
+        bundle = self.service.plugins.add(manifest, registry)
+        self.service.plugins.set_enabled(bundle['id'], True, registry)
+        identity = {'agent_id': company_runtime.AGENT_ID}
+
+        def prepare(plugin_ids):
+            turn = self.client.post(self.external, headers=self.desktop, json={
+                **self.input, **identity, 'plugin_ids': plugin_ids,
+            })
+            self.assertEqual(turn.status_code, 201, turn.text)
+            route = f"{self.external}/{turn.json()['turn_id']}"
+            result = self.client.post(route + '/prepare', headers=self.native, json=identity)
+            self.assertEqual(result.status_code, 200, result.text)
+            return route, result.json()
+
+        def call(route, name):
+            return self.client.post(route + '/tool', headers=self.native, json={
+                **identity, 'name': name, 'arguments': {},
+            })
+
+        with patch.dict(os.environ, {'VV_MAN_COMPANY_DSH': '1'}):
+            route, selected = prepare([bundle['id']])
+            names = {tool['name'] for tool in selected['tools']}
+            self.assertIn('mcp__personal__read', names)
+            self.assertNotIn('mcp__other__read', names)
+            self.assertIn('PLUGIN_SKILL_MARKER', selected['text'])
+            self.assertEqual(call(route, 'mcp__personal__read').json()['content'][0]['text'], 'personal value')
+            self.assertTrue(call(route, 'mcp__other__read').json()['isError'])
+            finished = self.client.post(route + '/finish', headers=self.desktop,
+                                        json={'content': 'Personal plugin result', 'status': 'complete'})
+            self.assertEqual(finished.status_code, 200, finished.text)
+            self.assertEqual(call(route, 'mcp__personal__read').status_code, 409)
+            next_route, unselected = prepare([])
+            self.assertNotIn('PLUGIN_SKILL_MARKER', unselected['text'])
+            self.assertTrue({'mcp__personal__read', 'mcp__other__read'} <=
+                            {tool['name'] for tool in unselected['tools']})
+            self.assertEqual(call(next_route, 'mcp__personal__read').json()['content'][0]['text'], 'personal value')
 
     def test_native_project_read_and_proposal_preserve_policy(self):
         root = Path(self.path.parent) / 'source'
@@ -436,7 +981,11 @@ class ExternalTurnsTest(unittest.TestCase):
         expected = hashlib.sha256(file.read_bytes()).hexdigest()
         self.assertEqual(read.json(), {'content': 'line2\n', 'sha256': expected})
         self.assertEqual(call(action='read', path='../secret.md').status_code, 403)
-        self.assertEqual(call(action='propose', content='new', expected_sha256=expected).status_code, 403)
+        read_only_edit = call(action='propose', content='review first', expected_sha256=expected)
+        self.assertEqual(read_only_edit.status_code, 200, read_only_edit.text)
+        self.assertEqual(read_only_edit.json()['proposal']['status'], 'pending')
+        self.assertEqual(file.read_bytes(), b'line1\nline2\n')
+        self.service.decide_file_proposal(cid, read_only_edit.json()['proposal']['id'], 'reject')
         self.service.set_permission(cid, 'workspace_write')
         self.assertEqual(call(action='propose', content='new', expected_sha256='0' * 64).status_code, 409)
         edit = call(action='propose', content='new', expected_sha256=expected)

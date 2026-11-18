@@ -1,12 +1,11 @@
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const http = require('node:http');
 const path = require('node:path');
+const { DEFAULT_EXECUTION_SETTINGS } = require('./acp-execution-settings.cjs');
 
 const VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const BODY_LIMIT = 128 * 1024;
 const RESULT_LIMIT = 512 * 1024;
-const MAX_CALLS = 16;
-const MAX_IN_FLIGHT = 4;
 const NAME = /^[A-Za-z0-9_-]{1,128}$/;
 const DEEP_TASK = /^[a-f0-9]{32}$/;
 const DEEP_TOOLS = new Set(['create_deep_analysis', 'create_deep_analysis_from_query', 'get_deep_analysis_task']);
@@ -16,6 +15,22 @@ const APPROVAL_ERRORS = {
   capacity: '已达到 MCP 工具授权队列或本轮次数上限。',
   cancelled: 'MCP 工具授权已取消或所属对话已结束。',
 };
+
+const PROJECT_ACTIVITY = new Map([
+  ['run_powershell', ['execute', '运行 PowerShell 命令']],
+  ['run_project_tests', ['execute', '运行项目测试']],
+  ['project_git_diff', ['read', '查看 Git 差异']],
+  ['list_project_files', ['read', '列出项目文件']],
+  ['read_project_file', ['read', '读取项目文件']],
+  ['search_project_files', ['search', '搜索项目文件']],
+  ['propose_project_file_create', ['edit', '申请新建项目文件']],
+  ['propose_project_file_edit', ['edit', '申请修改项目文件']],
+]);
+
+function activityFields(name) {
+  const activity = PROJECT_ACTIVITY.get(name);
+  return activity ? { kind: activity[0], title: activity[1] } : {};
+}
 
 function toolCatalog(raw) {
   if (!Array.isArray(raw)) return [];
@@ -146,14 +161,15 @@ class SessionMcp {
     if (!tool || !args || Array.isArray(args) || typeof args !== 'object') {
       return textResult('此工具或参数未获准用于当前会话。');
     }
-    if ((turn.toolCalls || 0) >= MAX_CALLS || this.pending.size >= MAX_IN_FLIGHT || this.pending.has(message.id)) {
-      const detail = (turn.toolCalls || 0) >= MAX_CALLS
-        ? '本轮 Somnus 工具调用已达到上限（16 次）。'
+    const { maxCalls, maxConcurrent } = (turn.executionSettings ?? DEFAULT_EXECUTION_SETTINGS).loop;
+    if ((turn.toolCalls || 0) >= maxCalls || this.pending.size >= maxConcurrent || this.pending.has(message.id)) {
+      const detail = (turn.toolCalls || 0) >= maxCalls
+        ? `本轮 Somnus 工具调用已达到上限（${maxCalls} 次）。`
         : this.pending.has(message.id) ? '收到重复的 Somnus 工具请求编号。' : '正在处理的 Somnus 工具请求已达到并发上限。';
       const traceId = turn.live?.beginLocalMcp(null, name, args);
       if (traceId) turn.onUpdate({
         agentId: turn.agentId, conversationId: turn.conversationId, text: '',
-        toolProgress: { name, traceId, status: 'error', message: detail },
+        toolProgress: { name, traceId, ...activityFields(name), status: 'error', message: detail },
       });
       return textResult(detail);
     }
@@ -170,7 +186,7 @@ class SessionMcp {
       terminal = status !== 'running';
       if (this.getTurn() === turn && !turn.signal.aborted) turn.onUpdate({
         agentId: turn.agentId, conversationId: turn.conversationId, text: '',
-        toolProgress: { name, callId, status, ...(traceId ? { traceId } : {}),
+        toolProgress: { name, callId, ...activityFields(name), status, ...(traceId ? { traceId } : {}),
           ...(taskId ? { taskId } : {}), ...(detail ? { message: detail } : {}) },
       });
     };
@@ -313,4 +329,4 @@ class SessionMcp {
   }
 }
 
-module.exports = { SessionMcp, toolCatalog, catalogSignature, MAX_CALLS };
+module.exports = { SessionMcp, toolCatalog, catalogSignature, MAX_CALLS: DEFAULT_EXECUTION_SETTINGS.loop.maxCalls };

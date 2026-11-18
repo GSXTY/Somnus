@@ -19,7 +19,7 @@ let snapshot={settings:configuration,events:[{id:'current'}],event_links:{}},reu
 api=async(url,options)=>{if(url==='/api/scans/match')return {match:reuse?{run_id:'reuse'}:null};if(url==='/api/feedback')return snapshot;if(url==='/api/detect')return {detected_count:snapshot.events.length,added:0,skipped:snapshot.events.length,eligible_seconds:150,warnings:[],packet:{run_id:'run',events:annotations.items}};throw Error(url)};
 chooseDuplicateScan=async()=> 'reuse';
 `);
-assert.equal(read("$('baseline-duration').hidden"),false);assert.equal(read("$('scan-duration').hidden"),true);assert.equal(read("$('scan-duration').value"),5);assert(read("$('event-mode-label').textContent.includes('v3')"));assert(read("$('event-mode-config').textContent.includes('1秒窗口')"));
+assert.equal(read("$('baseline-duration').hidden"),false);assert.equal(read("$('scan-duration').hidden"),true);assert.equal(read("$('scan-duration').value"),5);assert.equal(read("$('event-mode-label').textContent"),'动态基线');assert(read("$('event-mode-config').textContent.includes('1秒窗口')"));
 await read('scanRecording(true)');assert.deepEqual(ids(),['current']);assert.equal(read('annotations.items.length'),4,'batch display cannot delete old annotations');
 assert.equal(read("$('baseline-all-configs').checked"),false);
 read("selected=['优化v31秒强度'];const priorKey=selectionKey();$('baseline-duration').value='6';$('baseline-duration').onchange()");
@@ -33,10 +33,10 @@ await read("showScanBatch('history',true)");assert.equal(read("$('scan-profile')
 assert.equal(read('annotations.items.find(e=>e.id==="alias").detection_profile'),'engineering','display aliases must not rewrite original provenance');
 assert.equal(read("$('scan-all').disabled"),true,'retired schemes cannot be scanned');
 read("$('result-baseline').onclick()");assert.equal(read("$('scan-profile').value"),'dynamic_baseline_v3');assert.equal(read("$('scan-all').disabled"),false);
-read("$('result-company').onclick()");assert.equal(read("$('scan-profile').value"),'company_rules');assert.equal(read("$('scan-duration').value"),7);assert.equal(read("$('event-mode-label').textContent"),'幅度规则（试验）');
+read("$('result-company').onclick()");assert.equal(read("$('scan-profile').value"),'company_rules');assert.equal(read("$('scan-duration').value"),7);assert.equal(read("$('event-mode-label').textContent"),'默认');
 read("$('result-manual').onclick()");assert.equal(read("$('result-current').hidden"),false);read("$('result-current').onclick()");assert.equal(read('activeResultGroup'),'company');assert.equal(read("$('scan-profile').value"),'company_rules');
 const html=readFileSync('event_detection/index.html','utf8'),picker=html.match(/<select id="scan-profile"[^>]*>([\s\S]*?)<\/select>/)[1];
-assert.deepEqual([...picker.matchAll(/<option value="([^"]+)"/g)].map(m=>m[1]),['patient_flow_v4','company_rules','dynamic_baseline_v3']);
+assert.deepEqual([...picker.matchAll(/<option value="([^"]+)"/g)].map(m=>m[1]),['company_rules','dynamic_baseline_v3']);
 assert(picker.includes('value="dynamic_baseline_v3" selected'));
 
 read("meta={...meta,file_id:'other-file'}");assert.equal(read('currentScanView()'),null,'batch IDs cannot leak across files');

@@ -1,0 +1,15 @@
+.mcp-config .mcp-settings-tabs { justify-self: start; background: var(--shell-selected); }
+.mcp-config .mcp-settings-tabs .ant-segmented-item-selected { background: var(--shell-surface); color: var(--shell-ink); }
+.mcp-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mcp-section-heading h3 { margin: 0; color: var(--shell-muted); font-size: 13px; font-weight: 600; }
+.extension-detail .mcp-tools { display: grid; gap: 10px; padding: 0; list-style: none; }
+.mcp-tools > li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+.mcp-tools > li + li { border-top: 1px solid var(--shell-line); padding-top: 10px; }
+.mcp-tools > li > div:first-child { flex: 1 1 180px; min-width: 0; }
+.mcp-tools p { color: var(--shell-muted); }

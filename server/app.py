@@ -14,9 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from app_version import APP_ID, APP_VERSION
 from agent_core.analytics import dashboard as user_dashboard
 from agent_core.workbench import dashboard as workbench_dashboard, user_detail
-from ai_assistant.bundled_defaults import install_bundled_defaults
-from ai_assistant.dot_tasks import DotTasks
 from ai_assistant.service import AssistantService
+from ai_assistant.web_data_mcp import data_mcp_inventory
 from event_detection.patient_flow_v4 import VERSION as PATIENT_VERSION
 from mcp_connectors.asgi import create_router as create_mcp_router
 from mcp_connectors.registry import Registry as McpRegistry
@@ -98,8 +97,6 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     folder.mkdir(parents=True, exist_ok=True)
 
     def stop_services(app):
-        if app.state.dot_tasks:
-            app.state.dot_tasks.stop()
         if app.state.mcp_registry:
             app.state.mcp_registry.close()
         deep_service = getattr(app.state, 'deep_analysis_service', None)
@@ -128,8 +125,6 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     @asynccontextmanager
     async def lifespan(app):
         try:
-            if app.state.dot_tasks:
-                await anyio.to_thread.run_sync(app.state.dot_tasks.start)
             if report_presence:
                 async with anyio.create_task_group() as tasks:
                     tasks.start_soon(remote_data.report_presence, APP_VERSION)
@@ -149,12 +144,15 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
     app.state.analytics_repository = None
     app.state.remote_data = remote_data
     app.state.session_mode = session_mode
-    dot_allowed = (managed_desktop and sys.platform == 'win32' and session_mode == 'shared'
-                   and os.getenv('SHARE_MODE', '').strip() != '1')
-    app.state.dot_tasks = DotTasks(folder) if dot_allowed else None
+    local_windows_desktop = (managed_desktop and sys.platform == 'win32' and session_mode == 'shared'
+                             and os.getenv('SHARE_MODE', '').strip() != '1')
     if mcp_management is None:
         mcp_management = session_mode == 'shared'
-    app.state.mcp_registry = McpRegistry(folder) if mcp_management else None
+    app.state.mcp_registry = McpRegistry(
+        folder, desktop_builtin=local_windows_desktop,
+        data_builtins=data_mcp_inventory(remote_data, probe=False) if local_windows_desktop else None,
+        data_inventory=(lambda: data_mcp_inventory(remote_data)) if local_windows_desktop else None,
+    ) if mcp_management else None
     app.include_router(create_mcp_router())
     app.state.assistant_service = None
     if session_mode == 'shared':
@@ -162,8 +160,6 @@ def create_app(data_dir=None, initial_file=None, session_mode=None, *, mcp_manag
             app.state.assistant_service = AssistantService(folder / 'assistant.sqlite3')
         except Exception:
             app.state.assistant_service = None
-        if managed_desktop and app.state.assistant_service is not None:
-            install_bundled_defaults(app.state.assistant_service, ASSETS)
     else:
         from server.sessions import AssistantContexts, AssistantContextMiddleware
         contexts = AssistantContexts(folder)

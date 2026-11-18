@@ -1,28 +1,36 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
 import { Alert, Button, Input, Select, Spin } from 'antd';
-import { CloseOutlined, CodeOutlined, FileOutlined, FolderOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { conversationTrace } from './assistantApi';
-import type { ConversationTraceEvent, ConversationWorktree, FileProposal } from './assistantApi';
+import { CloseOutlined, CodeOutlined, FileOutlined, FolderOutlined, GlobalOutlined, DiffOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import type { ConversationWorktree, FileProposal } from './assistantApi';
 import { FileChangeCards, FileProposalReview } from './FileProposalReview';
 import { ProjectToolsPanel } from './ProjectTools';
 import { clampWorkspaceWidth, DEFAULT_WORKSPACE_WIDTH, WORKSPACE_WIDTH_KEY, workspaceWidthLimits } from './workspacePanelWidth.mjs';
 import './chatWorkspacePanel.css';
+import { WorkspaceTerminal } from './WorkspaceTerminal';
+
+type WebBounds = { x: number; y: number; width: number; height: number };
+declare global {
+  interface Window {
+    somnusWorkspaceWeb?: {
+      show: (url: string, bounds: WebBounds) => Promise<void>;
+      bounds: (bounds: WebBounds) => Promise<void>;
+      close: () => Promise<void>;
+    };
+  }
+}
 
 type Source = { source: string; label: string };
 type Entry = { name: string; path: string; kind: 'folder' | 'file' };
 type Listing = { entries: Entry[]; folders: Source[]; folder: string; source?: string; truncated?: boolean };
-type TerminalRequest = { command: string; cwd: string; timeoutSeconds: number };
 type Props = {
   conversationId: string;
   workspace: string;
   worktree?: ConversationWorktree | null;
   proposals: FileProposal[];
+  webRequest?: { url: string; sequence: number };
   onDecision: (proposal: FileProposal) => void;
   onClose: () => void;
-  onRequestCommand?: (command: string) => void;
-  terminalApproval?: TerminalRequest;
-  running?: boolean;
 };
 
 async function workspaceFiles<T>(cid: string, params: URLSearchParams, signal: AbortSignal): Promise<T> {
@@ -33,7 +41,7 @@ async function workspaceFiles<T>(cid: string, params: URLSearchParams, signal: A
   return data;
 }
 
-function WorkspaceFiles({ cid }: { cid: string }) {
+function WorkspaceFiles({ cid, filter }: { cid: string; filter: string }) {
   const [source, setSource] = useState('');
   const [folder, setFolder] = useState('');
   const [file, setFile] = useState<Entry>();
@@ -73,6 +81,7 @@ function WorkspaceFiles({ cid }: { cid: string }) {
   }, [cid, source, folder, file, refresh]);
   const sources = listing?.folders || [];
   const parent = folder.split('/').slice(0, -1).join('/');
+  const entries = (listing?.entries || []).filter(entry => entry.name.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
   return <section aria-label="项目文件">
     {sources.length > 1 && <Select
       aria-label="项目来源目录"
@@ -83,63 +92,19 @@ function WorkspaceFiles({ cid }: { cid: string }) {
     />}
     <div className="workspace-panel-row">
       {(file || folder) && <Button size="small" onClick={() => file ? setFile(undefined) : setFolder(parent)}>上一级</Button>}
-      <code>{file?.path || folder || '项目文件'}</code>
+      {file || folder ? <code className="workspace-panel-path">{file?.path || folder}</code> : <h3>项目文件</h3>}
       <Button type="text" size="small" aria-label="刷新项目文件" icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)} />
     </div>
     {loading ? <Spin size="small" /> : error ? <Alert type="error" showIcon message={error} /> : file ?
       <pre className="workspace-panel-text" tabIndex={0}>{content}</pre> : <>
         {listing?.truncated && <p className="workspace-panel-hint">此目录还有更多文件。</p>}
-        {listing?.entries.length ? <ul className="workspace-panel-files">{listing.entries.map(entry =>
+        {entries.length ? <ul className="workspace-panel-files">{entries.map(entry =>
           <li key={entry.path}><button type="button" title={entry.name} onClick={() => {
             if (entry.kind === 'folder') setFolder(entry.path);
             else setFile(entry);
           }}>{entry.kind === 'folder' ? <FolderOutlined /> : <FileOutlined />}<span>{entry.name}</span></button></li>)}</ul>
-          : <p className="workspace-panel-hint">{sources.length ? '此目录没有可浏览的文件。' : '请先在项目设置中关联本机文件夹。'}</p>}
+          : <p className="workspace-panel-hint">{filter ? '此目录没有匹配的文件。' : sources.length ? '此目录没有可浏览的文件。' : '请先在项目设置中关联本机文件夹。'}</p>}
       </>}
-  </section>;
-}
-
-const states: Record<string, string> = {
-  pending: '等待处理', completed: '完成', approved: '已批准', failed: '失败',
-  rejected: '已拒绝', closed: '已关闭', interrupted: '已中断', cancelled: '已取消',
-};
-
-function TerminalView({ conversationId, onRequestCommand, terminalApproval, running }: Props) {
-  const [command, setCommand] = useState('');
-  const [events, setEvents] = useState<ConversationTraceEvent[]>([]);
-  const [error, setError] = useState('');
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    setError('');
-    conversationTrace(conversationId, controller.signal).then(result => {
-      if (!controller.signal.aborted) setEvents(result.events.filter(event =>
-        /执行命令|PowerShell|项目测试|run_project_tests|run_project_powershell/i.test(event.title)).slice(-12).reverse());
-    }).catch(failure => {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : '无法读取执行状态');
-    });
-    return () => controller.abort();
-  }, [conversationId, running, refresh]);
-  return <section aria-label="PowerShell">
-    <div className="workspace-panel-row"><h3><CodeOutlined /> PowerShell</h3>
-      <Button type="text" size="small" aria-label="刷新执行状态" icon={<ReloadOutlined />} onClick={() => setRefresh(value => value + 1)} />
-    </div>
-    {terminalApproval && <div className="workspace-terminal-approval">
-      <strong>等待会话确认</strong>
-      <pre className="workspace-panel-text">{terminalApproval.command}</pre>
-      <code>{terminalApproval.cwd}</code>
-      <p className="workspace-panel-hint">超时 {terminalApproval.timeoutSeconds} 秒。请在会话中确认。</p>
-    </div>}
-    {onRequestCommand && <div className="workspace-terminal-draft">
-      <Input.TextArea aria-label="PowerShell 命令" placeholder="输入 PowerShell 命令" value={command}
-        onChange={event => setCommand(event.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} maxLength={4000} />
-      <Button disabled={!command.trim()} onClick={() => onRequestCommand(command.trim())}>填入会话</Button>
-      <p className="workspace-panel-hint">发送后由 Agent 发起执行申请。</p>
-    </div>}
-    {error && <Alert type="error" showIcon message={error} />}
-    {events.length ? <ul className="workspace-terminal-events">{events.map(event => <li key={event.id}>
-      <span>{event.title}</span><small>{states[event.status] || event.status}</small>
-    </li>)}</ul> : !error && <p className="workspace-panel-hint">此会话暂无已记录的命令或测试结果。</p>}
   </section>;
 }
 
@@ -157,8 +122,87 @@ function WorkspaceNote({ cid }: { cid: string }) {
 }
 
 export function ChatWorkspacePanel(props: Props) {
-  const { conversationId, workspace, worktree, proposals, onDecision, onClose } = props;
-  const [tab, setTab] = useState('changes');
+  const { conversationId, workspace, worktree, proposals, onDecision, onClose, webRequest } = props;
+  const [tab, setSelectedTab] = useState('home');
+  const [terminalOpened, setTerminalOpened] = useState(false);
+  function setTab(next: string) {
+    if (next === 'terminal') setTerminalOpened(true);
+    setSelectedTab(next);
+  }
+  const [query, setQuery] = useState('');
+  const [fileFilter, setFileFilter] = useState('');
+  const [pageForm, setPageForm] = useState(false);
+  const [page, setPage] = useState('');
+  const [viewError, setViewError] = useState('');
+  const [pageError, setPageError] = useState('');
+  const webAnchor = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!webRequest || !window.somnusWorkspaceWeb) return;
+    setPageError('');
+    setPage(webRequest.url);
+    setTab('web');
+  }, [webRequest]);
+
+  useEffect(() => {
+    const bridge = window.somnusWorkspaceWeb;
+    const anchor = webAnchor.current;
+    if (tab !== 'web' || !page || !bridge || !anchor) return;
+    let live = true;
+    let frame = 0;
+    function getBounds() {
+      if (document.querySelector('.ant-modal-wrap:not([style*="display: none"]),.ant-dropdown:not(.ant-dropdown-hidden),.ant-select-dropdown:not(.ant-select-dropdown-hidden)')) {
+        return { x: 0, y: 0, width: 0, height: 0 };
+      }
+      const rect = anchor!.getBoundingClientRect();
+      const x = Math.max(0, Math.floor(rect.left));
+      const y = Math.max(0, Math.floor(rect.top));
+      return { x, y, width: Math.max(0, Math.min(window.innerWidth, Math.floor(rect.right)) - x),
+        height: Math.max(0, Math.min(window.innerHeight, Math.floor(rect.bottom)) - y) };
+    }
+    const resize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (live) void bridge.bounds(getBounds()).catch(() => {});
+      });
+    };
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(resize);
+    observer?.observe(anchor);
+    const overlays = new MutationObserver(resize);
+    overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+    void bridge.show(page, getBounds()).then(resize).catch(failure => {
+      if (live) setPageError(failure instanceof Error ? failure.message : '网页无法打开。');
+    });
+    window.addEventListener('resize', resize);
+    return () => {
+      live = false;
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      overlays.disconnect();
+      window.removeEventListener('resize', resize);
+      void bridge.close().catch(() => {});
+    };
+  }, [tab, page]);
+
+  function openFromLauncher() {
+    const value = query.trim();
+    if (!value) return;
+    if (/^https?:\/\//i.test(value)) {
+      if (!window.somnusWorkspaceWeb) {
+        setViewError('请在 Somnus 桌面版中打开网页。');
+        return;
+      }
+      setPageError('');
+      setPage(value);
+      setTab('web');
+      return;
+    }
+    if (pageForm) {
+      setViewError('请输入以 https:// 或 http:// 开头的网址。');
+      return;
+    }
+    setFileFilter(value);
+    setTab('files');
+  }
   const [reviewId, setReviewId] = useState<string>();
   const [noteOpen, setNoteOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
@@ -224,9 +268,11 @@ export function ChatWorkspacePanel(props: Props) {
   }
   const review = proposals.find(item => item.id === reviewId);
   const tabs = [
+    { key: 'home', label: '新标签页' },
     { key: 'changes', label: '改动' },
     { key: 'files', label: '文件' },
     { key: 'terminal', label: '终端' },
+    ...(page ? [{ key: 'web', label: '网页' }] : []),
     ...(noteOpen ? [{ key: 'note', label: '笔记' }] : []),
   ];
   function keyboardTabs(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -252,17 +298,40 @@ export function ChatWorkspacePanel(props: Props) {
           tabIndex={tab === key ? 0 : -1} onClick={() => setTab(key)} onKeyDown={event => keyboardTabs(event, index)}>{label}</button>)}
       </div>
       <div className="workspace-panel-buttons">
-        <Button type="text" size="small" aria-label="新建笔记页" title="新建笔记页" icon={<PlusOutlined />}
+        <Button type="text" size="small" aria-label="新标签页" title="新标签页" icon={<PlusOutlined />}
+          onClick={() => { setQuery(''); setViewError(''); setPageForm(false); setTab('home'); }} />
+        <Button type="text" size="small" aria-label="打开会话笔记" title="会话笔记" icon={<FileOutlined />}
           onClick={() => { setNoteOpen(true); setTab('note'); }} />
         <Button type="text" size="small" aria-label="关闭工作区" title="关闭工作区" icon={<CloseOutlined />} onClick={onClose} />
       </div>
     </header>
     <div className="workspace-panel-content" role="tabpanel" id={tabsId + '-content'} aria-labelledby={tabsId + '-' + tab} tabIndex={0}>
+      {tab === 'home' && <section className="workspace-launcher" aria-label="新标签页">
+        <Input.Search key={pageForm ? 'address' : 'search'} autoFocus={pageForm}
+          aria-label={pageForm ? '输入网页地址' : '筛选文件或输入网址'}
+          placeholder={pageForm ? '输入网页地址（https://）' : '筛选项目文件或输入网址'}
+          value={query} onChange={event => { setQuery(event.target.value); setViewError(''); }} onSearch={openFromLauncher} />
+        {viewError && <Alert type="warning" showIcon message={viewError} />}
+        <div className="workspace-launcher-grid">
+          <button type="button" onClick={() => setTab('terminal')}><CodeOutlined />终端</button>
+          <button type="button" onClick={() => { setQuery(''); setPageForm(true); setViewError(''); }}><GlobalOutlined />新建页面</button>
+          <button type="button" onClick={() => setTab('changes')}><DiffOutlined />改动</button>
+          <button type="button" onClick={() => { setFileFilter(''); setTab('files'); }}><FolderOutlined />文件</button>
+        </div>
+      </section>}
+      {tab === 'web' && <section className="workspace-web-page" aria-label="网页">
+        <div className="workspace-panel-row"><GlobalOutlined /><code title={page}>{page}</code>
+          <Button type="text" size="small" aria-label="关闭网页" icon={<CloseOutlined />}
+            onClick={() => { setPage(''); setPageForm(false); setQuery(''); setTab('home'); }} />
+        </div>
+        {pageError && <Alert type="error" showIcon message={pageError} />}
+        <div className="workspace-web-anchor" ref={webAnchor} />
+      </section>}
       {tab === 'changes' && <section aria-label="会话改动">
           {review ? <><Button size="small" onClick={() => setReviewId(undefined)}>返回改动列表</Button>
             <FileProposalReview key={review.id} preview={review} inline conversationId={conversationId}
               onDecision={onDecision} onClose={() => setReviewId(undefined)} /></> : <>
-              {proposals.length > 0 ? <FileChangeCards items={proposals} onPreview={item => setReviewId(item.id)} />
+              {proposals.length > 0 ? <FileChangeCards conversationId={conversationId} items={proposals} onPreview={item => setReviewId(item.id)} />
                 : <p className="workspace-panel-hint">此会话暂无文件改动。</p>}
               {workspace !== 'default' && window.vvmanProjects?.gitDiff && <>
                 <Button size="small" onClick={() => setGitOpen(value => !value)} aria-expanded={gitOpen}>Git 差异</Button>
@@ -270,8 +339,11 @@ export function ChatWorkspacePanel(props: Props) {
               </>}
             </>}
       </section>}
-      {tab === 'files' && <WorkspaceFiles cid={conversationId} />}
-      {tab === 'terminal' && <TerminalView {...props} />}
+      {tab === 'files' && <section><Input aria-label="筛选当前目录文件" placeholder="筛选当前目录文件" allowClear
+        value={fileFilter} onChange={event => setFileFilter(event.target.value)} />
+        <WorkspaceFiles cid={conversationId} filter={fileFilter} /></section>}
+      {terminalOpened && <WorkspaceTerminal key={worktree?.commit || workspace} workspace={workspace}
+        conversationId={conversationId} visible={tab === 'terminal'} />}
       {tab === 'note' && <WorkspaceNote cid={conversationId} />}
     </div>
   </aside>;

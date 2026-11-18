@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/anywhere-labs/dsh-desktop.git",
+  "tag": "v2.0.23-next",
+  "commit": "59dce7d3289bb875415430082e75ee3b23326a54",
+  "packageDirectory": "dsh-desktop-next",
+  "packageName": "dsh-desktop-next",
+  "packageVersion": "2.0.23-next",
+  "packageManager": "yarn@4.18.0",
+  "nodeRequirement": ">=24.9.0",
+  "main": "lib/main.js",
+  "harnessSubmodule": "deepseek-harness",
+  "frontendPackage": "@deepseek-ai/dsh-web-frontend",
+  "harnessVersion": "0.2.2-rc.3"
+}

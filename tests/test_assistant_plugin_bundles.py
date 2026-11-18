@@ -14,7 +14,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ai_assistant.asgi import create_router
-from ai_assistant.plugin_bundles import BundleError
+from ai_assistant.plugin_bundles import BundleError, HANDOFF_PLUGIN_ID
+from ai_assistant.skill_library import HANDOFF_ID
 from ai_assistant.service import AssistantService, Config
 from mcp_connectors.registry import Registry
 
@@ -95,8 +96,9 @@ class PluginBundleTests(unittest.TestCase):
         self.assertEqual(self.client.post(self.library + '/import', headers=self.desktop, json=manifest).status_code, 400)
         plugin = self.create_bundle()
         defaults = self.library + '/defaults'
-        self.assertEqual(self.client.get(defaults, headers=self.desktop).json(),
-                         {'plugins': [], 'owner_configured': False})
+        catalog = self.client.get(defaults, headers=self.desktop).json()
+        self.assertFalse(catalog['owner_configured'])
+        self.assertEqual(catalog['plugins'], [])
         denied = self.client.post(defaults, headers=self.desktop, json={'plugin_id': plugin['id']})
         self.assertEqual((denied.status_code, denied.json()['error']['code']), (403, 'plugin_owner_required'))
         self.assertFalse(plugin['enabled'])
@@ -161,7 +163,7 @@ class PluginBundleTests(unittest.TestCase):
                     self.assertEqual(report['references']['mcp_ids']['allowed'], 'missing')
                     rejected = client.post(routes + '/import', headers=self.desktop, json=package)
                     self.assertEqual(rejected.status_code, 409)
-                    self.assertEqual(target_service.skills.list(), [])
+                    self.assertEqual([item['id'] for item in target_service.skills.list()], [HANDOFF_ID])
                     self.assertEqual(target_service.plugins.list(target_registry), [])
                     target_registry.put('allowed', {'command': sys.executable, 'enabled': True,
                         'args': [str(Path(__file__).with_name('mcp_echo_server.py'))],
@@ -173,7 +175,7 @@ class PluginBundleTests(unittest.TestCase):
                     with patch.object(target_service.plugins, 'insert',
                                       side_effect=BundleError('fixture', 'Atomic rollback fixture.', 409)):
                         self.assertEqual(client.post(routes + '/import', headers=self.desktop, json=package).status_code, 409)
-                    self.assertEqual(target_service.skills.list(), [])
+                    self.assertEqual([item['id'] for item in target_service.skills.list()], [HANDOFF_ID])
                     result = client.post(routes + '/import', headers=self.desktop, json=package)
                     self.assertEqual(result.status_code, 201, result.text)
                     plugin = result.json()['plugin']
@@ -290,7 +292,12 @@ class DefaultPluginTests(unittest.TestCase):
         with patch.dict(os.environ, {'SHARE_MODE': '1'}):
             self.assertEqual(self.client.post(defaults, headers=self.desktop, json=packet).status_code, 403)
         catalog = self.client.get(defaults, headers=self.desktop).json()
-        self.assertEqual(catalog, {'plugins': [], 'owner_configured': True})
+        self.assertTrue(catalog['owner_configured'])
+        self.assertEqual(catalog['plugins'], [])
+        self.assertEqual(self.client.delete(defaults + '/' + HANDOFF_PLUGIN_ID,
+                                            headers=self.desktop).status_code, 409)
+        self.assertEqual(self.client.post(defaults, headers=self.desktop,
+                                         json={'plugin_id': HANDOFF_PLUGIN_ID}).status_code, 409)
         published = self.client.post(defaults, headers=self.desktop, json=packet)
         self.assertEqual(published.status_code, 201, published.text)
         row = published.json()['plugin']
@@ -310,3 +317,16 @@ class DefaultPluginTests(unittest.TestCase):
         self.assertEqual(self.client.delete(defaults + '/' + row['id'], headers=self.desktop).json(), {'removed': True})
         self.assertEqual(self.client.get(defaults, headers=self.desktop).json()['plugins'], [])
         self.assertTrue(self.registry.enabled_states()['allowed'])
+
+    def test_retired_handoff_bundle_is_ignored_without_removing_saved_records(self):
+        old_id = 'a' * 32
+        with self.service.db() as db:
+            db.execute('INSERT INTO default_plugins VALUES(?,?,?,?,?,?,?,?,?,?)',
+                       (old_id, 'b' * 32, 'Project Handoff', 'Legacy', '1.0.0',
+                        json.dumps([HANDOFF_ID]), '["allowed"]', 1, 0, 0))
+        self.assertEqual(self.service.plugins.defaults(self.registry), [])
+        selected, servers = self.service.turn_extensions([], [HANDOFF_PLUGIN_ID, old_id], self.registry)
+        self.assertEqual(selected, [])
+        self.assertEqual(servers, frozenset())
+        with self.service.db() as db:
+            self.assertEqual(db.execute('SELECT id FROM default_plugins').fetchone()['id'], old_id)

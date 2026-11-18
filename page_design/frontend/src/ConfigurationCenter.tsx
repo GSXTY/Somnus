@@ -1,13 +1,16 @@
 import { SomnusMark } from './SomnusMark';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Modal, Space, Tabs, Tag } from 'antd';
-import { ApiOutlined, AppstoreOutlined, DatabaseOutlined, DownloadOutlined, PlusOutlined, RobotOutlined, SafetyOutlined, SettingOutlined } from '@ant-design/icons';
+import { DatabaseOutlined, DownloadOutlined, PlusOutlined, RobotOutlined, SafetyOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { Models } from './Models';
-import { McpServers } from './McpServers';
-import type { DshCommunityMarket, DshMarket, InstalledDshPlugin, InstalledDshPlugins } from './DshPluginMarket';
-import { PluginConfiguration } from './PluginConfiguration';
-import { PersonalSkills } from './PersonalSkills';
+import type { DshMcpConnection } from './McpServers';
+import type { DshCatalogQuery, DshCommunityMarket, DshMarket, DshMarketSource, InstalledDshPlugin, InstalledDshPlugins } from './DshPluginMarket';
+import type { DshPluginSettings, DshSettingEdit } from './PluginConfiguration';
+import type { InstalledPluginSource } from './PluginSourceInstaller';
+import type { DshSkill } from './PersonalSkills';
+import type { DesktopExecutionSettings } from './AgentExecutionSettings';
+import type { DshOarState } from './OarPluginSettings';
 import { assistantStatus } from './assistantApi';
 import type { AssistantStatus } from './assistantApi';
 import type { ConfigurationCheckpoint } from './assistantApi';
@@ -30,7 +33,7 @@ type AdapterProvider = 'codex' | 'deepseek-harness-native' | 'codebuddy';
 type AgentPreset = { provider?: AdapterProvider; label: string; icon: string; aliases?: string[]; packageName?: string; binary?: string; args?: string; launch?: string; guide: string; account?: string };
 const setupPresets: AgentPreset[] = [
   { provider: 'codex', label: 'Codex', icon: 'codex-acp', packageName: '@agentclientprotocol/codex-acp', binary: 'dist/index.js', guide: 'https://github.com/agentclientprotocol/codex-acp', account: '使用 ChatGPT 账号登录 Codex。' },
-  { provider: 'deepseek-harness-native', label: 'DeepSeek Harness · 官方 DSH', icon: 'deepseek', aliases: ['DeepSeek Harness 官方 ACP', 'DSH 插件运行时'], args: '--profile\nacp', guide: 'https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md', account: '使用个人 DeepSeek 账号登录官方 DSH。' },
+  { provider: 'deepseek-harness-native', label: 'DeepSeek 官方 Agent', icon: 'deepseek', aliases: ['DeepSeek Harness 官方 ACP', 'DSH 插件运行时'], guide: 'https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md', account: '在 Somnus 中单独授权 DeepSeek 账号。' },
   { label: 'Claude Code', aliases: ['Claude Agent'], icon: 'claude-acp', guide: 'https://github.com/agentclientprotocol/claude-agent-acp' },
   { label: 'Cline', icon: 'cline', args: '--acp', launch: 'cline --acp', guide: 'https://github.com/cline/cline' },
   { provider: 'codebuddy', label: 'CodeBuddy Code', icon: 'codebuddy-code', guide: 'https://cloud.tencent.com/document/product/1831/137021', args: '--acp', launch: 'codebuddy --acp' },
@@ -72,15 +75,27 @@ declare global {
   interface Window {
     vvmanAcp?: {
       list: () => Promise<Agent[]>;
-      openManagedDshTerminal?: () => Promise<void>;
       managedDshAccountStatus?: () => Promise<ManagedDshAccountStatus>;
       signInManagedDshAccount?: () => Promise<ManagedDshAccountStatus>;
       connectManagedDsh?: () => Promise<{ agent: Agent; info: AgentInfo }>;
       dshPluginMarket?: () => Promise<DshMarket>;
       dshInstalledPlugins?: () => Promise<InstalledDshPlugins>;
+      dshMcpConnections?: () => Promise<{ connections: DshMcpConnection[] }>;
+      dshPluginSettings?: (id: string, source: InstalledDshPlugin['source']) => Promise<DshPluginSettings>;
+      saveDshPluginSettings?: (id: string, source: InstalledDshPlugin['source'], sectionId: string, revision: number,
+        edits: DshSettingEdit[]) => Promise<DshPluginSettings>;
+      dshSkills?: () => Promise<DshSkill[]>;
+      agentExecutionSettings?: () => Promise<DesktopExecutionSettings>;
+      setAgentExecutionSettings?: (settings: DesktopExecutionSettings) => Promise<DesktopExecutionSettings>;
+      dshOarStatus?: () => Promise<DshOarState>;
+      setDshOarEnabled?: (enabled: boolean) => Promise<DshOarState>;
       setDshInstalledPluginEnabled?: (id: string, source: InstalledDshPlugin['source'], enabled: boolean) => Promise<InstalledDshPlugins>;
-      dshCommunityMarket?: (query?: string, refresh?: boolean) => Promise<DshCommunityMarket>;
-      changeDshCommunityPlugin?: (id: string, action: 'install' | boolean, query?: string) => Promise<DshCommunityMarket>;
+      uninstallDshPlugin?: (id: string, source: InstalledDshPlugin['source']) => Promise<InstalledDshPlugins>;
+      installDshPluginSource?: (reference: string) => Promise<InstalledPluginSource>;
+      dshCommunityMarket?: (query?: string, refresh?: boolean, source?: string, options?: DshCatalogQuery) => Promise<DshCommunityMarket>;
+      changeDshCommunityPlugin?: (id: string, action: 'install' | boolean, query?: string, source?: string) => Promise<DshCommunityMarket>;
+      setDshCommunityMarketSources?: (urls: string[]) => Promise<{ sources: DshMarketSource[] }>;
+      installDshCommunityPluginVersion?: (id: string, version: string, source?: string, query?: string) => Promise<DshCommunityMarket>;
       installDshPlugin?: (id: string) => Promise<DshMarket>;
       removeDshPlugin?: (id: string) => Promise<DshMarket>;
       detectAdapter?: (provider: AdapterProvider) => Promise<Omit<Agent, 'id'> | null>;
@@ -195,7 +210,7 @@ function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => vo
   const matches = (label: string) => label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const catalogRows = setupPresets.flatMap<{ name: string; agent?: Agent; preset: AgentPreset }>(item => {
     const connected = agents.filter(agent => presetForAgent(agent.name) === item);
-    return connected.length ? connected.map(agent => ({ name: agent.name, agent, preset: item }))
+    return connected.length ? connected.map(agent => ({ name: item.provider === 'deepseek-harness-native' ? item.label : agent.name, agent, preset: item }))
       : [{ name: item.label, agent: undefined, preset: item }];
   });
   const customRows = agents.filter(agent => !presetForAgent(agent.name)).map(agent => ({ name: agent.name, agent, preset: undefined }));
@@ -265,7 +280,7 @@ function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => vo
     <div className="configuration-agent-detail">
       <header className="configuration-agent-profile">
         <AgentIcon preset={active ? presetForAgent(active.name) : preset} builtin={!active && !preset} />
-        <div><h2>{active?.name || preset?.label || 'Somnus'}</h2>
+        <div><h2>{managedActive ? 'DeepSeek 官方 Agent' : active?.name || preset?.label || 'Somnus'}</h2>
           <p>{active || preset ? '本地 Agent · Agent Client Protocol' : 'Somnus 内置 Agent'}</p></div>
         <Tag color={active ? 'success' : undefined}>{active ? '已接入' : preset ? '未接入' : '内置'}</Tag>
       </header>
@@ -277,7 +292,8 @@ function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => vo
           <Button disabled={loginInProgress} onClick={() => { setEditorError(''); setEdit({ ...active, args: active.args.join('\n') }); }}>编辑</Button>
           <Button danger disabled={loginInProgress} onClick={() => setRemove(active)}>移除</Button></Space>
         </AgentSection>
-        <AgentSection title="原生凭证" icon={<SafetyOutlined />} description="使用 Agent 提供的账号登录方式。">
+        <AgentSection title="原生凭证" icon={<SafetyOutlined />}
+          description={managedActive ? '在 Somnus 中单独授权 DeepSeek 账号。' : '使用 Agent 提供的账号登录方式。'}>
           {managedActive && managedAccount}
           <div className="configuration-detail-actions">
           <Tag color={accountReady ? 'success' : undefined}>
@@ -319,23 +335,23 @@ function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => vo
       </> : <>
         {preset && <AgentSection title="Agent 安装" icon={<DownloadOutlined />}>
           <div className="configuration-agent-setup">
-          <div className="configuration-detail-actions"><Tag>{managedPreset && managedReady ? '运行时已安装' : '等待接入'}</Tag></div>
+          <div className="configuration-detail-actions"><Tag>{managedPreset && managedReady ? 'Somnus 内置运行时已就绪' : '等待接入'}</Tag></div>
           {managedPreset && managedReady && bridge?.connectManagedDsh &&
-            <Button loading={busy} disabled={loginInProgress} onClick={connectManagedDsh}>连接 DSH 插件运行时</Button>}
+            <Button loading={busy} disabled={loginInProgress} onClick={connectManagedDsh}>连接 Somnus 内置运行时</Button>}
           {preset.provider === 'codebuddy' && bridge?.detectAdapter && <Button type="primary" loading={busy}
             onClick={() => detectAgent('codebuddy')}>连接 CodeBuddy Code</Button>}
-          <details open={!preset.provider || (!directCodex && !(managedPreset && managedReady) && preset.provider !== 'codebuddy') || undefined}>
+          {!managedPreset && <details open={!preset.provider || (!directCodex && preset.provider !== 'codebuddy') || undefined}>
           <summary>{directCodex || preset.provider === 'codebuddy' ? '手动安装与接入' : '安装与接入'}</summary>
           {preset.packageName ? <><p>在 PowerShell 中运行下面两行，安装适配器并找到启动脚本。</p>
           <pre>{'npm install -g ' + preset.packageName}{'\n'}{'Join-Path (npm root -g) "' + preset.packageName + '/' + preset.binary + '"'}</pre>
-          <p>添加时选择 <code>node.exe</code>，将脚本路径单独填为一行启动参数。</p></> : managedPreset ? <p>如已有官方 DSH CLI，可检测本机安装或手动选择启动程序，将 <code>--profile</code> 和 <code>acp</code> 分行填写为启动参数。</p> :
+          <p>添加时选择 <code>node.exe</code>，将脚本路径单独填为一行启动参数。</p></> :
           <><p>按官方说明安装支持 ACP 的运行时，选择其可执行程序并保存。</p>{preset.launch && <pre>{preset.launch}</pre>}</>}
           <Space wrap>
             {bridge?.detectAdapter && preset.provider !== 'codebuddy' && preset.provider && <Button type={directCodex ? 'default' : 'primary'} disabled={loginInProgress} loading={busy} onClick={() => preset.provider && detectAgent(preset.provider)}>检测本机安装</Button>}
             <Button type={bridge?.detectAdapter ? 'default' : 'primary'} disabled={!bridge || loginInProgress} onClick={() => addAgent(preset.label)}>手动接入</Button>
             <Button href={preset.guide} target="_blank" rel="noopener">适配器文档</Button>{preset.provider === 'codebuddy' && <Button href="https://www.codebuddy.ai/docs/cli/quickstart" target="_blank" rel="noopener">Windows 安装指南</Button>}
           </Space>
-          </details>
+          </details>}
         </div></AgentSection>}
         {preset && <AgentSection title="原生凭证" icon={<SafetyOutlined />} description={preset.account || '接入后刷新账号状态，查看 Agent 提供的登录方式。'}>
           {managedPreset && managedAccount}
@@ -392,13 +408,11 @@ function AgentConfig({ onOpen, restoredAgentId }: { onOpen: (view: string) => vo
 export const configurationSections = [
   { key: 'config', label: 'Agent', icon: <RobotOutlined /> },
   { key: 'models', label: 'Provider', icon: <SettingOutlined /> },
-  { key: 'mcp', label: 'MCP', icon: <ApiOutlined /> },
-  { key: 'skills', label: 'Skill', icon: <AppstoreOutlined /> },
-  { key: 'plugin-config', label: '插件', icon: <AppstoreOutlined /> },
 ];
 
-export function ConfigurationCenter({ view, onOpen, suggestedPlugin, sidebarNavigation = false, windowsDesktop }: {
-  view: string; onOpen: (view: string) => void; suggestedPlugin?: string; sidebarNavigation?: boolean; windowsDesktop?: boolean;
+export function ConfigurationCenter({ view, onOpen, windowsDesktop }: {
+  view: string; onOpen: (view: string) => void;
+  windowsDesktop?: boolean;
 }) {
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
@@ -408,20 +422,13 @@ export function ConfigurationCenter({ view, onOpen, suggestedPlugin, sidebarNavi
     setConfigurationRevision(value => value + 1);
     if (agentId) onOpen('config');
   }
-  const sections = [
-    <AgentConfig key="config" onOpen={onOpen} restoredAgentId={restoredAgentId} />, <Models key="models" />, <McpServers key="mcp" />,
-    <PersonalSkills key="skills" />, <PluginConfiguration key="plugin-config" suggestedPlugin={suggestedPlugin} windowsDesktop={windowsDesktop} />,
-  ];
+  const sections = [<AgentConfig key="config" onOpen={onOpen} restoredAgentId={restoredAgentId} />,
+    <Models key="models" windowsDesktop={windowsDesktop} />];
   const items = configurationSections.map((section, index) => ({ ...section, children: sections[index] }));
   return <div className="configuration-center">
-    <header className="configuration-heading">
-      <h1 className="tools-heading">配置中心</h1>
-      <p>管理账号、模型供应商和工具接入。</p>
-      {windowsDesktop && <Button icon={<SafetyOutlined />} onClick={() => setCheckpointsOpen(true)}>验证与恢复</Button>}
-    </header>
     {windowsDesktop && <ConfigurationCheckpoints open={checkpointsOpen} onClose={() => setCheckpointsOpen(false)} onRestore={onRestore} />}
-    <Tabs key={configurationRevision} activeKey={view} onChange={onOpen} items={items} renderTabBar={sidebarNavigation
-      ? () => <div className="configuration-section-title"><span>{configurationSections.find(section => section.key === view)?.label}</span></div>
-      : undefined} />
+    <Tabs key={configurationRevision} activeKey={view} onChange={onOpen} items={items}
+      tabBarExtraContent={windowsDesktop && view === 'config' ? <Button className="settings-toolbar-button"
+        icon={<SafetyOutlined />} onClick={() => setCheckpointsOpen(true)}>验证与恢复</Button> : undefined} />
   </div>;
 }

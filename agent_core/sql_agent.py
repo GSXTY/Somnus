@@ -34,6 +34,14 @@ def _config():
     return endpoint, model, key, timeout
 
 
+def proposal_configured():
+    try:
+        _config()
+        return True
+    except (SqlAccessError, ValueError):
+        return False
+
+
 def business_context() -> str:
     """Optional hand-written notes: table meaning, coded fields, definitions."""
     path = os.getenv('ANALYTICS_SQL_CONTEXT', '').strip()

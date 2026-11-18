@@ -79,3 +79,4 @@ test('width handle supports keyboard, reset and cancelled drag without replacing
   sidebar.render().handle.onDoubleClick();
   assert.equal(sidebar.render().layout.width, 268);
 });
+

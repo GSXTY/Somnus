@@ -18,7 +18,7 @@ export function useWorkbench(source: Source, model: string, auto: boolean) {
 
   const load = useCallback(async (force: boolean) => {
     const cached = snapshots.current.get(key);
-    if (!force && cached && Date.now() - cached.receivedAt < refreshIntervalMs) {
+    if (!force && cached && cached.data.source.mode !== 'unconfigured' && Date.now() - cached.receivedAt < refreshIntervalMs) {
       setRequest(current => current?.key === key ? undefined : current);
       return;
     }

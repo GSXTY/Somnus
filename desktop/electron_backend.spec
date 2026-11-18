@@ -12,8 +12,7 @@ assets = {
         'vendor/bootstrap.min.css', 'vendor/bootstrap.LICENSE', 'web/index.html',
     ),
     'plugins/respiratory': ('plugin.json', 'tools.py'),
-    'skills': ('defaults.json',),
-    'skills/project-handoff': ('SKILL.md', 'LICENSE', 'agents/openai.yaml'),
+    'skills/project-handoff': ('SKILL.md',),
 }
 datas = [
     (str(ROOT / directory / item), str(Path(directory) / Path(item).parent))

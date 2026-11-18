@@ -27,21 +27,3 @@ page_design/web/
 /mcp.json
 /viewer-restart.stdout.tmp
 /tools/cloudflared.exe
-# Local state, credentials and release artifacts
-.tmp/
-*.tmp
-*.db
-*.db-*
-*.sqlite
-*.sqlite-*
-*.edf
-*.edf.gz
-*.pem
-*.key
-*.pfx
-*.p12
-*.exe
-*.zip
-mcp.json
-somnus-updates.json
-somnus-update-runtime.yml

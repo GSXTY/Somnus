@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from agent_core.sql_access import SqlAccessError, SqlSettings, run, schema
-from agent_core.sql_agent import propose_sql
+from agent_core.sql_agent import proposal_configured, propose_sql
 from agent_core.workbench import dashboard, user_detail
 from app_version import APP_VERSION
 from data_gateway.routes import (
@@ -50,7 +50,7 @@ def _audit_operation(path, method, deep_route):
                         else 'deep_cancel' if method == 'POST' else 'deep_task')
     return {
         '/api/workbench': 'dashboard', '/api/sql/schema': 'sql_schema',
-        '/api/sql/query': 'sql_query', '/api/sql/ask': 'sql_ask',
+        '/api/sql/query': 'sql_query', '/api/sql/ask': 'sql_ask', '/api/sql/propose': 'sql_propose',
     }.get(path) or ('user_detail' if path.startswith('/api/workbench/users/') else None)
 
 
@@ -192,6 +192,7 @@ def create_gateway(tokens, settings, *, sql_enabled=False, sql_tables=(), deep_s
     @app.get(HEALTH_PATH)
     def health():
         return _packet({'service': 'data-agent-gateway', 'version': APP_VERSION, 'sql_enabled': sql_enabled,
+                        'sql_proposal_enabled': sql_enabled and proposal_configured(),
                         'deep_analysis_enabled': deep_service is not None})
 
     @app.get('/api/workbench')
@@ -228,7 +229,7 @@ def create_gateway(tokens, settings, *, sql_enabled=False, sql_tables=(), deep_s
             logger.error('SQL schema read failed: %s', type(exc).__name__)
             return _packet({'error': '网关未能读取获准的数据表结构。'}, 503)
 
-    async def sql(request, *, model=False):
+    async def sql(request, *, model=False, propose_only=False):
         if not sql_enabled:
             return _packet({'error': '远程 SQL 查询未启用。'}, 403)
         field = 'question' if model else 'sql'
@@ -247,6 +248,8 @@ def create_gateway(tokens, settings, *, sql_enabled=False, sql_tables=(), deep_s
             statement = checked_sql(statement, query_settings)
         except SqlAccessError as exc:
             return _packet({'error': str(exc)}, 400)
+        if propose_only:
+            return _packet({'sql': statement})
         try:
             result = await run_in_threadpool(run, statement, execution_settings)
         except Exception as exc:
@@ -263,6 +266,10 @@ def create_gateway(tokens, settings, *, sql_enabled=False, sql_tables=(), deep_s
     @app.post('/api/sql/ask')
     async def sql_ask(request: Request):
         return await sql(request, model=True)
+
+    @app.post('/api/sql/propose')
+    async def sql_propose(request: Request):
+        return await sql(request, model=True, propose_only=True)
 
     return app
 

@@ -117,10 +117,12 @@ test('native grant and Explorer open are scoped to selected and persisted direct
 
   const lookupApproved = handlers.get('vvman-projects:approved-file-location');
   const openApproved = handlers.get('vvman-projects:open-approved-file');
+  const revealProposal = handlers.get('vvman-projects:reveal-proposal');
   const source = path.join(secondDirectory, 'example.c');
   await writeFile(source, 'int main(void) { return 0; }');
   await writeFile(path.join(secondDirectory, 'script.js'), 'console.log("test");');
   await assert.rejects(openApproved(trusted, cid, pid), /无法找到/);
+  await assert.rejects(revealProposal(trusted, cid, pid), /无法找到/);
   approvedTarget = { root_path: directory, relative_path: 'second/example.c' };
   assert.equal(await lookupApproved(trusted, cid, pid), source);
   await assert.rejects(openApproved(trusted, 'other', pid), /有效|请选择/);
@@ -131,6 +133,11 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   await openApproved(trusted, cid, pid);
   assert.deepEqual(revealed, [source]);
   openFailure = '';
+  const priorOpenCount = opened.length;
+  await revealProposal(trusted, cid, pid, 'C:\\forged.txt');
+  assert.equal(opened.length, priorOpenCount);
+  assert.deepEqual(revealed, [source, source]);
+  await assert.rejects(revealProposal({ ...trusted, senderFrame: {} }, cid, pid), /工作台/);
   approvedTarget.relative_path = 'second/script.js';
   const shellOpenCount = opened.length;
   await openApproved(trusted, cid, pid);
@@ -140,6 +147,7 @@ test('native grant and Explorer open are scoped to selected and persisted direct
   for (const unsafe of ['../second/example.c', 'second/example.c:stream', 'linked/second/example.c', 'absent.c']) {
     approvedTarget.relative_path = unsafe;
     await assert.rejects(openApproved(trusted, cid, pid), /已移动/);
+    await assert.rejects(revealProposal(trusted, cid, pid), /已移动/);
   }
   const hardlink = path.join(secondDirectory, 'linked-file.c');
   await link(source, hardlink);

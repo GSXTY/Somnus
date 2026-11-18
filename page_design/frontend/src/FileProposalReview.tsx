@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Modal, Segmented, Space } from 'antd';
+import { FolderOpenOutlined } from '@ant-design/icons';
 import { decideFileProposal, listFileProposals } from './assistantApi';
 import { lineCounts, unifiedFileDiff } from './fileProposalDiff';
 import { personalDocumentsChangedEvent } from './documentLibraryBridge';
 import type { ChatMessage, FileProposal } from './assistantApi';
+import { describeError } from './errors.mjs';
 
 export function useFileProposals(conversationId?: string, latest?: FileProposal[]) {
   const [stored, setStored] = useState<{ id: string; items: FileProposal[] }>();
@@ -56,7 +58,7 @@ export function associateFileProposals(items: FileProposal[], messages: ChatMess
   return { byReply, legacy };
 }
 
-const proposalLabels = { pending: '待审阅', applied: '已应用', rejected: '已拒绝' };
+const proposalLabels = { pending: '审阅写入申请', applied: '已应用', rejected: '已拒绝' };
 
 function proposalPath(item: FileProposal) {
   if (!item.source_folder) return item.path;
@@ -64,8 +66,30 @@ function proposalPath(item: FileProposal) {
   return item.source_folder.replace(/[\\/]+$/, '') + separator + item.path.replace(/[\\/]/g, separator);
 }
 
-export function FileChangeCards({ items, onPreview }: { items: FileProposal[]; onPreview: (item: FileProposal) => void }) {
+function FileProposalLocation({ reveal }: { reveal: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function locate() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try { await reveal(); }
+    catch (failure) { setError(describeError(failure, '无法在文件资源管理器中定位文件')); }
+    finally { setBusy(false); }
+  }
+  const label = '在文件资源管理器中定位';
+  return <>
+    <Button className="assistant-file-reveal" type="text" size="small" icon={<FolderOpenOutlined />}
+      aria-label={label} title={label} loading={busy} onClick={() => void locate()} />
+    {error && <small className="assistant-file-reveal-error" role="alert">{error}</small>}
+  </>;
+}
+
+export function FileChangeCards({ conversationId, items, onPreview }: {
+  conversationId?: string; items: FileProposal[]; onPreview: (item: FileProposal) => void;
+}) {
   if (!items.length) return null;
+  const reveal = window.vvmanProjects?.revealProposal;
   const paths = new Map<string, FileProposal[]>();
   for (const item of items) {
     const key = JSON.stringify([item.source_folder, item.path]);
@@ -78,11 +102,13 @@ export function FileChangeCards({ items, onPreview }: { items: FileProposal[]; o
       const counts = lineCounts(item.old_content, item.new_content);
       const path = proposalPath(item);
       return <div className="assistant-file-change" key={key}>
-        <button type="button" onClick={() => onPreview(item)} title={path}>
+        <button className="assistant-file-diff" type="button" onClick={() => onPreview(item)} title={path}>
           <span>{item.path}{item.source_folder && <small className="assistant-file-source">{item.source_folder}</small>}</span>
           {counts && <><span className="file-change-added" aria-label={'新增 ' + counts.added + ' 行'}>+{counts.added}</span><span className="file-change-removed" aria-label={'删除 ' + counts.removed + ' 行'}>−{counts.removed}</span></>}
           <small>{proposalLabels[item.status]}</small>
         </button>
+        {conversationId && reveal && item.status === 'applied' &&
+          <FileProposalLocation key={item.id} reveal={() => reveal(conversationId, item.id)} />}
         {ordered.length > 1 && <details><summary>此文件的其他修改</summary>{ordered.filter(proposal => proposal !== item).map(proposal =>
           <Button key={proposal.id} type="text" size="small" onClick={() => onPreview(proposal)}>{proposalLabels[proposal.status]}</Button>)}</details>}
       </div>;

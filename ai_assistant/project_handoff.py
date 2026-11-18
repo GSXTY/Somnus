@@ -1,4 +1,4 @@
-"""Resident project handoff context for an enabled local default plugin."""
+"""Project handoff context for an explicitly selected Skill."""
 import json
 import re
 
@@ -15,7 +15,7 @@ UPDATE = re.compile(
 )
 
 
-def render(roots, text, *, can_propose, can_create=True):
+def render(roots, text, *, can_propose):
     """Read only the conventional handoff document under authorized project roots."""
     if not roots:
         return ''
@@ -42,14 +42,10 @@ def render(roots, text, *, can_propose, can_create=True):
         parts.append('本轮用户要求更新项目交接。只更新 docs/AI-HANDOFF.md。'
                      '用不超过约 80 行记录当前重点、最近改动、未决事项、验证结果和下一步。'
                      '用事实替换过时信息，省略密钥和大段日志。遇到多个可能的项目来源，先请用户指定。')
-        if can_propose and can_create:
+        if can_propose:
             parts.append('读取目标的完整现有内容后，通过项目文件修改或新建建议工具提交。'
                          '仅在已有 docs 目录下提出新建建议。待审批时说明文件尚未写入，'
                          '避免用终端或其他工具绕开项目文件审批。')
-        elif can_propose:
-            parts.append('目标文件存在时，读取完整内容并通过项目文件修改建议工具提交。'
-                         '如果文件尚不存在，请给出草稿并请用户先在项目中创建该文件。'
-                         '待审批时说明尚未写入，避免用终端或其他工具绕开文件审批。')
         else:
             parts.append('当前权限只允许提供交接草稿。请说明需要切换权限才能提交文件修改建议。')
     return '\n\n'.join(parts)

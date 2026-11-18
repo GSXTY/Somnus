@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import ssl
 import re
+from threading import Lock
+from time import monotonic
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -17,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from data_gateway.routes import (
     DEEP_ARTIFACT_BYTES, DEEP_ARTIFACT_PATH, DEEP_ARTIFACT_TYPES, DEEP_FILE, DEEP_RASTER_TYPES,
     DEEP_SAMPLE, DEEP_TASK_PATH, DEEP_UPLOAD_BYTES, DEEP_UPLOAD_TYPES,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PRESENCE_PATH, TOKEN, deep_method_allowed, method_for,
+    HEALTH_PATH, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PRESENCE_PATH, TOKEN, deep_method_allowed, method_for,
 )
 
 
@@ -38,6 +40,8 @@ class RemoteData:
     url: str | None = None
     token: str = field(default='', repr=False)
     opener: object | None = field(default=None, repr=False)
+    _mcp_health_lock: object = field(default_factory=Lock, init=False, repr=False, compare=False)
+    _mcp_health: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @classmethod
     def from_env(cls):
@@ -63,6 +67,34 @@ class RemoteData:
 
     def status(self):
         return {'mode': self.mode, 'url': self.url}
+
+    def sql_mcp_capabilities(self):
+        if self.mode != 'remote' or not self.opener:
+            return False, False
+        with self._mcp_health_lock:
+            if self._mcp_health.get('until', 0) > monotonic():
+                return self._mcp_health['capabilities']
+            capabilities = self._probe_sql_mcp_capabilities()
+            self._mcp_health.update(capabilities=capabilities, until=monotonic() + (60 if capabilities[0] else 15))
+            return capabilities
+
+    def _probe_sql_mcp_capabilities(self):
+        request = Request(self.url + HEALTH_PATH,
+                          headers={'Authorization': f'Bearer {self.token}', 'Accept': 'application/json'})
+        try:
+            with self.opener.open(request, timeout=2) as response:
+                if response.getcode() != 200 or response.headers.get_content_type() != 'application/json':
+                    return False, False
+                data = response.read(4097)
+                packet = json.loads(data) if len(data) <= 4096 else None
+            if (isinstance(packet, dict) and packet.get('service') == 'data-agent-gateway'
+                    and packet.get('sql_enabled') is True):
+                return True, packet.get('sql_proposal_enabled') is True
+        except HTTPError as exc:
+            exc.close()
+        except (OSError, URLError, ValueError, RecursionError, http.client.HTTPException):
+            pass
+        return False, False
 
     async def report_presence(self, version):
         # The managed desktop shuts down independently of a blocked gateway call.

@@ -2,6 +2,7 @@ const { createHmac } = require('node:crypto');
 const { lstat, realpath } = require('node:fs/promises');
 const http = require('node:http');
 const path = require('node:path');
+const { launchWorkspace } = require('./workspace-launch.cjs');
 
 const cookieName = 'respiratory_desktop';
 const secretScope = 'vvman-project-browser-session';
@@ -146,6 +147,10 @@ async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, 
   }
   ipcMain.handle('vvman-projects:approved-file-location', async (event, conversationId, proposalId) =>
     (await appliedLocation(event, conversationId, proposalId)).target);
+  ipcMain.handle('vvman-projects:reveal-proposal', async (event, conversationId, proposalId) => {
+    const { target } = await appliedLocation(event, conversationId, proposalId);
+    shell.showItemInFolder(target);
+  });
   ipcMain.handle('vvman-projects:open-approved-file', async (event, conversationId, proposalId) => {
     const { target, location } = await appliedLocation(event, conversationId, proposalId);
     if (openableText.has(path.extname(target).toLowerCase()) && !await shell.openPath(target)) return;
@@ -169,7 +174,7 @@ async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, 
     return { root_path: grant.root_path, folder_grant: grant.folder_grant };
   });
 
-  ipcMain.handle('vvman-projects:open-directory', async (event, projectId, sourceIndex = 0) => {
+  ipcMain.handle('vvman-projects:open-directory', async (event, projectId, sourceIndex = 0, target = 'explorer') => {
     trustWorkbench(event, window, origin);
     if (typeof projectId !== 'string' || !/^ws_[a-f0-9]{12}$/.test(projectId)) {
       throw new Error('请选择有效的项目。');
@@ -195,7 +200,7 @@ async function registerProjectFolders({ ipcMain, dialog, shell, window, origin, 
       throw new Error('项目文件夹已移走或无法访问，请重新选择文件夹。');
     }
     trustWorkbench(event, window, origin);
-    if (await shell.openPath(normalized)) throw new Error('无法打开项目文件夹。');
+    await launchWorkspace(shell, normalized, target);
   });
 }
 

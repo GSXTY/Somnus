@@ -33,7 +33,7 @@ export const navigation = [
   {
     key: 'system', label: '系统',
     items: [
-      { key: 'config', label: '配置中心', icon: 'setting', hint: '配置 Agent、Provider、MCP、Skill 和插件' },
+      { key: 'config', label: '配置中心', icon: 'setting', hint: '配置 Agent 和模型供应商' },
       { key: 'models', label: '模型', icon: 'robot', hint: '选择与添加模型供应商' },
       { key: 'skills', label: 'Skills', icon: 'plugin', hint: '导入和管理会话技能' },
       { key: 'mcp', label: 'MCP', icon: 'mcp', hint: '管理 MCP 服务器与工具' },
@@ -53,12 +53,14 @@ const railViews = [
   ['dashboard', '主页', 'dashboard'],
   ['documents', '文档', 'documents'],
   ['config', '配置', 'robot'],
+  ['plugin-config', '插件', 'plugin'],
   ['plugins', '工具区', 'plugin'],
 ];
 export const workspaceRail = railViews.map(([key, label, icon]) => ({ key, label, icon }));
 export const builtInTools = navigationItems.filter(item => item.group === 'analysis');
 export function activeRailView(view) {
-  if (['models', 'skills', 'mcp', 'plugin-config'].includes(view)) return 'config';
+  if (view === 'models') return 'config';
+  if (view === 'skills' || view === 'mcp') return 'plugin-config';
   if (['users', 'devices', 'alerts'].includes(view)) return 'dashboard';
   if (view === 'settings') return 'settings';
   return workspaceRail.some(entry => entry.key === view) ? view : 'plugins';

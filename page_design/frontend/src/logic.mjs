@@ -47,14 +47,37 @@ export function validateDataQuality(quality, source) {
 export function validateDashboard(data, source) {
   if (!data || data.schema_version !== 1 || !data.source || !data.kpis || !data.period || !data.fleet || !Array.isArray(data.daily) || !Array.isArray(data.users) || !Array.isArray(data.alerts) || !Array.isArray(data.insights) || !Array.isArray(data.constraints) || !Array.isArray(data.alert_distribution)) throw new Error('工作台数据格式不符合约定');
   const mode = source === 'demo' ? 'demo' : 'live';
-  if (data.source.mode !== mode) throw new Error('数据来源不匹配，已停止展示');
+  const unconfigured = mode === 'live' && data.source.mode === 'unconfigured';
+  if (data.source.mode !== mode && !unconfigured) throw new Error('数据来源不匹配，已停止展示');
   if (mode === 'demo' && data.source.connected !== false) throw new Error('演示来源不应标记为已连接');
-  if (mode === 'live' && data.source.connected !== true) throw new Error('真实数据源未连接，请检查只读数据库配置');
-  const required = mode === 'demo'
+  if (mode === 'live' && data.source.connected !== !unconfigured) throw new Error('真实数据源连接状态不一致');
+  const required = mode === 'demo' || unconfigured
     ? ['active_users', 'treatment_hours', 'reported_events', 'online_rate']
     : ['active_users', 'treatment_hours', 'reported_events', 'avg_ahi'];
   for (const key of required) {
     if (!data.kpis[key] || !Array.isArray(data.kpis[key].trend)) throw new Error('指标字段不完整');
+  }
+  if (unconfigured && (
+    [data.daily, data.users, data.alerts, data.alert_distribution].some(items => items.length > 0) ||
+    Object.values(data.fleet).some(value => value !== null) ||
+    Object.values(data.kpis).some(metric => metric?.value !== null || metric.previous !== null || metric.trend?.length !== 0)
+  )) throw new Error('未连接来源返回了统计数据，已停止展示');
+  const home = data.home;
+  if (home !== undefined) {
+    const isText = value => typeof value === 'string' && Boolean(value.trim());
+    const isOptionalNumber = value => value === null || numeric(value);
+    const validMetric = metric => metric && isText(metric.label) && typeof metric.unit === 'string' &&
+      isOptionalNumber(metric.value) &&
+      (metric.digits === undefined || (Number.isInteger(metric.digits) && metric.digits >= 0 && metric.digits <= 6));
+    const validPoint = point => point && typeof point.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(point.date) &&
+      isOptionalNumber(point.value);
+    const validChart = chart => chart && isText(chart.label) && typeof chart.unit === 'string' &&
+      Array.isArray(chart.points) && chart.points.every(validPoint);
+    if (!home || !Array.isArray(home.metrics) || !Array.isArray(home.charts) ||
+        !home.metrics.every(validMetric) || !home.charts.every(validChart) ||
+        (unconfigured && (home.metrics.length || home.charts.length))) {
+      throw new Error('设备主页指标格式不符合约定');
+    }
   }
   validateDataQuality(data.data_quality, source);
   return data;

@@ -1,0 +1,7 @@
+{
+  "repository": "xue-ding-e/DSH-Next",
+  "commit": "f2483c6d26104b3594cb0e22f56c0331b55dfffe",
+  "version": "0.2.2-rc.2.20261115.31",
+  "windowsInstallerSha256": "adff1317548f436cb2c4072bc57ad4b6e7fc8da910566bb41bfcb4b72cbc7525",
+  "windowsInstaller": "https://github.com/xue-ding-e/DSH-Next/releases/download/v0.2.2-rc.2.20261115.31/dsh-next-0.2.2-rc.2.20261115.31-win-x64-unsigned.exe"
+}

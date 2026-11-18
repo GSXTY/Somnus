@@ -7,13 +7,13 @@ export function DshRecommendationCards({ cards, onOpenPlugin }: {
 }) {
   if (!Array.isArray(cards) || !cards.length) return null;
 
-  return <section className="assistant-dsh-recommendations" aria-label="DSH 个性化推荐">
+  return <section className="assistant-dsh-recommendations" aria-label="个性化推荐">
     {cards.map(card => <article className="assistant-dsh-recommendation" key={card.id}>
       <span className="assistant-dsh-recommendation-icon" aria-hidden="true">
         {card.kind === 'plugin' ? <AppstoreOutlined /> : <LayoutOutlined />}
       </span>
       <div className="assistant-dsh-recommendation-copy">
-        <small>{card.kind === 'plugin' ? 'DSH 插件推荐' : 'DSH 页面建议 · 预览'}</small>
+        <small>{card.kind === 'plugin' ? '插件推荐' : '页面建议 · 预览'}</small>
         <strong>{card.title}</strong>
         {card.description && <p>{card.description}</p>}
       </div>

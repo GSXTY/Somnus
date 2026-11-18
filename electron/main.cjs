@@ -2,17 +2,18 @@ const { randomBytes } = require('node:crypto');
 const { mkdirSync, readFileSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
 const path = require('node:path');
-const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, session, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, session, shell, Tray, WebContentsView } = require('electron');
 const { backendCommand, startBackend } = require('./backend.cjs');
 const { openProjectFolder, registerProjectFolders } = require('./project-folders.cjs');
 const { registerAcpAgents } = require('./acp-ipc.cjs');
+const { registerWorkspaceWeb } = require('./workspace-web.cjs');
 const { registerSomnusUpdater } = require('./acp-somnus-updater.cjs');
-const { registerDotRelay } = require('./acp-dot-relay-client.cjs');
 const { registerDocumentLibrary } = require('./acp-document-library.cjs');
 const { registerPluginWorkspace } = require('./acp-plugin-workspace.cjs');
 const { registerTaskAttention } = require('./task-attention.cjs');
 const { createDesktopTray, folderLaunchArgument, keepWindowInTray } = require('./desktop-tray.cjs');
-const { createDesktopProfiles } = require('./desktop-recovery.cjs');
+const { createDesktopProfiles, relaunchArguments } = require('./desktop-recovery.cjs');
+const { registerDesktopMenu } = require('./desktop-menu.cjs');
 
 const sourceRoot = path.resolve(__dirname, '..');
 const showStartupPage = process.platform === 'win32';
@@ -217,10 +218,28 @@ async function openWorkspace(logFile, timings) {
     const profileDir = profiles?.active.roamingDir ?? app.getPath('userData');
     await registerProjectFolders({ ipcMain, dialog, shell, window, origin, token: projectToken });
     if (quitting) return;
+    registerDesktopMenu({ ipcMain, window, origin, dialog,
+      available: () => workspaceReady && !quitting && !recovering,
+      actions: {
+        'open-project': () => pickProjectFolder(),
+        profiles: () => profiles.openProfiles(),
+        recovery: () => profiles.openRecovery(),
+        'open-logs': async () => {
+          const error = await shell.openPath(path.dirname(logFile));
+          if (error) throw new Error('无法打开 Somnus 日志文件夹。');
+        },
+        reload: () => window.webContents.reload(),
+        restart: () => {
+          app.relaunch({ args: relaunchArguments(app, profiles.safeMode ? 'safe-mode' : undefined) });
+          app.quit();
+        },
+        quit: () => app.quit(),
+      },
+    });
     if (!profiles?.safeMode) {
+      registerWorkspaceWeb({ ipcMain, window, origin, WebContentsView, session });
       registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token: projectToken,
-        profileDir, dshRuntimeDir: profiles?.baseDir, version: app.getVersion() });
-      registerDotRelay({ ipcMain, window, origin, profileDir, safeStorage });
+        profileDir, dshRuntimeDir: profiles?.baseDir, version: app.getVersion(), WebContentsView, session });
       registerPluginWorkspace({ ipcMain, dialog, shell, window, origin, token: projectToken, profileDir });
     }
     registerSomnusUpdater({ ipcMain, app, window, origin, prepareInstall: stopBackendForUpdate });

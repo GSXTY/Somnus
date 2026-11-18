@@ -38,7 +38,7 @@ async function main() {
   const events = await get(analysis.path);
   assert.match(events.type, /text\/html/);
   assert.match(events.text, /<option value="dynamic_baseline_v3" selected>/);
-  assert.match(events.text, /<option value="patient_flow_v4">/);
+  assert.doesNotMatch(events.text, /<option value="patient_flow_v4">/);
 
   assert.match(events.text, /<a href="\/"[^>]*>← 返回主工作台<\/a>/);
   assert(events.text.includes('筛查结果为工程候选'));

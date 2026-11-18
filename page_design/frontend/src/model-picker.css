@@ -109,4 +109,23 @@
 .model-picker-footer { border-top: 1px solid var(--shell-line, #eaeaea); padding: 6px 12px; }
 .model-picker-footer .ant-btn { padding-inline: 8px; }
 .assistant-model-inline { display: inline-flex; min-width: 0; align-items: center; gap: 3px; }
-.assistant-reasoning-trigger > .anticon:last-child { font-size: 9px; }
+.model-picker-trigger .model-picker-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-picker-trigger .model-picker-trigger-effort { flex: none; color: var(--shell-muted); font-size: 11px; }
+.model-picker-reasoning { border-top: 1px solid var(--shell-line); padding: 9px 14px 12px; }
+.model-picker-reasoning h3 { margin: 0 0 7px; font-size: 12px; font-weight: 500; color: var(--shell-muted); }
+.model-picker-reasoning > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.model-picker-reasoning button { padding: 3px 8px; border: 1px solid var(--shell-line); border-radius: 6px;
+  background: transparent; color: var(--shell-ink); font: inherit; cursor: pointer; }
+.model-picker-reasoning button:hover:not(:disabled), .model-picker-reasoning button[aria-pressed=true] {
+  color: var(--shell-accent); background: var(--shell-selected); }
+.model-picker-reasoning button:disabled { opacity: .55; cursor: default; }
+.composer-extension-collaboration { padding: 0 0 8px; }
+.composer-extension-popover .model-picker-search { padding-inline: 8px; }
+.composer-extension-popover .model-picker-list { max-height: min(42vh, 315px); overflow: auto; padding: 5px 8px 8px; }
+.composer-extension-group h3 { margin: 8px 6px 3px; font-size: 12px; font-weight: 600; color: var(--shell-muted); }
+.composer-extension-group button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px; border: 0; border-radius: 7px; padding: 7px 8px; background: transparent; color: var(--shell-ink); text-align: left; font: inherit; cursor: pointer; }
+.composer-extension-group button:not(:disabled):hover, .composer-extension-group button[aria-pressed=true] { background: var(--shell-hover); }
+.composer-extension-group button:disabled { opacity: .55; cursor: default; }
+.composer-extension-group button strong { display: block; font-size: 13px; font-weight: 500; }
+.composer-extension-group button small, .composer-extension-empty { display: block; color: var(--shell-muted); font-size: 11px; }
+.composer-extension-empty { margin: 5px 8px; }

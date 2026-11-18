@@ -3,8 +3,10 @@ const { randomBytes, randomUUID } = require('node:crypto');
 const { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { launchWorkspace } = require('./workspace-launch.cjs');
 const { nativeRequest, trustWorkbench } = require('./project-folders.cjs');
 const { projectPath } = require('./acp-project.cjs');
+const { DEFAULT_EXECUTION_SETTINGS } = require('./acp-execution-settings.cjs');
 
 const TEST_TOOL = 'run_project_tests';
 const DIFF_TOOL = 'project_git_diff';
@@ -20,7 +22,6 @@ const SHELL_PROGRAM = /^(?:cmd|powershell|powershell_ise|pwsh|bash|sh|wsl|wscrip
 const MAX_OUTPUT = 64 * 1024;
 const APPROVAL_TIMEOUT = 60_000;
 const TEST_TIMEOUT = 90_000;
-const POWERSHELL_TIMEOUT = 45_000;
 const GIT_TIMEOUT = 8000;
 const CHECKOUT_TIMEOUT = 90_000;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -37,6 +38,22 @@ const TEST_MESSAGES = {
 
 function toolResult(data, isError = false) {
   return { isError, content: [{ type: 'text', text: JSON.stringify(data) }] };
+}
+
+function shellToolResult(data, isError) {
+  const result = toolResult(data, isError);
+  // The native development-job receiver allows 90,000 characters per text block.
+  // Escaped control characters may expand beyond that even at a 64 KiB capture limit.
+  if (result.content[0].text.length <= 90_000) return result;
+  let low = 0;
+  let high = data.output.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const output = data.output.slice(0, middle).toWellFormed();
+    if (JSON.stringify({ ...data, output, truncated: true }).length <= 90_000) low = middle;
+    else high = middle - 1;
+  }
+  return toolResult({ ...data, output: data.output.slice(0, low).toWellFormed(), truncated: true }, isError);
 }
 
 function localPath(value) {
@@ -75,6 +92,11 @@ function projectEnvironment(executableDirectory, inheritPath = false) {
   const system = env.SystemRoot || env.WINDIR || 'C:\\Windows';
   const userPath = inheritPath ? Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] : undefined;
   result.PATH = [executableDirectory, path.join(system, 'System32'), system, userPath].filter(Boolean).join(path.delimiter);
+  if (inheritPath) {
+    // Windows PowerShell needs PATHEXT to recognize native commands such as python.exe.
+    result.PATHEXT = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATHEXT')?.[1] ||
+      '.COM;.EXE;.BAT;.CMD';
+  }
   return result;
 }
 
@@ -367,12 +389,13 @@ async function readGitDiff(root, signal, file, baseRoot) {
 }
 
 class ProjectWorkflow {
-  constructor({ origin, token, dialog, shell, window, ipcMain, profileDir }) {
+  constructor({ origin, token, dialog, shell, window, ipcMain, profileDir, executionSettings }) {
     this.origin = origin;
     this.token = token;
     this.dialog = dialog;
     this.shell = shell;
     this.window = window;
+    this.executionSettings = executionSettings;
     this.file = path.join(profileDir, 'project-test-runners.json');
     this.queue = Promise.resolve();
     this.running = new Set();
@@ -629,12 +652,11 @@ class ProjectWorkflow {
     if (name === POWERSHELL_TOOL && turn.project?.prepared.permission_mode !== 'full') {
       throw new Error('PowerShell 仅在此会话的完全访问模式下可用。');
     }
-    if (name === TEST_TOOL || name === POWERSHELL_TOOL) {
-      const powershell = name === POWERSHELL_TOOL;
+    if (name === TEST_TOOL) {
       const approve = async details => {
         const decision = await turn.live?.requestDecision({
-          title: powershell ? '允许运行 PowerShell 命令？' : '允许运行项目测试？',
-          kind: powershell ? 'powershell' : 'test', details,
+          title: '允许运行项目测试？',
+          kind: 'test', details,
           options: [{ id: 'allow_once', kind: 'allow_once', name: '继续' },
             { id: 'reject_once', kind: 'reject_once', name: '取消' }],
         }, signal);
@@ -643,10 +665,10 @@ class ProjectWorkflow {
       };
       return this.developmentTool(workspaceId, name, args, resolveTarget, signal, approve);
     }
-    return this.developmentTool(workspaceId, name, args, resolveTarget, signal);
+    return this.developmentTool(workspaceId, name, args, resolveTarget, signal, undefined, turn.executionSettings?.shell);
   }
 
-  async runPowerShell(args, resolveTarget, signal, approve) {
+  async runPowerShell(args, resolveTarget, signal, settings = DEFAULT_EXECUTION_SETTINGS.shell) {
     const { source, command } = args;
     if (typeof command !== 'string' || !command.trim() || command.length > 4000 ||
         /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]/.test(command) ||
@@ -661,20 +683,17 @@ class ProjectWorkflow {
     this.running.add(target.rootKey);
     try {
       const executable = await systemPowerShell();
-      const details = { kind: 'powershell', command, cwd, timeoutSeconds: POWERSHELL_TIMEOUT / 1000 };
-      const confirmation = await approve(details);
-      if (signal.aborted) return noRun(command, cwd, 'request_ended');
-      if (!confirmation.approved) return noRun(command, cwd, confirmation.reason);
       const verified = await resolveTarget(POWERSHELL_TOOL, scope);
       if (verified.root !== cwd || verified.rootKey !== target.rootKey || verified.source !== target.source ||
-          await systemPowerShell() !== executable) throw new Error('项目或 PowerShell 已变更，请重新确认。');
-      // Encoding the exact approved text avoids another shell interpreting its arguments.
+          await systemPowerShell() !== executable) throw new Error('项目或 PowerShell 已变更，请重新发起。');
+      // Encoding the exact command avoids another shell interpreting its arguments.
       const script = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
         '$OutputEncoding = [Console]::OutputEncoding; $ProgressPreference = "SilentlyContinue";\n' + command;
       const encoded = Buffer.from(script, 'utf16le').toString('base64');
       const start = performance.now();
       const result = await runProcess(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-        { cwd, signal, timeout: POWERSHELL_TIMEOUT, env: projectEnvironment(path.dirname(executable), true) });
+        { cwd, signal, timeout: settings.timeoutSeconds * 1000, outputLimit: settings.outputKiB * 1024,
+          env: projectEnvironment(path.dirname(executable), true) });
       return { ...result, ...(result.status === 'cancelled' ? { reason: 'request_ended' } : {}),
         elapsedMs: Math.round(performance.now() - start) };
     } finally {
@@ -682,7 +701,7 @@ class ProjectWorkflow {
     }
   }
 
-  async developmentTool(workspaceId, name, args, resolveTarget, signal, approve) {
+  async developmentTool(workspaceId, name, args, resolveTarget, signal, approve, shellSettings = DEFAULT_EXECUTION_SETTINGS.shell) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('项目工具参数无效。');
     if (name === TEST_TOOL) {
       if (Object.keys(args).some(key => key !== 'preset_id')) throw new Error('测试工具只接受已保存的运行器。');
@@ -691,10 +710,9 @@ class ProjectWorkflow {
       return { ...toolResult({ ...result, ...(message ? { message } : {}) }, result.status !== 'passed'), message };
     }
     if (name === POWERSHELL_TOOL) {
-      if (typeof approve !== 'function') throw new Error('PowerShell 请求需要在会话中确认。');
-      const { command, cwd, ...result } = await this.runPowerShell(args, resolveTarget, signal, approve);
+      const { command, cwd, ...result } = await this.runPowerShell(args, resolveTarget, signal, shellSettings);
       const message = result.reason && result.status === 'cancelled' ? 'PowerShell 命令未运行或已结束。' : undefined;
-      return { ...toolResult({ ...result, ...(message ? { message } : {}) }, result.status !== 'passed'), message };
+      return { ...shellToolResult({ ...result, ...(message ? { message } : {}) }, result.status !== 'passed'), message };
     }
     if (name === LIST_RUNNERS) {
       if (Object.keys(args).length) throw new Error('列出测试运行器无需参数。');
@@ -745,7 +763,7 @@ class ProjectWorkflow {
     };
     let result;
     try {
-      result = await this.developmentTool(workspaceId, name, args, resolveTarget, signal, approve);
+      result = await this.developmentTool(workspaceId, name, args, resolveTarget, signal, approve, state.shellSettings);
     } catch {
       result = toolResult({ message: '项目工具未完成。请检查当前授权、目录和参数。' }, true);
     }
@@ -763,7 +781,8 @@ class ProjectWorkflow {
     if (this.developmentJobs.size >= MAX_DEVELOPMENT_JOBS) throw new Error('正在处理的项目请求已达上限。');
     const abort = new AbortController();
     const signal = AbortSignal.any([abort.signal, windowSignal]);
-    const state = { abort, signal, preview: Promise.withResolvers(), decision: Promise.withResolvers() };
+    const state = { abort, signal, preview: Promise.withResolvers(), decision: Promise.withResolvers(),
+      shellSettings: this.executionSettings?.get().shell };
     const cancel = () => state.decision.resolve({ reason: 'request_ended' });
     signal.addEventListener('abort', cancel, { once: true });
     this.developmentJobs.set(key, state);
@@ -826,9 +845,9 @@ class ProjectWorkflow {
       return directory;
     };
     handle('worktree-location', worktreeLocation);
-    handle('open-worktree', async (signal, conversationId) => {
+    handle('open-worktree', async (signal, conversationId, target = 'explorer') => {
       const directory = await worktreeLocation(signal, conversationId);
-      if (!this.shell || await this.shell.openPath(directory)) throw new Error('无法打开此聊天的工作树。');
+      await launchWorkspace(this.shell, directory, target, { signal });
     });
     handle('prepare-development', (signal, conversationId, id) => this.prepareDevelopment(conversationId, id, signal));
     handle('respond-development', (_signal, conversationId, id, approved) => this.respondDevelopment(conversationId, id, approved));

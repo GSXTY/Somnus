@@ -1,17 +1,9 @@
 const { open, realpath, stat } = require('node:fs/promises');
 const path = require('node:path');
 
-const officialDshPackage = {
-  name: 'DeepSeek Harness', packageName: '@deepseek-ai/dsh', command: 'dsh',
-  entry: 'lib/bin.js', args: ['--profile', 'acp'],
-};
 const packages = {
   codex: [
     { name: 'Codex', packageName: '@agentclientprotocol/codex-acp', command: 'codex-acp', entry: 'dist/index.js', args: [] },
-  ],
-  'deepseek-harness': [
-    { name: 'DeepSeek Harness', packageName: '@openma/deepseek-harness-acp', command: 'dsh-acp', entry: 'dist/bin.js', args: [] },
-    officialDshPackage,
   ],
 };
 const codeBuddyPackage = {
@@ -96,8 +88,7 @@ async function detectAdapter(provider, env = process.env, resourcesPath = proces
     const executable = await localFile(env.LOCALAPPDATA, 'codebuddy/bin/codebuddy.exe');
     return executable ? { name: 'CodeBuddy Code', executable, args: ['--acp'] } : null;
   }
-  const officialDsh = provider === 'deepseek-harness-native';
-  if (!officialDsh && (typeof provider !== 'string' || !Object.hasOwn(packages, provider))) return null;
+  if (typeof provider !== 'string' || !Object.hasOwn(packages, provider)) return null;
   if (provider === 'codex') {
     const managed = await detectManagedCodex(resourcesPath);
     if (managed) return managed;
@@ -113,20 +104,14 @@ async function detectAdapter(provider, env = process.env, resourcesPath = proces
     executable = await localFile(root, 'node.exe');
     if (executable) break;
   }
-  if (officialDsh) {
-    // The distributed Node runtime also serves CodeBuddy; using it does not install DSH.
-    executable ||= await localFile(resourcesPath, 'agents/codex/node.exe');
-  }
   if (!executable) return null;
 
   const userNpm = await localDirectory(env.APPDATA, 'npm');
-  const explicitPrefix = officialDsh && localPath(env.NPM_CONFIG_PREFIX) ? env.NPM_CONFIG_PREFIX : null;
-  const npmRoots = [...new Set([explicitPrefix, userNpm, ...nodeRoots].filter(Boolean))];
-  const requested = officialDsh ? [officialDshPackage] : packages[provider];
-  for (const adapter of requested) {
+  const npmRoots = [...new Set([userNpm, ...nodeRoots].filter(Boolean))];
+  for (const adapter of packages[provider]) {
     for (const root of npmRoots) {
       const script = await installedPackage(root, adapter);
-      if (script) return { name: officialDsh ? 'DSH 插件运行时' : adapter.name, executable, args: [script, ...adapter.args] };
+      if (script) return { name: adapter.name, executable, args: [script, ...adapter.args] };
     }
   }
   return null;

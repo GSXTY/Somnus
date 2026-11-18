@@ -58,6 +58,7 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
     },
     window: { vvmanAcp: {
       list: async () => [codex, oldDsh], onUpdate: () => () => {}, connectManagedDsh: () => {},
+      detectAdapter: () => assert.fail('the managed preset must not search for an external runtime'),
       dshPluginMarket: async () => ({ runtime: { installed: true } }),
       async probe(id) {
         return id === codex.id ? { provider: 'codex', loginMethods: [...keyMethods, { id: 'chatgpt', name: 'ChatGPT', kind: 'browser' }] } :
@@ -68,6 +69,7 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
     AbortController,
   });
   const tab = elements(exports.ConfigurationCenter({ view: 'config', onOpen() {} })).find(node => node.type === 'Tabs');
+  assert.deepEqual(Array.from(tab.props.items, item => item.key), ['config', 'models']);
   const component = tab.props.items[0].children.type;
   const render = () => { hook = 0; return elements(component({ onOpen() {} })); };
   const findButton = (tree, name) => tree.find(node => node.type === 'Button' && node.props.children === name);
@@ -80,10 +82,13 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
   let tree = render();
   assert(!row(tree, 'DeepSeek Harness · OpenMA'));
   assert(row(tree, oldDsh.name));
-  row(tree, 'DeepSeek Harness · 官方 DSH').props.onClick();
+  row(tree, 'DeepSeek 官方 Agent').props.onClick();
   tree = render();
   assert(tree.some(node => node.type === 'ManagedDshAccount'));
-  assert(findButton(tree, '连接 DSH 插件运行时'));
+  assert(findButton(tree, '连接 Somnus 内置运行时'));
+  assert(!findButton(tree, '检测本机安装'));
+  assert(!findButton(tree, '手动接入'));
+  assert(findButton(tree, '添加自定义 ACP'));
   assert(!findButton(tree, 'DSH 设置与 API Key'));
 
   row(tree, codex.name).props.onClick();
@@ -103,3 +108,4 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
   assert(!findButton(tree, 'OpenMA 配置凭据'));
   assert(tree.some(node => node.props['aria-label'] === '发送给 ACP Agent 的消息'));
 });
+

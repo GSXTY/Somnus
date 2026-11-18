@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from ai_assistant.asgi import create_router
 from ai_assistant.service import AssistantService, Config
-from ai_assistant.skill_library import MAX_EXPANDED, parse_upload, SkillError
+from ai_assistant.skill_library import HANDOFF_ID, MAX_EXPANDED, parse_upload, SkillError
 
 
 DEFINITION = '''---
@@ -115,7 +115,13 @@ Follow the checklist.
                 self.assertEqual(client.post(route, headers={**desktop, **upload}, content=zip_file).status_code, 409)
                 self.assertEqual(client.get(root + '/skills').status_code, 403)
                 reopened = AssistantService(path, config)
-                self.assertEqual(reopened.skills.list(), [skill])
+                builtin, imported = reopened.skills.list()
+                self.assertEqual(imported, skill)
+                self.assertEqual(builtin['id'], HANDOFF_ID)
+                self.assertTrue(builtin['builtin'])
+                builtin_route = root + '/skills/' + HANDOFF_ID
+                self.assertEqual(client.patch(builtin_route, json={'enabled': False}, headers=desktop).status_code, 409)
+                self.assertEqual(client.delete(builtin_route, headers=desktop).status_code, 409)
                 cid = service.create()['id']
                 chat = f'{root}/conversations/{cid}/messages'
                 selected = {'content': 'Review this report.', 'skill_ids': [skill['id']]}
@@ -136,4 +142,4 @@ Follow the checklist.
                 self.assertEqual(client.post(chat, json=selected, headers=desktop).status_code, 409)
                 self.assertTrue(client.delete(skill_route, headers=desktop).json()['deleted'])
                 self.assertEqual(client.post(chat, json=selected, headers=desktop).status_code, 409)
-                self.assertEqual(client.get(root + '/skills', headers=desktop).json()['skills'], [])
+                self.assertEqual(client.get(root + '/skills', headers=desktop).json()['skills'], [builtin])

@@ -123,8 +123,12 @@ test('ACP uses reserved project context for read-only search and staged write pr
   assert.equal((await send(readOnlyId, 'read-only-turn')).projectProposals, undefined);
   assert.equal((await send(readOnlyId, 'read-only-turn')).text, 'verified');
   assert.deepEqual(updates.flatMap(item => item.toolProgress ? [item.toolProgress] : []), [
-    'propose_project_file_create', searchTool.name, searchTool.name,
-  ].flatMap(name => ['running', 'complete'].map(status => ({ name, callId: 'call-1', status }))));
+    ['propose_project_file_create', 'edit', '申请新建项目文件'],
+    [searchTool.name, 'search', '搜索项目文件'],
+    [searchTool.name, 'search', '搜索项目文件'],
+  ].flatMap(([name, kind, title]) => ['running', 'complete'].map(status => ({
+    name, callId: 'call-1', kind, title, status,
+  }))));
   assert.ok(updates.every(item => !item.acpPermission));
   assert.equal(pending.length, 3);
   unsupported = true;
@@ -135,13 +139,15 @@ test('ACP uses reserved project context for read-only search and staged write pr
 test('project MCP read and proposal reuse native route and return the pending item without writing', async t => {
   const abort = new AbortController();
   const nativeCalls = [];
+  const updates = [];
   const digest = 'a'.repeat(64);
   const currentContent = 'original\n';
   const proposal = { id: 'edit_one', path: 'README.md', old_content: currentContent, new_content: 'new\n', status: 'pending' };
   const creation = { id: 'create_one', path: 'docs/new.md', old_content: '', new_content: 'draft\n', status: 'pending', operation: 'create' };
-  const turn = { conversationId: 'conversation', turnId: 'turn-one', agentId: 'agent', signal: abort.signal, onUpdate() {} };
+  const turn = { conversationId: 'conversation', turnId: 'turn-one', agentId: 'agent', signal: abort.signal,
+    onUpdate: update => updates.push(update) };
   const prepared = { workspace_id: 'ws_aabbccddeeff', project: { available: true, supports_create: true },
-    project_sources: [{ source: 'source_1' }], permission_mode: 'workspace_write' };
+    project_sources: [{ source: 'source_1' }], permission_mode: 'read_only' };
   const client = { async file(owner, params, signal) {
     assert.equal(owner, turn);
     assert.equal(signal.aborted, false);
@@ -153,7 +159,6 @@ test('project MCP read and proposal reuse native route and return the pending it
   } };
   const project = new AcpProjectTurn(client, turn, prepared);
   const tools = toolCatalog(projectFileTools(prepared));
-  assert.deepEqual(projectFileTools({ ...prepared, permission_mode: 'read_only' }).map(tool => tool.name), ['read_project_file']);
   assert.deepEqual(projectFileTools({ ...prepared, project: { available: false } }), []);
   assert.deepEqual(projectFileTools({ ...prepared, project: { available: true } }).map(tool => tool.name),
     ['read_project_file', 'propose_project_file_edit']);
@@ -188,6 +193,8 @@ test('project MCP read and proposal reuse native route and return the pending it
   assert.deepEqual(JSON.parse(result.content[0].text),
     { ...target, proposal_id: creation.id, status: 'pending', operation: 'create' });
   assert.deepEqual(project.proposals, [proposal, creation]);
+  assert.deepEqual(updates.filter(update => update.projectProposal).map(update => update.projectProposal),
+    [proposal, creation]);
   assert.equal((await invoke('tools/call', { name: 'propose_project_file_create', arguments: createArgs })).isError, true);
   assert.deepEqual(nativeCalls, [
     { ...file, action: 'read' }, { ...file, action: 'propose', content: 'new\n', expected_sha256: digest },

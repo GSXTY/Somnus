@@ -108,3 +108,4 @@ test('unsupported DSH runtime cannot initiate an account login', async () => {
   assert(account.find('p', '运行时不提供网页登录'));
   assert(!account.find('Button', '登录 DeepSeek'));
 });
+

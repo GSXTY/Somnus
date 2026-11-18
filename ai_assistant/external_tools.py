@@ -121,9 +121,8 @@ PROJECT_DEVELOPMENT_TOOLS = (
     dict(_tool(PROJECT_TESTS,
                '请用户逐次确认运行项目中已保存的测试。测试使用当前磁盘内容。已有修改提案时，先让用户应用修改，再发起测试。',
                {'preset_id': '用户已保存的测试预设 ID'}, ('preset_id',)), requires_confirmation=True),
-    dict(_tool(POWERSHELL, '在当前项目目录中运行 Windows PowerShell。每条命令须先经用户确认。',
-               {'command': '待确认的 PowerShell 命令', 'source': '可选来源标识，默认使用主项目来源'},
-               ('command',)), requires_confirmation=True),
+    _tool(POWERSHELL, '在当前项目目录中以当前 Windows 用户身份运行 PowerShell，不逐条请求确认。',
+          {'command': 'PowerShell 命令', 'source': '可选来源标识，默认使用主项目来源'}, ('command',)),
 )
 
 
@@ -180,6 +179,31 @@ def _query(source, arguments, *, analysis=False):
     if len(result['rows']) >= settings.max_rows:
         result['truncated'] = True
     return result
+
+
+def propose_data_sql(source, arguments):
+    if set(arguments) != {'question'}:
+        return failure('请仅提供待转为 SQL 的问题。')
+    try:
+        question = _text(arguments, 'question', 2000)
+        if getattr(source, 'mode', 'local') == 'remote':
+            proposal = source.request_tool_data('/api/sql/propose', 'POST', fields={'question': question})
+            statement = _text(proposal, 'sql', 20000)
+        else:
+            settings = SqlSettings.from_env()
+            if not settings.allowed_tables:
+                return failure('没有已授权的查询表。')
+            from data_gateway.sql_policy import checked_sql
+            statement = checked_sql(propose_sql(question, schema(settings)), settings)
+        return _json_response({'sql': statement})
+    except ToolError as exc:
+        return failure(str(exc))
+    except SqlAccessError as exc:
+        return failure(safe_sql_failure(exc))
+    except (OSError, ImportError, ValueError, KeyError, TypeError) as exc:
+        if isinstance(exc, ValueError) and str(exc) in REMOTE_FAILURES:
+            return failure(str(exc))
+        return failure('未能生成有效 SQL，请检查数据连接和 SQL 模型配置。')
 
 
 def _table_result(source, result):

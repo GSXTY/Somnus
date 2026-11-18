@@ -262,6 +262,7 @@ function createDesktopProfiles({ app, BrowserWindow, ipcMain, dialog, baseDir, i
     focus: () => show(recoveryWindow) || show(profileWindow),
     environment() {
       return {
+        SOMNUS_DESKTOP_ROAMING_DIR: active.roamingDir,
         ...(active.dataDir ? { AI_AGENT_DATA_DIR: active.dataDir } : {}),
         ...(safeMode || active.dataDir ? { SOMNUS_PROFILE_CONFIG_ONLY: safeMode ? 'safe' : '1' } : {}),
       };

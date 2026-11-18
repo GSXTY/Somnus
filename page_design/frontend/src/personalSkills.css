@@ -1,0 +1,26 @@
+.personal-skills-content { display: grid; gap: 12px; }
+.personal-skills-hint { margin: 0; color: var(--shell-muted); }
+.personal-skills-loading { display: flex; gap: 8px; align-items: center; color: var(--shell-muted); }
+.personal-skills-list {
+  margin: 0;
+  padding: 0 12px;
+  list-style: none;
+  border: 1px solid var(--shell-line);
+  border-radius: 8px;
+}
+.personal-skills-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 11px 0;
+}
+.personal-skills-row + .personal-skills-row { border-top: 1px solid var(--shell-line); }
+.personal-skills-copy { flex: 1 1 240px; min-width: 0; }
+.personal-skills-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; }
+.personal-skills-name strong { min-width: 0; font-weight: 600; }
+.personal-skills-copy p { margin: 3px 0 0; color: var(--shell-muted); overflow-wrap: anywhere; }
+.personal-skills-name .ant-tag, .personal-skills-actions .ant-tag { margin-inline-end: 0; }
+.personal-skills-actions { max-width: 100%; }
+.personal-skills-detail { overflow-wrap: anywhere; }

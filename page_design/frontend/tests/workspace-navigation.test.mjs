@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import { readProjectLaunch, readWorkspaceView, isStandardView, workspacePath, recordWorkspaceVisit } from '../src/workspaceNavigation.mjs';
 import { activeRailView, builtInTools, workspaceRail } from '../src/navigation.mjs';
 
+test('native backend links retain the Somnus chat surface', () => {
+  const root = 'http://127.0.0.1:8765/';
+  assert.equal(readWorkspaceView(new URL(root)), 'dashboard');
+  assert.equal(readWorkspaceView(new URL(root + '#dsh-chat')), 'assistant');
+  assert.equal(readWorkspaceView(new URL(root + '?view=dsh-chat')), 'assistant');
+  assert.equal(readWorkspaceView(new URL(root + '#assistant?conversation=' + 'a'.repeat(32))), 'assistant');
+  assert.equal(readWorkspaceView(new URL(root + '#assistant?project=ws_a123456789ab')), 'assistant');
+});
+
 test('assistant and analysis deep links survive reload without promoting arbitrary input to a view', () => {
   for (const view of ['assistant', 'documents', 'analysis']) {
     assert.equal(readWorkspaceView(new URL(`http://127.0.0.1:8765/#${view}`)), view);
@@ -47,4 +56,16 @@ test('tools only lists analysis routes and the data and settings sections retain
   assert.equal(activeRailView('settings'), 'settings');
   assert.equal(activeRailView('documents'), 'documents');
   assert.deepEqual(workspaceRail.slice(0, 3).map(entry => entry.key), ['assistant', 'dashboard', 'documents']);
+});
+
+test('configuration and general settings keep independent routes and sidebar entries', () => {
+  for (const view of ['config', 'models', 'mcp', 'skills', 'plugin-config', 'settings']) {
+    const path = workspacePath(view, 'http://127.0.0.1:8765/#assistant');
+    assert.equal(readWorkspaceView(new URL(path, 'http://127.0.0.1:8765')), view);
+  }
+  assert.equal(activeRailView('plugin-config'), 'plugin-config');
+  assert.equal(activeRailView('plugins'), 'plugins');
+  for (const view of ['config', 'models']) assert.equal(activeRailView(view), 'config');
+  for (const view of ['mcp', 'skills']) assert.equal(activeRailView(view), 'plugin-config');
+  assert(workspaceRail.some(entry => entry.key === 'plugin-config' && entry.label === '插件'));
 });

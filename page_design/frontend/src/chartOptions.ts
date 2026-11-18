@@ -1,5 +1,5 @@
 import type { EChartsCoreOption } from 'echarts/core';
-import type { Dashboard, Waveform, Candidate, DataQuality } from './types';
+import type { Dashboard, Waveform, Candidate, DataQuality, HomeTrend } from './types';
 import { candidateAreas, formatOffset } from './logic.mjs';
 
 const blue = '#1e6fff', green = '#00a887', purple = '#8b7fc7';
@@ -7,28 +7,31 @@ const textStyle = { fontFamily: 'Inter, Microsoft YaHei, sans-serif', color: '#6
 const axisLine = { lineStyle: { color: '#e5ecf3' } };
 const splitLine = { lineStyle: { color: '#edf2f7' } };
 const animation = { animationDuration: 0, animationDurationUpdate: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250 };
-function dailyBars(daily: Dashboard['daily'], key: 'active_users' | 'treatment_hours' | 'event_count',
-  label: string, unit: string, color: string): EChartsCoreOption {
+function dailyBars(points: HomeTrend['points'], label: string, unit: string, color: string): EChartsCoreOption {
   return {
     ...animation,
     textStyle,
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', renderMode: 'richText' },
     grid: { left: 8, right: 12, top: 26, bottom: 4, containLabel: true },
-    xAxis: { type: 'category', data: daily.map(d => d.date.slice(5)), axisLine, axisTick: { show: false } },
+    xAxis: { type: 'category', data: points.map(point => point.date.slice(5)), axisLine, axisTick: { show: false } },
     yAxis: { name: unit, type: 'value', min: 0, splitLine },
     series: [{
-      type: 'bar', name: label, data: daily.map(day => day[key]), barMaxWidth: 30,
+      type: 'bar', name: label, data: points.map(point => point.value), barMaxWidth: 30,
       itemStyle: { color, borderRadius: [5, 5, 0, 0] },
     }],
   };
 }
 export function activityOption(daily: Dashboard['daily'], key: 'active_users' | 'treatment_hours'): EChartsCoreOption {
+  const points = daily.map(day => ({ date: day.date, value: day[key] }));
   return key === 'active_users'
-    ? dailyBars(daily, key, '活跃人数', '人', '#287c6d')
-    : dailyBars(daily, key, '治疗时长', '小时', '#287c6d');
+    ? dailyBars(points, '活跃人数', '人', '#287c6d')
+    : dailyBars(points, '治疗时长', '小时', '#287c6d');
 }
 export function eventsOption(daily: Dashboard['daily']): EChartsCoreOption {
-  return dailyBars(daily, 'event_count', '设备上报事件', '次', purple);
+  return dailyBars(daily.map(day => ({ date: day.date, value: day.event_count })), '设备上报事件', '次', purple);
+}
+export function homeTrendOption(trend: HomeTrend): EChartsCoreOption {
+  return dailyBars(trend.points, trend.label, trend.unit, trend.unit === '次' ? purple : '#287c6d');
 }
 export function distributionOption(values: Dashboard['alert_distribution']): EChartsCoreOption {
   return { ...animation, tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle, itemWidth: 10 }, series: [{ type: 'pie', stillShowZeroSum: false, radius: ['45%', '67%'], center: ['50%', '42%'], label: { show: false }, data: values, color: ['#7196dc', '#efb96c', '#a49acd', '#7bbeb0'] }] };

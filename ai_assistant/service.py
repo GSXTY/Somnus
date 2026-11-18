@@ -14,9 +14,11 @@ from datetime import datetime, timedelta
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from . import company_runtime, conversation_context, delegation, execution_trace, external_context, external_tools, project_files, project_handoff, provider_transport, token_usage, worktree_binding
+from .web_data_mcp import DATA_MCP_NAMES, WebDataMcp, data_available
+from .dsh_next_runtime import DshNextRuntime
 from .models import BUILTIN, REASONING_EFFORTS, ModelError, ModelStore, valid_url
 from .plugin_bundles import PluginBundles
-from .permissions import FULL, POWERSHELL, WORKSPACE_WRITE, allowed as permission_allowed
+from .permissions import FULL, POWERSHELL, READ_ONLY, WORKSPACE_WRITE, allowed as permission_allowed
 from .permissions import normalize as normalize_permission
 from .images import validate_images, MAX_TOTAL_BYTES
 from .skill_library import SkillLibrary
@@ -64,6 +66,7 @@ PROJECT_DEVELOPMENT_SCHEMA = dict(
                                   parameters=dict(type='object', properties={}, additionalProperties=False)))
 AUTO_TITLE = object()
 EXTERNAL_TRANSPORT = 'acp'
+NATIVE_DSH_TRANSPORT = 'dsh-native'
 EXTERNAL_REPLY_LIMIT = 100_000
 MAX_PROJECT_SOURCES = 8
 MAX_PROJECT_INSTRUCTIONS = 6000
@@ -155,6 +158,8 @@ def _mcp_policy(context, name):
 def _tool_allowed(context, name):
     if name == PROJECT_DEVELOPMENT_LIST:
         return bool(context.get('project_desktop')) and not context.get('share')
+    if name in ('propose_project_file_edit', 'propose_project_file_create') and context.get('project_desktop') and not context.get('share'):
+        return True
     if name == POWERSHELL and (sys.platform != 'win32' or not context.get('project_desktop') or context.get('share')):
         return False
     policy = _mcp_policy(context, name) if name.startswith('mcp__') else None
@@ -292,8 +297,8 @@ class Config:
     def endpoint(self):
         return self.base_url if self.base_url.endswith('/chat/completions') else self.base_url + '/chat/completions'
 
-    def request(self, payload):
-        return Request(self.endpoint, json.dumps(payload).encode(), headers={
+    def request(self, payload, *, endpoint=None):
+        return Request(endpoint or self.endpoint, json.dumps(payload).encode(), headers={
             'Content-Type': 'application/json', 'Accept': 'text/event-stream',
             'Authorization': 'Bearer ' + self.api_key,
         })
@@ -321,6 +326,8 @@ class AssistantService:
         self.turn_tools = {}
         self.mcp_approvals = {}
         self.delegations = {}
+        self.company_web_runtime = None
+        self.dsh_next_runtime = DshNextRuntime(self)
         self.development_jobs = {}
         self._external_tables = None
         self.model_success = {}
@@ -331,6 +338,9 @@ class AssistantService:
             CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id);
             CREATE TABLE IF NOT EXISTS external_analysis_tasks(
                 id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, agent_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS delegation_settings(
+                id INTEGER PRIMARY KEY CHECK(id=1), configuration TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS workspace_sources(
                 workspace_id TEXT NOT NULL, position INTEGER NOT NULL, root_path TEXT NOT NULL, root_identity TEXT,
@@ -406,7 +416,50 @@ class AssistantService:
             db.close()
 
     def builtin_model(self):
-        return dict(self.config.provider(), id=BUILTIN)
+        if not company_runtime.enabled():
+            return dict(self.config.provider(), id=BUILTIN)
+        config, _ = self.company_provider()
+        return dict(config.provider(), requires_api_key=True)
+
+    def company_key_view(self, changes=False):
+        with self.lock:
+            if changes is False:
+                value = self.models.company_key()
+            else:
+                if any(context.get('agent_id') == company_runtime.AGENT_ID for context in self.turn_tools.values()):
+                    raise AssistantError('conversation_busy', '请先停止或完成正在运行的 DSH 会话。', 409)
+                before = self.models.company_key()
+                value = self.models.set_company_key(changes)
+                if before != value and self.company_web_runtime:
+                    self.company_web_runtime[1].set()
+                    self.company_web_runtime = None
+                if before != value:
+                    self.dsh_next_runtime.revoke_model()
+            return dict(has_api_key=bool(value), base_url=self.config.base_url, model=self.config.model,
+                        vision_enabled=company_runtime.supports_images(self.config))
+
+    def company_provider(self):
+        key = self.models.company_key()
+        entry = dict(self.config.provider(), id=BUILTIN, api_key=key['api_key'] if key else '',
+                     vision_enabled=company_runtime.supports_images(self.config))
+        return Config.from_provider(entry, timeout=self.config.timeout), key['revision'] if key else None
+
+    def company_models(self):
+        return company_runtime.catalog(self.company_provider()[0]) if company_runtime.enabled() else []
+
+    def delegation_settings(self, changes=None):
+        with self.lock, self.db() as db:
+            row = db.execute('SELECT configuration FROM delegation_settings WHERE id=1').fetchone()
+            settings = delegation.update_settings(delegation.DEFAULT_SETTINGS, json.loads(row[0]) if row else {})
+            if changes is not None:
+                try:
+                    settings = delegation.update_settings(settings, changes)
+                except ValueError as exc:
+                    raise AssistantError('invalid_delegation_settings', str(exc)) from exc
+                db.execute('''INSERT INTO delegation_settings(id,configuration) VALUES(1,?)
+                              ON CONFLICT(id) DO UPDATE SET configuration=excluded.configuration''',
+                           (json.dumps(settings),))
+        return settings
 
     def _turn_settings(self, context):
         model_id, effort = context.get('model_id'), context.get('reasoning_effort')
@@ -414,8 +467,12 @@ class AssistantService:
         if not desktop:
             if model_id is not None or effort is not None:
                 raise AssistantError('desktop_required', '自定义模型选择仅可从本机 Windows 桌面访问。', 403)
-            return Config.from_provider(self.config.provider(), timeout=self.config.timeout), None
-        provider = self.models.resolve(model_id, self.builtin_model())
+            builtin = self.config.provider()
+            if company_runtime.enabled():
+                builtin['api_key'] = ''
+            return Config.from_provider(builtin, timeout=self.config.timeout), None
+        builtin = self.builtin_model()
+        provider = self.models.resolve(model_id, builtin)
         if effort is not None and (effort not in REASONING_EFFORTS or effort not in provider['reasoning_efforts']):
             raise ModelError('invalid_reasoning_effort', '当前模型未配置所选推理强度。')
         return Config.from_provider(provider, timeout=self.config.timeout), effort
@@ -446,15 +503,25 @@ class AssistantService:
         if not config.configured:
             code, message = 'not_configured', '请先填写接口地址、模型 ID 和 API 密钥。'
         else:
-            token_limit = 'max_completion_tokens' if provider_transport.official_openai(config.endpoint) else 'max_tokens'
-            request = config.request(dict(model=config.model, stream=True, messages=[
-                dict(role='user', content='Reply OK.')], **{token_limit: 32}))
+            responses = provider is None and company_runtime.enabled() and config.provider_id == BUILTIN
+            if responses:
+                request = company_runtime.response_http_request(config, dict(
+                    model=config.model, stream=True, input='Reply OK.', max_output_tokens=32,
+                    reasoning={'effort': 'none'}, store=False))
+                probe = company_runtime.probe_response_stream
+            else:
+                token_limit = 'max_completion_tokens' if provider_transport.official_openai(config.endpoint) else 'max_tokens'
+                request = config.request(dict(model=config.model, stream=True, messages=[
+                    dict(role='user', content='Reply OK.')], **{token_limit: 32}))
+                probe = provider_transport.probe_stream
             timeout = min(config.timeout, 8)
             try:
                 with urlopen(request, timeout=timeout) as response:
-                    code, message = provider_transport.probe_stream(response, started + timeout)
+                    code, message = probe(response, started + timeout)
             except OSError as exc:
                 code, message, status = provider_transport.response_issue(exc)
+                if responses and code == 'request_rejected':
+                    message = '服务拒绝了 Responses 请求。请检查公司接口是否兼容 Responses。'
                 if isinstance(exc, HTTPError):
                     exc.close()
         result = dict(ok=code == 'ok', code=code, message=message,
@@ -754,16 +821,10 @@ class AssistantService:
                 memory.reverse()
             return instructions, memory, roots
 
-    def _project_handoff(self, roots, text, *, can_propose):
-        if not roots:
-            return ''
-        skills = {skill['id'] for skill in self.skills.list()
-                  if skill['name'] == 'project-handoff' and skill['enabled']}
-        if not skills or not any(plugin['name'] == 'Project Handoff' and plugin['enabled']
-                                 and skills.intersection(plugin['skill_ids'])
-                                 for plugin in self.plugins.defaults(None)):
-            return ''
-        return project_handoff.render(roots, text, can_propose=can_propose)
+    def _project_handoff(self, roots, text, *, skills, can_propose):
+        if any(skill.get('name') == 'project-handoff' for skill in skills):
+            return project_handoff.render(roots, text, can_propose=can_propose)
+        return ''
 
     @staticmethod
     def _public_proposal(row):
@@ -1002,7 +1063,7 @@ class AssistantService:
         return dict(ok=True, summary=f"找到 {len(result['matches'])} 项",
                     content=json.dumps(result, ensure_ascii=False))
 
-    def project_tool(self, cid, cancel, roots, name, args):
+    def project_tool(self, cid, cancel, roots, name, args, *, desktop_review=False):
         if name == external_tools.PROJECT_SEARCH:
             return self._search_project(cid, cancel, roots, args)
         with self.lock, self.db() as db:
@@ -1027,8 +1088,7 @@ class AssistantService:
                 path, content, digest, _ = project_files.read_file(root, args.get('path'))
                 return dict(ok=True, summary='已读取项目文件',
                             content=json.dumps(dict(path=path, content=content, source=source, sha256=digest), ensure_ascii=False))
-            from ai_assistant import permissions
-            if not permissions.allowed(self.permission(cid), name):
+            if not _tool_allowed(dict(permission_mode=self.permission(cid), project_desktop=desktop_review), name):
                 raise AssistantError('project_read_only', '当前会话为只读模式。', 403)
             replacement = args.get('new_content')
             project_files.replacement(replacement)
@@ -1099,9 +1159,6 @@ class AssistantService:
                 raise AssistantError('proposal_resolved', '此修改建议已经处理。', 409)
             if decision == 'approve':
                 root = self._proposal_project_root(db, cid, row)
-                from ai_assistant import permissions
-                if not permissions.allowed(self.permission(cid), 'propose_project_file_edit'):
-                    raise AssistantError('project_read_only', '当前会话为只读模式。', 403)
                 if row['operation'] == 'create':
                     project_files.create_file(root, row['path'], row['new_content'],
                                               parent_identity=row['file_identity'])
@@ -1186,13 +1243,49 @@ class AssistantService:
             raise AssistantError('invalid_title', '会话名称须为1至80个字符。')
         return value.strip()
 
-    def create(self, title=AUTO_TITLE, workspace=None):
+    def create(self, title=AUTO_TITLE, workspace=None, permission_mode=READ_ONLY):
+        mode = normalize_permission(permission_mode)
+        if mode != permission_mode:
+            raise AssistantError('invalid_permission', '请选择有效的会话权限。')
         auto_title_pending = title is AUTO_TITLE
         title = '新会话' if auto_title_pending else self.title(title)
         cid, now = uuid.uuid4().hex, time.time()
         with self.db() as db:
-            db.execute('INSERT INTO conversations(id,title,created_at,updated_at,workspace_id,auto_title_pending) VALUES(?,?,?,?,?,?)', (cid, title, now, now, workspace or self.DEFAULT_WORKSPACE, auto_title_pending))
+            db.execute('''INSERT INTO conversations(id,title,created_at,updated_at,workspace_id,auto_title_pending,
+                          permission_mode,desktop_full_access_v1) VALUES(?,?,?,?,?,?,?,?)''',
+                       (cid, title, now, now, workspace or self.DEFAULT_WORKSPACE, auto_title_pending, mode, int(mode == FULL)))
         return self.get(cid)['conversation']
+
+    def branch(self, cid, message_id):
+        if not isinstance(message_id, str) or not re.fullmatch(r'[a-f0-9]{32}', message_id):
+            raise AssistantError('invalid_branch_message', '请选择要从中分支的回答。')
+        with self.lock, self.db() as db:
+            original = self._conversation(db, cid)
+            workspace = db.execute('SELECT workspace_id FROM conversations WHERE id=?', (cid,)).fetchone()['workspace_id']
+            reply = db.execute('''SELECT rowid,created_at FROM messages
+                                  WHERE id=? AND conversation_id=? AND role='assistant' AND status='complete' ''',
+                               (message_id, cid)).fetchone()
+            if reply is None:
+                raise AssistantError('invalid_branch_message', '只能从此会话中已完成的回答创建分支。', 404)
+            history = db.execute('''SELECT role,content,status,created_at,attachments,reply_meta,transport FROM messages
+                                    WHERE conversation_id=? AND (created_at<? OR (created_at=? AND rowid<=?))
+                                    ORDER BY created_at,rowid''',
+                                 (cid, reply['created_at'], reply['created_at'], reply['rowid']))
+            branch_id, now = uuid.uuid4().hex, time.time()
+            suffix = '（分支）'
+            title = original['title'][:80 - len(suffix)].rstrip() + suffix
+            db.execute('INSERT INTO conversations(id,title,created_at,updated_at,workspace_id) VALUES(?,?,?,?,?)',
+                       (branch_id, title, now, now, workspace or self.DEFAULT_WORKSPACE))
+            display_keys = ('provider_id', 'provider_name', 'model', 'transport', 'elapsed_ms', 'usage',
+                            'usage_unavailable', 'context')
+            for row in history:
+                metadata = json.loads(row['reply_meta']) if row['reply_meta'] else {}
+                display = {key: metadata[key] for key in display_keys if key in metadata}
+                db.execute('''INSERT INTO messages(id,conversation_id,role,content,status,created_at,attachments,reply_meta,transport)
+                              VALUES(?,?,?,?,?,?,?,?,?)''',
+                           (uuid.uuid4().hex, branch_id, row['role'], row['content'], row['status'], row['created_at'],
+                            row['attachments'], json.dumps(display, ensure_ascii=False) if display else None, row['transport']))
+            return self._conversation(db, branch_id)
 
     def rename(self, cid, title):
         title = self.title(title)
@@ -1259,6 +1352,7 @@ class AssistantService:
                 raise AssistantError('invalid_content', '问题最多12000个字符。')
             self.get(cid)
             turn_context = dict(tool_context or {})
+            queue_id = self._queue_user_id(cid, turn_context.pop('queue_id', None))
             config, effort = self._turn_settings(turn_context)
             if not config.configured:
                 raise AssistantError('not_configured', '当前模型缺少连接配置。请检查模型设置。', 503)
@@ -1274,13 +1368,26 @@ class AssistantService:
             if effort is not None:
                 metadata['reasoning_effort'] = effort
             return self._reserve_turn(cid, content, attachments, metadata,
-                                      dict(turn_context, model_config=config, model_effort=effort))
+                                      dict(turn_context, model_config=config, model_effort=effort), user_id=queue_id)
 
-    def _reserve_turn(self, cid, content, attachments, metadata, context, *, transport=None):
+    def _queue_user_id(self, cid, queue_id):
+        if queue_id is None:
+            return None
+        if not isinstance(queue_id, str) or not re.fullmatch('[a-f0-9]{32}', queue_id):
+            raise AssistantError('invalid_queue_id', '排队消息标识无效。')
+        with self.db() as db:
+            existing = db.execute('SELECT conversation_id,role FROM messages WHERE id=?', (queue_id,)).fetchone()
+        if existing is not None:
+            if existing['conversation_id'] == cid and existing['role'] == 'user':
+                raise AssistantError('queue_already_submitted', '此排队消息已写入本会话。', 409)
+            raise AssistantError('invalid_queue_id', '排队消息标识无效。', 409)
+        return queue_id
+
+    def _reserve_turn(self, cid, content, attachments, metadata, context, *, transport=None, user_id=None):
         if cid in self.active:
             raise AssistantError('conversation_busy', '该会话仍在回答，请先停止或等待完成。', 409)
         cancel = threading.Event()
-        user = dict(id=uuid.uuid4().hex, role='user', content=content.strip(), status='complete',
+        user = dict(id=user_id or uuid.uuid4().hex, role='user', content=content.strip(), status='complete',
                     created_at=time.time(), attachments=attachments)
         assistant = dict(id=uuid.uuid4().hex, role='assistant', content='', status='streaming', created_at=time.time(),
                          attachments=[], reply_meta=metadata)
@@ -1331,6 +1438,8 @@ class AssistantService:
         return documents
 
     def begin_external_turn(self, cid, content, agent_id, agent_name, model=None, *,
+                            company_model=None, reasoning_effort=None,
+                            queue_id=None,
                             attachments=None, file_ids=None, analysis_file_id=None, skill_ids=None, plugin_ids=None,
                             local_tables=None, remote_data=None, mcp_registry=None):
         content = self._external_text(content, 12000)
@@ -1344,15 +1453,31 @@ class AssistantService:
             raise AssistantError('invalid_external_agent', '外部 Agent 标识无效。')
         agent_name = self._external_text(agent_name, 120, label=True)
         model = self._external_text(model, 160, label=True) if model is not None else 'ACP'
-        company_lease = None
-        if agent_id == company_runtime.AGENT_ID:
-            options = company_runtime.info(self.config)
-            if options is None:
-                raise AssistantError('company_model_unavailable', '公司 Agent 运行时未配置。', 503)
-            company_lease = company_runtime.ModelLease(self.config, options)
-            agent_name, model = '公司默认', self.config.model
-        metadata = dict(provider_id=agent_id, provider_name=agent_name, model=model, transport=EXTERNAL_TRANSPORT)
+        company = agent_id == company_runtime.AGENT_ID
+        transport = NATIVE_DSH_TRANSPORT if company else EXTERNAL_TRANSPORT
+        if not company and (company_model is not None or reasoning_effort is not None):
+            raise AssistantError('invalid_external_turn', '公司模型选项仅用于公司 DSH 会话。')
         with self.lock:
+            queue_id = self._queue_user_id(cid, queue_id)
+            revision = None
+            if company:
+                company_config, revision = self.company_provider()
+                options = company_runtime.info(company_config)
+                if options is None:
+                    raise AssistantError('company_model_unavailable', '请先在配置中心填写公司分配的 API 密钥。', 503)
+                picked = company_model if company_model is not None else options['model']
+                choice = next((item for item in company_runtime.catalog(company_config) if item['model'] == picked), None)
+                if choice is None:
+                    raise AssistantError('invalid_company_model', '请选择公司接口支持的模型。')
+                if reasoning_effort is not None and reasoning_effort not in choice['reasoning_efforts']:
+                    raise AssistantError('invalid_reasoning_effort', '所选公司模型不支持此推理强度。')
+                if images and not choice['vision']:
+                    raise AssistantError('company_vision_unavailable',
+                                         '此公司模型不支持图片。请移除图片、粘贴截图文字，或切换到支持图片的模型。')
+                agent_name, model = '公司默认', choice['model']
+            metadata = dict(provider_id=agent_id, provider_name=agent_name, model=model, transport=transport)
+            if reasoning_effort is not None:
+                metadata['reasoning_effort'] = reasoning_effort
             with self.db() as db:
                 self._conversation(db, cid)
             if cid in self.active:
@@ -1371,11 +1496,11 @@ class AssistantService:
                            external_images=images, external_roots=roots, external_instructions=instructions,
                            external_documents=documents, external_table=table, external_skills=selected,
                            external_file_id=analysis_file_id, external_local_tables=local_tables,
-                           external_remote_data=remote_data, mcp_registry=mcp_registry, plugin_mcp_ids=plugin_scope)
-            if company_lease:
-                context['company_model'] = company_lease
+                           external_remote_data=remote_data, mcp_registry=mcp_registry,
+                           plugin_mcp_ids=plugin_scope, company_revision=revision,
+                           company_model=model if company else None, company_reasoning_effort=reasoning_effort)
             visible = content or ('[已添加文件]' if documents or table else '')
-            user, assistant, _ = self._reserve_turn(cid, visible, images, metadata, context, transport=EXTERNAL_TRANSPORT)
+            user, assistant, _ = self._reserve_turn(cid, visible, images, metadata, context, transport=transport, user_id=queue_id)
             with self.db() as db:
                 conversation = self._conversation(db, cid)
         return dict(turn_id=assistant['id'], user_message=user, assistant_message=assistant, conversation=conversation)
@@ -1388,6 +1513,45 @@ class AssistantService:
                 or context.get('agent_id') != agent_id or 'external_started_at' not in context):
             raise AssistantError('external_turn_closed', '外部 Agent 请求已结束或与当前任务不匹配。', 409)
         return event, context
+
+    def reserve_native_steer(self, cid, turn_id, content):
+        content = self._external_text(content, 12_000).strip()
+        if not content or '\x00' in content:
+            raise AssistantError('invalid_external_steer', '请输入有效的引导消息。')
+        with self.lock:
+            _, context = self._external_turn(cid, turn_id, company_runtime.AGENT_ID)
+            records = context.setdefault('external_steers', {})
+            if len(records) >= 30:
+                raise AssistantError('external_steer_limit', '本轮引导消息已达上限。', 409)
+            steer_id = uuid.uuid4().hex
+            records[steer_id] = {'content': content, 'state': 'pending'}
+        return {'steer_id': steer_id}
+
+    def native_steer(self, cid, turn_id, steer_id, agent_id, *, accepted=None):
+        if agent_id != company_runtime.AGENT_ID or not isinstance(steer_id, str) or not re.fullmatch('[a-f0-9]{32}', steer_id):
+            raise AssistantError('invalid_external_steer', '引导消息标识无效。')
+        with self.lock:
+            _, context = self._external_turn(cid, turn_id, agent_id)
+            record = context.get('external_steers', {}).get(steer_id)
+            expected = 'pending' if accepted is None else 'prepared'
+            if record is None or record['state'] != expected:
+                raise AssistantError('external_steer_closed', '引导消息已处理或不属于本轮。', 409)
+            if accepted is None:
+                record['state'] = 'prepared'
+                return {'content': record['content']}
+            if accepted is False:
+                record['state'] = 'rejected'
+                return {'message': None}
+            message = dict(id=steer_id, role='user', content=record['content'], status='complete',
+                           created_at=time.time(), attachments=[])
+            with self.db() as db:
+                db.execute('''INSERT INTO messages(id,conversation_id,role,content,status,created_at,attachments,transport)
+                              VALUES(?,?,?,?,?,?,?,?)''',
+                           (steer_id, cid, 'user', message['content'], 'complete', message['created_at'], '[]',
+                            NATIVE_DSH_TRANSPORT))
+                db.execute('UPDATE conversations SET updated_at=? WHERE id=?', (message['created_at'], cid))
+            record['state'] = 'submitted'
+            return {'message': message}
 
     def prepare_external_turn(self, cid, turn_id, agent_id):
         with self.lock:
@@ -1402,20 +1566,16 @@ class AssistantService:
             permission = self.permission(cid)
             handoff = self._project_handoff(
                 project_files.accessible_roots(roots), context['external_text'],
-                can_propose=_tool_allowed(dict(context, permission_mode=permission), 'propose_project_file_edit'))
+                skills=context['external_skills'], can_propose=True)
             text = external_context.render_context(
                 context['external_text'], context['external_instructions'], context['external_documents'],
                 context['external_table'], context['external_skills'], project, handoff=handoff)
-            lease = context.get('company_model')
-            if lease:
-                text = SYSTEM + '\n\n' + current_date_context(True) + '\n\n当前请求：\n' + text
             data_tools = external_tools.configured_data_tools(
                 context['external_remote_data'], context['external_local_tables'],
                 attached=bool(context['external_file_id']))
             chat_context = dict(context, permission_mode=permission)
         with self.db() as db:
-            history_summary, history = conversation_context.build(
-                db, cid, turn_id, text_only=True)
+            history_summary, history = conversation_context.build(db, cid, turn_id, text_only=True)
             history_predecessor = conversation_context.previous_completed_reply(db, cid, turn_id)
         # Discovery may start configured servers and must not block cancellation.
         specs = chat_tool_specs(chat_context, {})
@@ -1433,7 +1593,7 @@ class AssistantService:
                 if valid_roots:
                     search_schema = PROJECT_TOOL_SCHEMAS[external_tools.PROJECT_SEARCH]
                     if project:
-                        project['supports_create'] = _tool_allowed(current_context, 'propose_project_file_create')
+                        project['supports_create'] = True
                     binding = self._worktree_row(db, cid)
                     base = (binding['base_path'], binding['base_identity']) if binding else None
                     development = dict(workspace_id=active_project['id'], project_sources=[
@@ -1445,20 +1605,90 @@ class AssistantService:
             active_context['external_advertised_tools'] = {item['name'] for item in tools}
             return dict(text=text, images=images, project=project, permission_mode=current, tools=tools,
                         history=history, history_summary=history_summary, history_predecessor=history_predecessor,
-                        **({'company_model': dict(lease.options, token=lease.token)} if lease else {}), **development)
+                        **(dict(company_revision=context['company_revision'], company_model=context['company_model'],
+                                company_reasoning_effort=context['company_reasoning_effort'])
+                           if context.get('company_revision') else {}),
+                        **development)
 
-    def open_company_stream(self, cid, turn_id, token, body):
+    def start_company_web_runtime(self, remote_data=None):
         with self.lock:
-            event, context = self._external_turn(cid, turn_id, company_runtime.AGENT_ID)
-            lease = context.get('company_model')
-            payload = lease.authorize(token, body) if lease else None
+            config, revision = self.company_provider()
+            options = company_runtime.info(config)
+            if options is None:
+                raise AssistantError('company_model_unavailable', '请先在配置中心填写公司分配的 API 密钥。', 503)
+            settings = self.delegation_settings()
+            depth = settings['dsh_max_depth'] if settings['enabled'] else 0
+            options['subagents'] = dict(maxDepth=depth, maxActiveSubagents=settings['dsh_max_active'])
+            ident, cancel = uuid.uuid4().hex, threading.Event()
+            lease = company_runtime.ModelLease(config, options)
+            runtimes = {}
+            if data_available(remote_data):
+                running = threading.BoundedSemaphore(4)
+                runtimes = {server_id: WebDataMcp(remote_data, cancel, server_id, running)
+                            for server_id in (None, *DATA_MCP_NAMES)}
+            previous = self.company_web_runtime
+            if previous:
+                previous[1].set()
+            self.company_web_runtime = (ident, cancel, lease, runtimes)
+        return dict(id=ident, token=lease.token, model=options['model'], vision=options['vision'],
+                    revision=revision, subagents=options['subagents'], models=company_runtime.catalog(config),
+                    data_servers=[{'id': server_id, 'token': runtimes[server_id].token}
+                                  for server_id in DATA_MCP_NAMES if server_id in runtimes],
+                    **({'data': {'token': runtimes[None].token, 'available': True}} if runtimes else {}))
+
+    def stop_company_web_runtime(self, ident):
+        with self.lock:
+            runtime = self.company_web_runtime
+            if not runtime or runtime[0] != ident:
+                return {'revoked': False}
+            runtime[1].set()
+            self.company_web_runtime = None
+        return {'revoked': True}
+
+    def open_company_web_stream(self, ident, token, body, responses=False):
+        with self.lock:
+            runtime = self.company_web_runtime
+            if not runtime or runtime[0] != ident:
+                raise AssistantError('invalid_company_relay', '公司模型请求未授权。', 403)
+            _, cancel, lease, _ = runtime
+        return self._open_company_host_stream(lease, cancel, token, body, responses)
+
+    def open_dsh_next_stream(self, ident, token, body, responses=False):
+        provider = self.dsh_next_runtime.provider(ident)
+        if not provider:
+            raise AssistantError('invalid_company_relay', '公司模型连接已失效。', 403)
+        return self._open_company_host_stream(*provider, token, body, responses)
+
+    def _open_company_host_stream(self, lease, cancel, token, body, responses):
+        with self.lock:
+            payload = None if cancel.is_set() else lease.authorize(token, body, responses)
             if payload is None:
-                raise AssistantError('invalid_company_relay', '公司模型请求无效或超出本轮额度。', 403)
-        response, error_status = company_runtime.open_response(urlopen, lease, payload)
+                raise AssistantError('invalid_company_relay', '公司模型请求无效或超出并发额度。', 403)
+        response, error_status = company_runtime.open_response(urlopen, lease, payload, responses)
         if response is None:
             lease.release()
             raise AssistantError('company_model_request_failed', '公司模型请求失败。', error_status)
-        return response, event, lease
+        if cancel.is_set():
+            try:
+                response.close()
+            finally:
+                lease.release()
+            raise AssistantError('invalid_company_relay', '公司模型运行时已结束。', 403)
+        return response, cancel, lease
+
+    def dispatch_company_web_mcp(self, ident, token, body, server_id=None):
+        with self.lock:
+            runtime = self.company_web_runtime
+            mcp = runtime[3].get(server_id) if runtime and runtime[0] == ident else None
+            if mcp is None or not mcp.allows(token):
+                raise AssistantError('invalid_company_data_token', 'DSH 数据连接未授权。', 403)
+        return mcp.dispatch(body)
+
+    def dispatch_dsh_next_mcp(self, ident, token, body, server_id):
+        mcp = self.dsh_next_runtime.server(ident, server_id, token)
+        if mcp is None:
+            raise AssistantError('invalid_next_data_token', 'DSH NEXT 数据连接已失效。', 403)
+        return mcp.dispatch(body)
 
     def call_external_tool(self, cid, turn_id, agent_id, name, arguments, confirmed=False):
         if not isinstance(name, str) or not external_tools.TOOL_NAME.fullmatch(name) or not isinstance(arguments, dict):
@@ -1533,13 +1763,14 @@ class AssistantService:
                 if not isinstance(expected, str) or not re.fullmatch('[0-9a-f]{64}', expected):
                     raise AssistantError('invalid_file_version', '请先读取当前文件，再提出修改。')
                 result = self.project_tool(cid, event, roots, 'propose_project_file_edit', dict(
-                    path=fields.get('path'), source=source, new_content=fields.get('content'), expected_sha256=expected))
+                    path=fields.get('path'), source=source, new_content=fields.get('content'), expected_sha256=expected),
+                    desktop_review=True)
                 return dict(proposal=result['proposal'])
             if action == 'propose_create':
                 if set(fields) - {'agent_id', 'action', 'source', 'path', 'content'}:
                     raise AssistantError('invalid_file_action', '新建文件不使用现有文件的版本和行范围。')
                 result = self.project_tool(cid, event, roots, 'propose_project_file_create', dict(
-                    path=fields.get('path'), source=source, new_content=fields.get('content')))
+                    path=fields.get('path'), source=source, new_content=fields.get('content')), desktop_review=True)
                 return dict(proposal=result['proposal'])
             raise AssistantError('invalid_file_action', '项目文件操作无效。')
 
@@ -1550,7 +1781,6 @@ class AssistantService:
             raise AssistantError('invalid_external_turn', '外部 Agent 消息状态无效。')
         if model is not None:
             model = self._external_text(model, 160, label=True)
-        execution = self._external_execution(execution)
         recommendations = self._external_recommendations(recommendations)
         counts = None
         if usage is not None:
@@ -1569,12 +1799,13 @@ class AssistantService:
         with self.lock:
             with self.db() as db:
                 conversation = self._conversation(db, cid)
-                row = db.execute('''SELECT id,role,content,status,created_at,attachments,reply_meta FROM messages
-                    WHERE conversation_id=? AND id=? AND role='assistant' AND transport=?''',
-                                 (cid, turn_id, EXTERNAL_TRANSPORT)).fetchone()
+                row = db.execute('''SELECT id,role,content,status,created_at,attachments,reply_meta,transport FROM messages
+                    WHERE conversation_id=? AND id=? AND role='assistant' AND transport IN (?,?)''',
+                                 (cid, turn_id, EXTERNAL_TRANSPORT, NATIVE_DSH_TRANSPORT)).fetchone()
                 if row is None:
                     raise AssistantError('not_found', '外部 Agent 会话轮次不存在。', 404)
                 message = self._public_message(row)
+            execution = self._external_execution(execution, native_dsh=row['transport'] == NATIVE_DSH_TRANSPORT)
             if message['status'] != 'streaming':
                 return dict(message=message, conversation=conversation)
             event = self.active.get(cid)
@@ -1623,7 +1854,7 @@ class AssistantService:
             cards.append(card)
         return cards
 
-    def _external_execution(self, value):
+    def _external_execution(self, value, *, native_dsh=False):
         if value is None:
             return None
         if not isinstance(value, dict) or set(value) - {'steps', 'plan', 'truncated', 'approvals'}:
@@ -1635,7 +1866,9 @@ class AssistantService:
             result['truncated'] = value['truncated']
         for key, fields in (('steps', ('id', 'title', 'kind')), ('plan', ('content',))):
             items = value.get(key, [])
-            if not isinstance(items, list) or len(items) > 40:
+            nested_steps = native_dsh and key == 'steps'
+            limit = 300 if nested_steps else 40
+            if not isinstance(items, list) or len(items) > limit:
                 raise AssistantError('invalid_external_turn', '外部 Agent 执行摘要格式无效。')
             allowed = {'pending', 'in_progress', 'completed'} | ({'failed'} if key == 'steps' else set())
             output = []
@@ -1653,6 +1886,12 @@ class AssistantService:
                     if reason:
                         summary['failure_reason'] = reason
                 output.append(summary)
+            if nested_steps:
+                ids = {item['id'] for item in output}
+                for item, summary in zip(items, output):
+                    parent = item.get('parent_id')
+                    if isinstance(parent, str) and parent != summary['id'] and parent in ids:
+                        summary['parent_id'] = parent
             result[key] = output
         if 'approvals' in value:
             result['approvals'] = execution_trace.approvals(value['approvals'])
@@ -1836,13 +2075,20 @@ class AssistantService:
             project_roots = project_files.accessible_roots(project_roots)
             tool_specs = chat_tool_specs(turn_context, project_roots)
             agents = turn_context.get('delegation_agents') if private_project else None
+            delegation_limit = 0
+            if agents:
+                limits = self.delegation_settings()
+                allowed_ids = limits['agent_ids']
+                agents = {ident: name for ident, name in agents.items()
+                          if limits['enabled'] and (not allowed_ids or ident in allowed_ids)}
+                delegation_limit = limits['max_calls']
             if agents:
                 tool_specs.append(delegation.schema(agents))
             tool_names = {spec['function']['name'] for spec in tool_specs}
             turn_context['available_tools'] = tool_names
             instructions = [SYSTEM, current_date_context(private_project)]
             if agents:
-                instructions.append(delegation.GUIDANCE)
+                instructions.append(delegation.GUIDANCE.format(limit=delegation.limit_notice(delegation_limit)))
             if 'query_database' in tool_names:
                 instructions.append(SQL_GUIDANCE)
             if tool_names & {'create_deep_analysis', 'create_deep_analysis_from_query'}:
@@ -1850,7 +2096,8 @@ class AssistantService:
             if 'fetch_url' in tool_names:
                 instructions.append('用户想了解某个公开网页时，获取网页内容后再答。读取失败时说明缺少的内容。')
             if project_roots:
-                turn_context['project_tool'] = lambda name, args: self.project_tool(cid, cancel, project_roots, name, args)
+                turn_context['project_tool'] = lambda name, args: self.project_tool(
+                    cid, cancel, project_roots, name, args, desktop_review=bool(private_project))
                 instructions.append(PROJECT_GUIDANCE)
             messages = [dict(role='system', content='\n\n'.join(instructions))]
             if project_instructions:
@@ -1859,7 +2106,8 @@ class AssistantService:
                 messages.append(dict(role='system', content='同一项目其他会话的近期背景资料。\n'
                                      + json.dumps(project_memory, ensure_ascii=False)))
             handoff = self._project_handoff(
-                project_roots, user['content'], can_propose='propose_project_file_edit' in tool_names)
+                project_roots, user['content'], skills=turn_context.get('selected_skills', ()),
+                can_propose='propose_project_file_edit' in tool_names)
             if handoff:
                 messages.append(dict(role='system', content=handoff))
             if turn_context.get('selected_skills'):
@@ -1908,7 +2156,7 @@ class AssistantService:
                     content = ([dict(type='text', text=content)] if content else []) + [dict(type='image_url', image_url=dict(url=a['data_url'])) for a in attachments]
                 messages.append(dict(role=message['role'], content=content))
             tool_notes, tool_text = [], []
-            delegation_used = False
+            delegation_used = 0
             request_usage = window is not None or provider_transport.official_openai(config.endpoint)
             for tool_round in range(MAX_TOOL_ROUNDS + 1):
                 allow_tools = tool_round < MAX_TOOL_ROUNDS
@@ -1919,7 +2167,7 @@ class AssistantService:
                     payload['reasoning_effort'] = effort
                 if allow_tools and tool_specs:
                     payload['tools'] = [spec for spec in tool_specs
-                                        if not delegation_used or spec['function']['name'] != delegation.TOOL_NAME]
+                                        if delegation_used < delegation_limit or spec['function']['name'] != delegation.TOOL_NAME]
                 if window is not None:
                     history_count, fits = conversation_context.fit_request(
                         messages, payload.get('tools', []), window, history_start, history_count)
@@ -2036,10 +2284,11 @@ class AssistantService:
                             break
                         dispatch['permission_mode'] = self.permission(cid)
                         if name == delegation.TOOL_NAME and agents:
-                            if delegation_used:
-                                outcome_tool = dict(ok=False, summary='已达到委派上限', content='本轮最多委派一次。')
+                            if delegation_used >= delegation_limit:
+                                outcome_tool = dict(ok=False, summary='已达到委派上限',
+                                                    content=delegation.limit_notice(delegation_limit))
                             else:
-                                delegation_used = True
+                                delegation_used += 1
                                 outcome_tool = yield from self._delegate(cid, cancel, arguments, agents, metadata)
                                 if cancel.is_set():
                                     outcome = 'cancelled'

@@ -111,8 +111,9 @@ class ProjectTests(unittest.TestCase):
         _, model, reply = self.send(path, 'list_project_files', {})
         names = {spec['function']['name'] for spec in model['tools']}
         self.assertTrue({'list_project_files', 'read_project_file'} <= names)
-        self.assertNotIn(tool, names)
-        self.assertNotIn('propose_project_file_create', names)
+        self.assertIn(tool, names)
+        self.assertIn('propose_project_file_create', names)
+        self.assertNotIn('run_powershell', names)
         self.assertIn('notes.md', reply)
         self.assertNotIn('.env', reply)
         self.assertIn('批准并成功应用后再报告文件已修改', model['messages'][0]['content'])
@@ -120,7 +121,6 @@ class ProjectTests(unittest.TestCase):
             with self.subTest(denied=denied):
                 packets, _, _ = self.send(path, 'read_project_file', {'path': denied})
                 self.assertFalse(packets['tool_result']['ok'])
-        self.service.set_permission(path.rsplit('/', 1)[1], 'workspace_write')
         packets, _, _ = self.send(path, tool, edit)
         proposal = packets['file_proposal']['proposal']
         self.assertEqual(proposal['old_content'], 'Original\r\n')
@@ -132,6 +132,7 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), b'After\r\n')
         self.assertEqual(approval.json()['proposal']['status'], 'applied')
         self.assertEqual(self.client.post(route, json={}, headers=self.headers).status_code, 200)
+        self.assertEqual(self.service.permission(path.rsplit('/', 1)[1]), 'read_only')
 
     def test_desktop_workspace_file_listing_is_read_only_and_bounds_paths(self):
         path = self.conversation(self.create_project()) + '/workspace-files'
@@ -192,8 +193,11 @@ class ProjectTests(unittest.TestCase):
             self.assertFalse(packets['tool_result']['ok'], blocked_path)
         target.unlink()
         agent = '12345678-1234-1234-1234-123456789012'
+        self.service.set_permission(cid, 'read_only')
         turn = self.service.begin_external_turn(cid, 'Create sample', agent, 'Codex')
-        self.assertTrue(self.service.prepare_external_turn(cid, turn['turn_id'], agent)['project']['supports_create'])
+        prepared = self.service.prepare_external_turn(cid, turn['turn_id'], agent)
+        self.assertEqual(prepared['permission_mode'], 'read_only')
+        self.assertTrue(prepared['project']['supports_create'])
         native = path + '/external-turns/' + turn['turn_id'] + '/project-file'
         result = self.client.post(native, headers=self.native, json={
             'source': 'source_1', 'action': 'propose_create', 'agent_id': agent,
@@ -283,7 +287,7 @@ class ProjectTests(unittest.TestCase):
         turn_path = f"{path}/external-turns/{turn['turn_id']}"
         prepared = self.client.post(turn_path + '/prepare', headers=self.native, json={'agent_id': agent}).json()
         shell = next(item for item in prepared['tools'] if item['name'] == tool)
-        self.assertTrue(shell['requires_confirmation'])
+        self.assertNotIn('requires_confirmation', shell)
         location = {'agent_id': agent, 'name': tool}
         self.assertEqual(self.client.post(turn_path + '/project-root', headers=self.headers, json=location).status_code, 403)
         accepted = self.client.post(turn_path + '/project-root', headers=self.native, json=location)

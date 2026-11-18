@@ -1,0 +1,77 @@
+name: Electron desktop trial build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            os: windows
+            arch: x64
+          - runner: macos-15
+            os: macos
+            arch: arm64
+          - runner: macos-15-intel
+            os: macos
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.25.0'
+      - name: Build workbench
+        working-directory: page_design/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Install desktop dependencies
+        run: |
+          python -m pip install -r requirements-electron.txt
+          pnpm --dir electron install --frozen-lockfile
+      - name: Verify desktop lifecycle
+        run: node --test electron/backend.test.cjs
+      - name: Build desktop package
+        run: python build_electron.py
+      - name: Verify Windows packaged backend
+        if: matrix.os == 'windows'
+        run: python tests/electron_package_smoke.py dist/electron/win-unpacked/resources/backend/SomnusBackend.exe
+      - name: Verify macOS extracted app
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          trial="$(mktemp -d)"
+          trap 'rm -rf "$trial"' EXIT
+          ditto -x -k dist/electron/Somnus-*-electron-macos-"$PACKAGE_ARCH".zip "$trial"
+          app="$trial/Somnus.app"
+          codesign --verify --deep --strict "$app"
+          backend="$app/Contents/Resources/backend/SomnusBackend"
+          expected_arch="$PACKAGE_ARCH"
+          if [[ "$expected_arch" == "x64" ]]; then expected_arch=x86_64; fi
+          [[ "$(lipo -archs "$app/Contents/MacOS/Somnus")" == "$expected_arch" ]]
+          [[ "$(lipo -archs "$backend")" == "$expected_arch" ]]
+          python tests/electron_package_smoke.py "$backend"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electron-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/electron/Somnus-Setup-*.exe
+            dist/electron/Somnus-*-electron-macos-*.zip
+          if-no-files-found: error

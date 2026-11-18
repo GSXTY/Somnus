@@ -45,18 +45,22 @@ class DshAccount {
     return server.accountCookie;
   }
 
-  async request(server, method, args = {}) {
+  async request(server, method, args = {}, signal = AbortSignal.timeout(5000)) {
     const { origin, cookie } = await this.credentials(server);
     const rpcId = randomUUID();
     const response = await this.fetch(origin + '/api/' + method, {
-      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+      method: 'POST', redirect: 'error', signal,
       headers: { 'content-type': 'application/json', cookie, origin },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
     });
     if (!response.ok) throw new Error('托管 DSH 账号服务暂不可用。');
     const result = await response.json();
     if (result?.rpcId !== rpcId || result?.result?.ok !== true) {
-      throw new Error('托管 DSH 未能返回账号状态。');
+      const error = new Error('托管 DSH 未能完成请求。');
+      if (result?.rpcId === rpcId && typeof result.result?.error?.code === 'string') {
+        error.code = result.result.error.code;
+      }
+      throw error;
     }
     return result.result.value;
   }

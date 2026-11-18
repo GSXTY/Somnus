@@ -1,14 +1,16 @@
 import { readAssistantEvents } from './assistantProtocol.mjs';
 
-export type AssistantStatus = { configured: boolean; connection_status: 'not_configured' | 'unverified' | 'verified'; last_success_at: number | null; model: string | null; provider: string; database_connected: false; capabilities: { chat: boolean; vision?: boolean; sql_execution: false; event_detection: false }; message: string };
+export type AssistantStatus = { configured: boolean; connection_status: 'not_configured' | 'unverified' | 'verified'; last_success_at: number | null; model: string | null; provider: string; provider_id?: string; database_connected: false; capabilities: { chat: boolean; vision?: boolean; sql_execution: false; event_detection: false }; message: string };
 export type ConversationPermission = 'read_only' | 'workspace_write' | 'full';
 export type ConversationWorktree = { source: string; branch: string; label: string; commit: string; created_at: number };
 export type Conversation = { id: string; title: string; created_at: number; updated_at: number; message_count: number; permission_mode?: ConversationPermission; worktree?: ConversationWorktree | null };
 export type ChatAttachment = { name: string; data_url: string; mime: string; size: number; width: number; height: number };
 export type ReasoningEffort = 'low' | 'medium' | 'high';
+export type CompanyReasoningEffort = 'none' | 'low' | 'high' | 'max';
+export type CompanyModel = { model: string; vision: boolean; reasoning_efforts: CompanyReasoningEffort[]; default_reasoning_effort?: CompanyReasoningEffort };
 export type Provider = { id: string; group_id?: string; name: string; model: string; base_url: string; builtin?: boolean; api_key_masked?: string;
-  configured?: boolean; vision_enabled?: boolean; reasoning_efforts?: ReasoningEffort[]; };
-export type ExecutionStep = { id: string; title: string; kind: string; status: 'pending' | 'in_progress' | 'completed' | 'failed'; duration_ms?: number; failure_reason?: string };
+  configured?: boolean; requires_api_key?: boolean; vision_enabled?: boolean; reasoning_efforts?: ReasoningEffort[]; };
+export type ExecutionStep = { id: string; title: string; kind: string; status: 'pending' | 'in_progress' | 'completed' | 'failed'; duration_ms?: number; failure_reason?: string; parent_id?: string };
 export type ExecutionPlanItem = { content: string; status: 'pending' | 'in_progress' | 'completed' };
 export type ExecutionApproval = {
   id: string; kind: 'mcp' | 'edit' | 'test'; status: 'approved' | 'rejected' | 'closed' | 'pending'; at: number;
@@ -23,32 +25,13 @@ export type ConversationTraceEvent = {
 export type ConversationTrace = { events: ConversationTraceEvent[]; truncated?: boolean };
 export type ContextUsage = { used_tokens: number; max_tokens: number };
 export type DshRecommendation = { id: string; kind: 'plugin' | 'page'; title: string; description: string; pluginId?: string };
-type ReplyMeta = { recommendations?: DshRecommendation[]; provider_id: string; provider_name: string; model: string; reasoning_effort?: ReasoningEffort; elapsed_ms?: number; usage?: ReplyUsage; context?: ContextUsage; usage_unavailable?: true; execution?: ExecutionSummary; mcp_approval_blocked?: McpApprovalBlocked; delegation?: DelegationResult };
+type ReplyMeta = { recommendations?: DshRecommendation[]; provider_id: string; provider_name: string; model: string; transport?: string; reasoning_effort?: ReasoningEffort; elapsed_ms?: number; usage?: ReplyUsage; context?: ContextUsage; usage_unavailable?: true; execution?: ExecutionSummary; mcp_approval_blocked?: McpApprovalBlocked; delegation?: DelegationResult };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string; status: 'complete' | 'streaming' | 'error' | 'cancelled'; attachments?: ChatAttachment[]; created_at: number; reply_meta?: ReplyMeta };
 export type McpApproval = { id: string; tool_name: string; arguments_preview?: string; status: 'pending' | 'approved' | 'rejected' | 'expired' };
 export type DelegationAgent = { id: string; name: string };
+export type DelegationSettings = { enabled: boolean; max_calls: number; agent_ids: string[]; dsh_max_depth: number; dsh_max_active: number };
 export type DelegationResult = { agent_name: string; status: 'complete' | 'declined' | 'error' | 'expired'; result?: string };
 export type DelegationResponse = { status: 'complete' | 'declined' | 'error'; result?: string; agent_id?: string };
-export type DotTask = { id: string; status: 'pending' | 'complete' | 'error'; prompt: string; result?: string | null; error?: string | null; created_at: string };
-export type DotTaskStatus = { enabled: boolean; ready: boolean; paused: boolean };
-export type DotTaskList = DotTaskStatus & { tasks: DotTask[] };
-type HostedDotState = DotTaskStatus & {
-  mode: 'hosted' | 'unconfigured'; paired: boolean; endpoint?: string; pairing_code?: string; expires_at?: string | number;
-  install_url?: string; error?: string; local_dev?: boolean;
-};
-export type DotTaskSetup = DotTaskStatus & {
-  mode?: 'local' | 'hosted'; port: number | null; secret_path: string | null;
-  paired?: boolean; endpoint?: string; pairing_code?: string; expires_at?: string | number;
-  install_url?: string; error?: string; local_dev?: boolean;
-};
-type DotRelay = {
-  getState(): Promise<HostedDotState>;
-  startPairing(): Promise<HostedDotState>;
-  setEnabled(enabled: boolean): Promise<HostedDotState>;
-  listTasks(conversationId: string): Promise<DotTaskList>;
-  createTask(conversationId: string, prompt: string): Promise<{ task: DotTask }>;
-  disconnect(): Promise<HostedDotState>;
-};
 export type ChatEvent = { type: string; data: { conversation_id?: string; user_message?: ChatMessage; assistant_message?: ChatMessage; message?: ChatMessage | string; conversation?: Conversation; text?: string; code?: string; name?: string; arguments?: string; summary?: string; ok?: boolean; failure_reason?: string; proposal?: FileProposal; id?: string; tool_name?: string; reason?: string; arguments_preview?: string; status?: McpApproval['status'] | DelegationResult['status']; task?: string; context?: string; agent_id?: string; agent_name?: string; result?: string } };
 const root = '/api/assistant';
 export class ApiError extends Error {
@@ -66,6 +49,12 @@ async function request(path: string, options?: RequestInit) {
   return response;
 }
 const jsonPost = (value: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+export async function delegationSettings(signal?: AbortSignal): Promise<DelegationSettings> {
+  return (await request('/delegation-settings', { signal })).json();
+}
+export async function saveDelegationSettings(settings: DelegationSettings): Promise<DelegationSettings> {
+  return (await request('/delegation-settings', { ...jsonPost(settings), method: 'PATCH' })).json();
+}
 type CheckpointAgent = { id: string; name: string };
 type CheckpointConfiguration = {
   model: { id: string; name: string; model: string };
@@ -133,8 +122,16 @@ export async function conversations(signal?: AbortSignal, workspace?: string): P
   if (!Array.isArray(data.conversations)) throw new Error('会话列表格式不正确');
   return data.conversations;
 }
-export async function createConversation(workspace?: string): Promise<Conversation> {
-  return (await (await request('/conversations', jsonPost(workspace ? { workspace } : {}))).json()).conversation;
+export async function createConversation(workspace?: string, permission?: ConversationPermission): Promise<Conversation> {
+  const result = (await (await request('/conversations', jsonPost({
+    ...(workspace ? { workspace } : {}), ...(permission ? { permission_mode: permission } : {}),
+  }))).json()).conversation;
+  if (permission && result?.permission_mode !== permission) throw new Error('服务未确认新会话的文件权限');
+  return result;
+}
+export async function branchConversation(id: string, messageId: string): Promise<Conversation> {
+  const result = await request('/conversations/' + encodeURIComponent(id) + '/branch', jsonPost({ message_id: messageId }));
+  return (await result.json()).conversation;
 }
 export async function conversation(id: string, signal?: AbortSignal): Promise<{ conversation: Conversation; messages: ChatMessage[] }> {
   const data = await (await request('/conversations/' + encodeURIComponent(id), { signal })).json();
@@ -173,71 +170,14 @@ export async function cancelConversation(id: string) {
 export async function respondToDelegation(id: string, requestId: string, response: DelegationResponse) {
   await request(`/conversations/${encodeURIComponent(id)}/delegations/${encodeURIComponent(requestId)}`, jsonPost(response));
 }
-async function hostedDot() {
-  const relay = typeof window === 'undefined' ? undefined : (window as Window & { somnusDotRelay?: DotRelay }).somnusDotRelay;
-  if (!relay) return;
-  const state = await relay.getState();
-  if (state.mode === 'hosted') return { relay, state };
-}
-function hostedDotSetup(state: HostedDotState): DotTaskSetup {
-  return { ...state, mode: 'hosted', port: null, secret_path: null };
-}
-export async function listDotTasks(id: string, signal: AbortSignal): Promise<DotTaskList> {
-  const hosted = await hostedDot();
-  if (hosted) {
-    if (hosted.state.error) throw new Error(hosted.state.error);
-    return hosted.relay.listTasks(id);
-  }
-  const data = await (await request(`/conversations/${encodeURIComponent(id)}/dot-tasks`, { signal })).json();
-  if (!Array.isArray(data.tasks) || typeof data.enabled !== 'boolean' || typeof data.ready !== 'boolean') throw new Error('Dot 任务状态格式不正确');
-  return data;
-}
-export async function dotTaskStatus(signal: AbortSignal): Promise<DotTaskStatus> {
-  const hosted = await hostedDot();
-  if (hosted) return hosted.state;
-  const data = await (await request('/dot-tasks/status', { signal })).json();
-  if (typeof data.enabled !== 'boolean' || typeof data.ready !== 'boolean') throw new Error('Dot 连接状态格式不正确');
-  return data;
-}
-async function readDotSetup(path: string, options: RequestInit): Promise<DotTaskSetup> {
-  const data = await (await request(path, options)).json();
-  if (typeof data.enabled !== 'boolean' || typeof data.ready !== 'boolean' || typeof data.paused !== 'boolean' ||
-    !(data.port === null || Number.isInteger(data.port) && data.port >= 1024 && data.port <= 65535) ||
-    !(data.secret_path === null || typeof data.secret_path === 'string' && /^[a-zA-Z0-9_-]{24,128}$/.test(data.secret_path))) {
-    throw new Error('dot 本机接入状态格式不正确');
-  }
-  return data;
-}
-export async function dotTaskSetup(signal: AbortSignal, prepare = false): Promise<DotTaskSetup> {
-  const hosted = await hostedDot();
-  if (hosted) return hostedDotSetup(prepare ? await hosted.relay.startPairing() : hosted.state);
-  return readDotSetup('/dot-tasks/setup', { ...(prepare ? jsonPost({}) : {}), signal });
-}
-export async function setDotTaskEnabled(enabled: boolean): Promise<DotTaskSetup> {
-  const hosted = await hostedDot();
-  if (hosted) return hostedDotSetup(await hosted.relay.setEnabled(enabled));
-  return readDotSetup('/dot-tasks/enabled', jsonPost({ enabled }));
-}
-export async function disconnectHostedDot(): Promise<DotTaskSetup> {
-  const hosted = await hostedDot();
-  if (!hosted) throw new Error('托管 dot 服务未配置');
-  return hostedDotSetup(await hosted.relay.disconnect());
-}
-export async function createDotTask(id: string, prompt: string): Promise<DotTask> {
-  const hosted = await hostedDot();
-  const data = hosted ? await hosted.relay.createTask(id, prompt) :
-    await (await request(`/conversations/${encodeURIComponent(id)}/dot-tasks`, jsonPost({ prompt }))).json();
-  if (!data.task?.id) throw new Error('Dot 任务未确认');
-  return data.task;
-}
-export async function sendMessage(id: string, content: string, signal: AbortSignal, onEvent: (event: ChatEvent) => void, attachments: ChatAttachment[] = [], analysisFileId?: string | null, fileIds: string[] = [], analysisFileMeta?: { name: string; row_count: number; columns: string[] } | null, skillIds: string[] = [], modelId?: string, effort?: ReasoningEffort, pluginIds: string[] = [], delegationAgents: DelegationAgent[] = []) {
+export async function sendMessage(id: string, content: string, signal: AbortSignal, onEvent: (event: ChatEvent) => void, attachments: ChatAttachment[] = [], analysisFileId?: string | null, fileIds: string[] = [], analysisFileMeta?: { name: string; row_count: number; columns: string[] } | null, skillIds: string[] = [], modelId?: string, effort?: ReasoningEffort, pluginIds: string[] = [], delegationAgents: DelegationAgent[] = [], queueId?: string) {
   if (!content.trim() && !attachments.length) throw new Error('请输入问题或添加图片后再发送');
-  const response = await request(`/conversations/${encodeURIComponent(id)}/messages`, { ...jsonPost({ content: content.trim(), ...(attachments.length ? { attachments: attachments.map(({ name, data_url }) => ({ name, data_url })) } : {}), ...(analysisFileId ? { analysis_file_id: analysisFileId } : {}), ...(fileIds.length ? { file_ids: fileIds } : {}), ...(modelId ? { model_id: modelId } : {}), ...(effort ? { reasoning_effort: effort } : {}), ...(skillIds.length ? { skill_ids: skillIds } : {}), ...(pluginIds.length ? { plugin_ids: pluginIds } : {}), ...(analysisFileMeta ? { analysis_file_meta: analysisFileMeta } : {}), ...(delegationAgents.length ? { delegation_agents: delegationAgents } : {}) }), signal });
+  const response = await request(`/conversations/${encodeURIComponent(id)}/messages`, { ...jsonPost({ content: content.trim(), ...(attachments.length ? { attachments: attachments.map(({ name, data_url }) => ({ name, data_url })) } : {}), ...(analysisFileId ? { analysis_file_id: analysisFileId } : {}), ...(fileIds.length ? { file_ids: fileIds } : {}), ...(modelId ? { model_id: modelId } : {}), ...(effort ? { reasoning_effort: effort } : {}), ...(skillIds.length ? { skill_ids: skillIds } : {}), ...(pluginIds.length ? { plugin_ids: pluginIds } : {}), ...(analysisFileMeta ? { analysis_file_meta: analysisFileMeta } : {}), ...(delegationAgents.length ? { delegation_agents: delegationAgents } : {}), ...(queueId ? { queue_id: queueId } : {}) }), signal });
   if (!response.headers.get('content-type')?.includes('text/event-stream')) throw new Error('对话服务未返回流式回答');
   await readAssistantEvents(response, onEvent);
 }
 
-export type Skill = { id: string; name: string; description: string; enabled: boolean; reference_count: number; ignored_count?: number };
+export type Skill = { id: string; name: string; description: string; enabled: boolean; builtin?: boolean; reference_count: number; ignored_count?: number };
 
 export async function listSkills(signal?: AbortSignal): Promise<Skill[]> {
   const data = await (await request('/skills', { signal })).json();
@@ -257,7 +197,7 @@ export async function removeSkill(id: string) {
   await request('/skills/' + encodeURIComponent(id), { method: 'DELETE' });
 }
 
-export async function listProviders(signal?: AbortSignal): Promise<{ active: string; providers: Provider[] }> {
+export async function listProviders(signal?: AbortSignal): Promise<{ active: string; providers: Provider[]; company_models?: CompanyModel[] }> {
   const data = await (await request('/models', { signal })).json();
   if (!Array.isArray(data.providers)) throw new Error('无法读取模型');
   return data;
@@ -322,7 +262,7 @@ export async function removePlugin(id: string) {
   await request('/plugins/' + encodeURIComponent(id), { method: 'DELETE' });
 }
 
-export type DefaultPlugin = InstalledPlugin & { source_id: string; published_at: number };
+export type DefaultPlugin = InstalledPlugin & { source_id: string; published_at: number; builtin?: boolean };
 export async function listDefaultPlugins(signal?: AbortSignal): Promise<{ plugins: DefaultPlugin[]; owner_configured: boolean }> {
   const data = await (await request('/plugins/defaults', { signal })).json();
   if (!Array.isArray(data.plugins)) throw new Error('无法读取默认插件');
@@ -355,10 +295,18 @@ export async function removeModel(id: string) {
 export async function testModelConnection(id: string): Promise<ProviderConnectionTest> {
   return (await (await request('/models/' + encodeURIComponent(id) + '/test', jsonPost({}))).json());
 }
+export async function saveCompanyProvider(apiKey: string) {
+  await request('/company-provider', { ...jsonPost({ api_key: apiKey }), method: 'PATCH' });
+}
+export async function removeCompanyProviderKey() {
+  await request('/company-provider', { method: 'DELETE' });
+}
 
 export async function beginExternalTurn(id: string, input: {
   content: string; agent_id: string; agent_name: string; model?: string;
   attachments?: ChatAttachment[]; file_ids?: string[]; analysis_file_id?: string; skill_ids?: string[]; plugin_ids?: string[];
+  company_model?: string; reasoning_effort?: CompanyReasoningEffort;
+  queue_id?: string;
 }, signal?: AbortSignal): Promise<{
   turn_id: string; user_message: ChatMessage; assistant_message: ChatMessage; conversation: Conversation;
 }> {
@@ -367,6 +315,11 @@ export async function beginExternalTurn(id: string, input: {
 export async function finishExternalTurn(id: string, turn: string, input: { content: string; status: 'complete' | 'cancelled' | 'error'; model?: string; usage?: ReplyUsage; context?: ContextUsage; execution?: ExecutionSummary; recommendations?: DshRecommendation[] }): Promise<{ message: ChatMessage; conversation: Conversation }> {
   const path = '/conversations/' + encodeURIComponent(id) + '/external-turns/' + encodeURIComponent(turn) + '/finish';
   return (await (await request(path, jsonPost(input))).json());
+}
+
+export async function reserveExternalSteer(id: string, turn: string, content: string): Promise<{ steer_id: string }> {
+  const path = '/conversations/' + encodeURIComponent(id) + '/external-turns/' + encodeURIComponent(turn) + '/steers';
+  return (await (await request(path, jsonPost({ content }))).json());
 }
 
 export async function respondToMcpApproval(cid: string, id: string, choice: 'approve' | 'reject'): Promise<void> {

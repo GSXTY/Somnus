@@ -36,8 +36,8 @@ function harness() {
   };
   const jsx = (type, props) => ({ type, props });
   const modules = {
-    react, 'react/jsx-runtime': { jsx, jsxs: jsx }, antd: { Button: 'Button' },
-    './workspacePanelWidth.mjs': widthPolicy,
+    react, 'react/jsx-runtime': { jsx, jsxs: jsx }, antd: { Button: 'Button', Input: { Search: 'Search' } },
+    './workspacePanelWidth.mjs': widthPolicy, './WorkspaceTerminal': { WorkspaceTerminal: 'WorkspaceTerminal' },
   };
   vm.runInNewContext(compiled, { exports, window, require: id => modules[id] ?? {},
     localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
@@ -54,13 +54,27 @@ function harness() {
 test('workspace tabs mount only the selected view without a measured Ant tab strip', () => {
   const { render } = harness();
   const initial = descendants(render());
-  assert(initial.some(node => node.props['aria-label'] === '会话改动'));
+  assert(initial.some(node => node.props['aria-label'] === '新标签页'));
+  assert(!initial.some(node => node.props['aria-label'] === '会话改动'));
+  const changes = initial.find(node => node.props.role === 'tab' && node.props.children === '改动');
+  changes.props.onClick();
+  assert(descendants(render()).some(node => node.props['aria-label'] === '会话改动'));
   const files = initial.find(node => node.props.role === 'tab' && node.props.children === '文件');
   files.props.onClick();
   const next = descendants(render());
   assert(!next.some(node => node.props['aria-label'] === '会话改动'));
   assert(next.some(node => node.type?.name === 'WorkspaceFiles'));
-  assert(!next.some(node => node.type?.name === 'TerminalView'));
+  assert(!next.some(node => node.type === 'WorkspaceTerminal'));
+});
+
+test('terminal stays mounted while switching workspace tabs', () => {
+  const { render } = harness();
+  const initial = descendants(render());
+  const tab = title => initial.find(node => node.props.role === 'tab' && node.props.children === title);
+  tab('终端').props.onClick();
+  assert.equal(descendants(render()).find(node => node.type === 'WorkspaceTerminal')?.props.visible, true);
+  tab('文件').props.onClick();
+  assert.equal(descendants(render()).find(node => node.type === 'WorkspaceTerminal')?.props.visible, false);
 });
 
 test('drag and keyboard resize clamp to the split width and persist only deliberate changes', () => {

@@ -329,6 +329,9 @@ test('project tools bind to selected roots, request fresh confirmation and run a
   handle('cancel-development', conversationId, cancelJob.id);
   await assert.rejects(handle('respond-development', conversationId, cancelJob.id, true), /已结束/);
   assert.equal(cancelJob.state.result, undefined);
+  const powershellJob = createJob('run_powershell', { command: "Write-Output 'native job output'" });
+  assert.deepEqual(await handle('prepare-development', conversationId, powershellJob.id), { kind: 'complete' });
+  assert.match(JSON.parse(powershellJob.state.result.content[0].text).output, /native job output/);
 });
 
 test('worktree creation checks out the confirmed commit and binds only the selected chat', {

@@ -13,9 +13,10 @@ from fastapi.testclient import TestClient
 
 from ai_assistant.service import run_chat_tool
 from ai_assistant.service import AssistantService, Config
+from ai_assistant.web_data_mcp import data_mcp_inventory
 from mcp_connectors.asgi import create_router
 from mcp_connectors.client import HttpMcpServer, LEGACY_HTTP, MODERN_HTTP, McpError
-from mcp_connectors.registry import Registry
+from mcp_connectors.registry import ConfigError, Registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,72 @@ LOCAL = {'X-Data-Agent-Local': '1'}
 
 
 class McpRegistryTests(unittest.TestCase):
+    def test_built_in_data_mcp_slots_reserve_names_without_writing_credentials(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'SOMNUS_PROFILE_CONFIG_ONLY': '1'}):
+            config = Path(directory) / 'mcp.json'
+            old = {'command': 'legacy-command', 'name': 'TEXT_TO_SQL', 'enabled': False}
+            config.write_text(json.dumps({'servers': {'legacy': old}}), encoding='utf-8')
+            inventory = data_mcp_inventory(type('Offline', (), {'mode': 'unconfigured'})())
+            registry = Registry(directory, data_builtins=inventory)
+            self.addCleanup(registry.close)
+            slots = registry.list()['servers']
+            self.assertEqual([s['id'] for s in slots], ['database', 'text-to-sql'])
+            for server in slots:
+                self.assertTrue(server['builtin'] and server['runtime_managed'])
+                self.assertEqual(server['status'], 'unavailable')
+                self.assertEqual(registry.test(server['id']), server)
+                self.assertFalse({'url', 'token', 'headers'} & server.keys())
+                for change in (
+                    lambda: registry.put(server['id'], {'enabled': False, 'tool_permissions': {'propose_sql': 'read'}}),
+                    lambda: registry.remove(server['id']),
+                    lambda: registry.put('duplicate', {'name': server['id'].upper(), 'command': 'mine'}, create=True),
+                    lambda: registry.import_configs({'servers': {'duplicate': {**old, 'name': server['id']}}}),
+                ):
+                    with self.assertRaises(ConfigError) as failure:
+                        change()
+                    self.assertEqual(failure.exception.status, 409)
+            registry.put('another', {'command': 'example'}, create=True)
+            self.assertEqual(set(json.loads(config.read_text(encoding='utf-8'))['servers']), {'legacy', 'another'})
+
+    def test_default_desktop_mcp_is_visible_and_cannot_be_overridden(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'SOMNUS_PROFILE_CONFIG_ONLY': '1'}), \
+                patch('mcp_connectors.registry.desktop_mcp_command', return_value=None):
+            config = Path(directory) / 'mcp.json'
+            old = {'command': 'legacy-path', 'name': 'agent-desktop', 'enabled': False}
+            config.write_text(json.dumps({'servers': {'legacy': old}}), encoding='utf-8')
+            registry = Registry(directory, desktop_builtin=True)
+            self.addCleanup(registry.close)
+            builtin, = registry.list()['servers']
+            self.assertEqual((builtin['id'], builtin['status'], builtin['builtin']),
+                             ('agent-desktop', 'unavailable', True))
+            for change in (
+                lambda: registry.put('agent-desktop', {'enabled': False}),
+                lambda: registry.remove('agent-desktop'),
+                lambda: registry.remove('legacy'),
+                lambda: registry.import_configs({'servers': {'duplicate': old}}),
+            ):
+                with self.assertRaises(ConfigError) as failure:
+                    change()
+                self.assertEqual(failure.exception.status, 409)
+            registry.put('another', {'command': 'example'}, create=True)
+            saved = json.loads(config.read_text(encoding='utf-8'))['servers']
+            self.assertNotIn('agent-desktop', saved)
+            self.assertEqual(saved['legacy']['command'], old['command'])
+
+    def test_default_desktop_uses_only_app_owned_profile_binary(self):
+        from mcp_connectors.registry import desktop_mcp_command
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'dsh-home/mcp/agent-desktop/node_modules/agent-desktop/bin/agent-desktop-win32-x64.exe'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'fixture executable is never launched')
+            self.assertEqual(desktop_mcp_command(root), str(binary))
+            separate_data = root / 'separate-data'
+            with patch.dict(os.environ, {'SOMNUS_DESKTOP_ROAMING_DIR': str(root)}):
+                self.assertEqual(desktop_mcp_command(separate_data), str(binary))
+            with patch.dict(os.environ, {'SOMNUS_DESKTOP_ROAMING_DIR': str(root / 'safe-profile')}):
+                self.assertNotEqual(desktop_mcp_command(separate_data), str(binary))
+
     def test_non_desktop_approval_reports_entry_without_dispatch_or_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             service = AssistantService(Path(directory) / 'assistant.sqlite3', Config('https://model.invalid/v1', 'mock', 'key'))

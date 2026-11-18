@@ -3,8 +3,7 @@ const { spawn } = require('node:child_process');
 const MAX_LINE = 4 * 1024 * 1024;
 
 function processEnvironment() {
-  // Use the user's native CLI profile for authentication. Application credentials
-  // and arbitrary inherited model settings are not exported to external agents.
+  // Pass system settings here. Managed adapters receive their own authentication scope below.
   const allowed = new Set([
     'ALLUSERSPROFILE', 'APPDATA', 'COMSPEC', 'HOME', 'HOMEDRIVE', 'HOMEPATH',
     'LANG', 'LOCALAPPDATA', 'NUMBER_OF_PROCESSORS', 'OS', 'PATH', 'PATHEXT',
@@ -44,8 +43,7 @@ class AcpStdio {
         ...(dshHome ? {
           DSH_HOME: dshHome,
           DSH_TELEMETRY_DISABLED: '1',
-          ...(companyModelToken ? { VVMAN_COMPANY_MODEL_TOKEN: companyModelToken } :
-            process.env.DEEPSEEK_API_KEY ? { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY } : {}),
+          ...(companyModelToken ? { VVMAN_COMPANY_MODEL_TOKEN: companyModelToken } : {}),
         } : {}),
       },
     });

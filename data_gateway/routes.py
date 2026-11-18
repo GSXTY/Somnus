@@ -10,6 +10,7 @@ DATA_ROUTES = {
     '/api/sql/schema': 'GET',
     '/api/sql/query': 'POST',
     '/api/sql/ask': 'POST',
+    '/api/sql/propose': 'POST',
 }
 USER_PATH = re.compile(r'/api/workbench/users/[A-Za-z0-9_-]{1,128}\Z')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{32,256}\Z')

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { copyFile, mkdir, mkdtemp, realpath, readdir, rm, symlink, writeFile } = require('node:fs/promises');
 const { EventEmitter } = require('node:events');
+const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -16,10 +17,16 @@ test('managed DSH reconnect keeps its ID and checkpoint verifies separate accoun
   window.webContents = Object.assign(new EventEmitter(), { mainFrame: frame });
   const event = { sender: window.webContents, senderFrame: frame };
   const handlers = new Map();
+  const loadModule = Module._load;
+  const electron = t.mock.method(Module, '_load', (specifier, ...args) =>
+    specifier === 'electron' ? { safeStorage: {} } : loadModule.call(Module, specifier, ...args));
   const agents = registerAcpAgents({
-    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler), removeHandler: name => handlers.delete(name) },
     window, origin, profileDir, resourcesPath: profileDir, token: 'test-native-token', version: '1.0.0',
   });
+  electron.mock.restore();
+  assert.equal(handlers.has('vvman-acp:open-deepseek-harness'), false);
+  assert.equal(await handlers.get('vvman-acp:detect-adapter')(event, 'deepseek-harness-native'), null);
   t.after(async () => {
     window.emit('closed');
     await rm(profileDir, { recursive: true, force: true, maxRetries: 5 });
@@ -89,17 +96,10 @@ test('detect installed Windows ACP adapters using their known entries', { skip: 
   const node = await write(path.join(env.ProgramFiles, 'nodejs', 'node.exe'), 'Mock runtime');
   assert.deepEqual(await detectAdapter('codex', env), { name: 'Codex', executable: node, args: [codex] });
 
-  const official = await install('@deepseek-ai/dsh', 'dsh', 'lib/bin.js');
-  assert.deepEqual(await detectAdapter('deepseek-harness', env), {
-    name: 'DeepSeek Harness', executable: node, args: [official, '--profile', 'acp'],
-  });
-  await install('@openma/deepseek-harness-acp', 'dsh-acp', 'dist/bin.js', '../../../wrong.js');
-  assert.equal((await detectAdapter('deepseek-harness', env)).args[0], official);
-  const openma = await install('@openma/deepseek-harness-acp', 'dsh-acp', 'dist/bin.js');
-  assert.deepEqual((await detectAdapter('deepseek-harness', env)).args, [openma]);
-  assert.deepEqual(await detectAdapter('deepseek-harness-native', env), {
-    name: 'DSH 插件运行时', executable: node, args: [official, '--profile', 'acp'],
-  });
+  await install('@deepseek-ai/dsh', 'dsh', 'lib/bin.js');
+  await install('@openma/deepseek-harness-acp', 'dsh-acp', 'dist/bin.js');
+  assert.equal(await detectAdapter('deepseek-harness', env), null);
+  assert.equal(await detectAdapter('deepseek-harness-native', env), null);
 
   const codebuddy = await write(path.join(env.LOCALAPPDATA, 'codebuddy', 'bin', 'codebuddy.exe'), 'Mock native program');
   assert.deepEqual(await detectAdapter('codebuddy', env), {
@@ -110,11 +110,16 @@ test('detect installed Windows ACP adapters using their known entries', { skip: 
   const elsewhere = path.join(root, 'elsewhere');
   await write(path.join(elsewhere, 'index.js'), 'Unrelated');
   await rm(codexEntryDir, { recursive: true });
-  await symlink(elsewhere, codexEntryDir, 'junction');
-  assert.equal(await detectAdapter('codex', env), null);
+  try {
+    await symlink(elsewhere, codexEntryDir, 'junction');
+    assert.equal(await detectAdapter('codex', env), null);
+  } catch (error) {
+    if (error.code !== 'EPERM') throw error;
+    t.diagnostic('Directory links are unavailable in this environment.');
+  }
 });
 
-test('official DSH detection uses the bundled Node fallback and only the supported official ACP launcher', {
+test('adapter discovery ignores DSH in a separate npm prefix', {
   skip: process.platform !== 'win32',
 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vvman-native-dsh-'));
@@ -137,10 +142,8 @@ test('official DSH detection uses the bundled Node fallback and only the support
   assert.equal(await detectAdapter('deepseek-harness-native', env, resources), null);
   await install(prefix, '@deepseek-ai/dsh', 'dsh', 'lib/bin.js', './other.js');
   assert.equal(await detectAdapter('deepseek-harness-native', env, resources), null);
-  const script = await install(prefix, '@deepseek-ai/dsh', 'dsh', 'lib/bin.js');
-  assert.deepEqual(await detectAdapter('deepseek-harness-native', env, resources), {
-    name: 'DSH 插件运行时', executable: await realpath(executable), args: [script, '--profile', 'acp'],
-  });
+  await install(prefix, '@deepseek-ai/dsh', 'dsh', 'lib/bin.js');
+  assert.equal(await detectAdapter('deepseek-harness-native', env, resources), null);
   assert.equal(await detectAdapter('deepseek-harness', env, resources), null);
 });
 

@@ -1,0 +1,20 @@
+{
+  "appName": "Somnus",
+  "assets": {
+    "windowsIcon": "electron/brand/somnus.ico",
+    "appMark": "electron/brand/somnus.png"
+  },
+  "themeTokens": {
+    "--dsw-alias-bg-layer-1": { "light": "#F5F8F7", "dark": "#18211F" },
+    "--dsw-alias-bg-layer-2": { "light": "#FFFFFF", "dark": "#202A28" },
+    "--dsw-alias-label-primary": { "light": "#202A28", "dark": "#E7EFEB" },
+    "--dsw-alias-button-primary-fill": { "light": "#176D61", "dark": "#86CDBD" },
+    "--dsw-alias-button-primary-hover": { "light": "#12584F", "dark": "#A1DECF" }
+  },
+  "clientSlots": {
+    "brandMark": "sidebar.brand.mark",
+    "brandName": "sidebar.brand.name",
+    "companyPanelNavigation": "sidebar.panellist",
+    "settings": "settings.section"
+  }
+}

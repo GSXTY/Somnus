@@ -119,7 +119,16 @@ class ModelStore:
                 groups[group_id] = shared
                 providers.append(dict(config, id=model_id, group_id=group_id, created_at=timestamp))
             active = data.get('active', BUILTIN)
+            company_key = data.get('company_key')
             data = dict(active=active if isinstance(active, str) and active in seen else BUILTIN, providers=providers)
+            if company_key is not None:
+                revision = company_key.get('revision')
+                if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{32}', revision):
+                    raise ValueError('invalid company key revision')
+                key = _clean_text(company_key.get('api_key'), 4096)
+                if any(ord(char) > 126 for char in key):
+                    raise ValueError('invalid company key')
+                data['company_key'] = dict(api_key=key, revision=revision)
         except (AttributeError, OSError, ValueError, RecursionError) as exc:
             raise ModelError('model_store_unavailable', '无法读取本机模型配置，请检查 models.json。', 503) from exc
         if source != self.path or any('group_id' not in entry for entry in entries):
@@ -139,6 +148,30 @@ class ModelStore:
     def _selection(db):
         row = db.execute('SELECT model_id FROM model_selection WHERE singleton=1').fetchone()
         return row[0] if row is not None else None
+
+    def company_key(self):
+        with self.lock:
+            return self._load().get('company_key')
+
+    def set_company_key(self, fields):
+        with self.lock:
+            data = self._load()
+            current = data.get('company_key')
+            if fields is None:
+                if current is not None:
+                    del data['company_key']
+                    self._write(data)
+                return None
+            if set(fields) != {'api_key'}:
+                raise ModelError('invalid_model', '公司连接只允许设置公司分配的 API 密钥。')
+            key = _clean_text(fields['api_key'], 4096)
+            if any(ord(char) > 126 for char in key):
+                raise ModelError('invalid_model_key', '请填写有效的公司 API 密钥。')
+            if current and current['api_key'] == key:
+                return current
+            data['company_key'] = dict(api_key=key, revision=uuid.uuid4().hex)
+            self._write(data)
+            return data['company_key']
 
     @staticmethod
     def _write_selection(db, model_id):
@@ -182,6 +215,7 @@ class ModelStore:
         if builtin and not valid_url(result['base_url']):
             result['base_url'] = ''
         return dict(result, builtin=builtin, configured=configured,
+                    **({'requires_api_key': True} if builtin and entry.get('requires_api_key') else {}),
                     group_id=BUILTIN if builtin else entry['group_id'],
                     api_key_masked='已配置' if entry['api_key'] else '未配置')
 

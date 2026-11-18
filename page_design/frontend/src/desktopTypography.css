@@ -1,0 +1,155 @@
+/* Shared desktop text roles. Popovers and dialogs mount outside the workspace. */
+:root {
+  --shell-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --shell-type-title: 16px;
+  --shell-type-body: 14px;
+  --shell-type-support: 12px;
+  --desktop-type-secondary: 13px;
+  --desktop-line-title: 24px;
+  --desktop-line-body: 22px;
+  --desktop-line-secondary: 20px;
+  --desktop-line-support: 18px;
+}
+
+.codex-theme {
+  font-family: var(--shell-font-ui);
+  line-height: var(--desktop-line-body);
+}
+
+.codex-theme .workspace-sidebar-feature,
+.codex-theme .workspace-sidebar-links button,
+.codex-theme .workspace-sidebar-footer button,
+.codex-theme .workspace-chat-sidebar :is(.nav-project-row, .nav-recent-item, .nav-recent strong),
+.codex-theme .workspace-panel-row,
+.codex-theme .workspace-panel-tabs [role="tab"],
+.codex-theme .document-library-row {
+  font-size: var(--desktop-type-secondary);
+  font-weight: 500;
+  line-height: var(--desktop-line-secondary);
+}
+
+.codex-theme .workspace-sidebar-feature,
+.codex-theme .workspace-sidebar-links button,
+.codex-theme .workspace-sidebar-footer button {
+  min-height: 34px;
+}
+
+.codex-theme .workspace-sidebar-feature kbd,
+.codex-theme .workspace-sidebar-footer,
+.codex-theme .workspace-sidebar-links h2,
+.codex-theme .workspace-chat-sidebar .nav-project-section h2,
+.codex-theme .assistant-reply-metadata,
+.codex-theme .assistant-message-label,
+.codex-theme .workspace-panel-hint,
+.codex-theme .workspace-panel-path,
+.codex-theme .document-library-path,
+.codex-theme .plugin-row-status,
+.codex-theme .plugin-row-copy small {
+  font-size: var(--shell-type-support);
+  line-height: var(--desktop-line-support);
+}
+
+.codex-theme .assistant-chat-heading h1,
+.codex-theme .assistant-chat-title-button,
+.codex-theme .workspace-panel-content h3 {
+  font-size: var(--shell-type-title);
+  font-weight: 600;
+  line-height: var(--desktop-line-title);
+}
+
+.codex-theme .assistant-message .assistant-message-content,
+.codex-theme .assistant-composer textarea.ant-input {
+  font-size: var(--shell-type-body);
+  font-weight: 400;
+  line-height: var(--desktop-line-body);
+}
+
+.codex-theme .assistant-markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  line-height: 1.42;
+}
+
+.codex-theme .assistant-markdown h1 { font-size: 22px; }
+.codex-theme .assistant-markdown h2 { font-size: 19px; }
+.codex-theme .assistant-markdown :is(h3, h4) { font-size: 16px; }
+.codex-theme .assistant-markdown :is(h5, h6) { font-size: 14px; }
+
+.codex-theme .assistant-markdown :is(code, pre),
+.codex-theme .workspace-panel-row code,
+.codex-theme .plugin-dev-editor,
+.codex-theme .sql-query-page textarea {
+  font-family: var(--shell-font-mono);
+}
+
+.codex-theme .assistant-composer-actions .ant-btn-sm {
+  font-size: var(--desktop-type-secondary);
+  line-height: var(--desktop-line-secondary);
+}
+
+.codex-theme .workspace-panel :is(.tools-heading, .page-toolbar h3.ant-typography, .document-library > h1) {
+  font-size: clamp(22px, 2vw, 26px);
+  font-weight: 600;
+  line-height: 1.32;
+  letter-spacing: normal;
+}
+
+.codex-theme .workspace-panel :is(.configuration-section-title, .plugin-section-heading h3, .settings-subheading),
+.codex-theme .workspace-panel .ant-card .ant-card-head-title {
+  font-size: var(--shell-type-title);
+  font-weight: 600;
+  line-height: var(--desktop-line-title);
+}
+
+.codex-theme .workspace-panel :is(.configuration-heading p, .page-description, .settings-row, .plugin-row-copy) {
+  font-size: var(--shell-type-body);
+  line-height: var(--desktop-line-body);
+}
+
+.codex-theme .workspace-panel :is(.plugin-row-copy strong, .settings-row-label) {
+  font-weight: 500;
+}
+
+.codex-theme .plugins-page .builtin-tool {
+  font-family: var(--shell-font-ui);
+  font-size: var(--shell-type-body);
+  font-weight: 400;
+  line-height: var(--desktop-line-body);
+}
+
+.codex-theme .plugins-page .builtin-tool strong { font-weight: 600; }
+
+.codex-theme .plugins-page .builtin-tool small {
+  font-size: var(--shell-type-support);
+  line-height: var(--desktop-line-support);
+}
+
+.ant-modal .ant-modal-content,
+.ant-drawer .ant-drawer-content,
+.ant-dropdown .ant-dropdown-menu,
+.ant-popover .ant-popover-inner {
+  font-family: var(--shell-font-ui);
+}
+
+.ant-modal .ant-modal-content .ant-modal-title,
+.ant-drawer .ant-drawer-header .ant-drawer-title,
+.ant-popover .ant-popover-inner .ant-popover-title {
+  font-size: var(--shell-type-title);
+  font-weight: 600;
+  line-height: var(--desktop-line-title);
+}
+
+.ant-modal .ant-modal-content .ant-modal-body,
+.ant-drawer .ant-drawer-content .ant-drawer-body,
+.ant-popover .ant-popover-inner .ant-popover-inner-content {
+  font-size: var(--shell-type-body);
+  line-height: var(--desktop-line-body);
+}
+
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item,
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu-title {
+  min-height: 30px;
+  padding-block: 5px;
+  font-size: var(--desktop-type-secondary);
+  line-height: var(--desktop-line-secondary);
+}

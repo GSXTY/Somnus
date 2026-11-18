@@ -37,14 +37,17 @@ test('late response tokens cannot commit after selection change or teardown', as
 const metric = { value: null, previous: null, trend: [], label: '未知指标', unit: '小时' };
 const blank = () => ({ schema_version: 1, data_quality: { expected_records: null, received_records: null, lost_records: null, loss_rate: null, unit: 'records', basis: '未接入记录计数' }, source: { mode: 'unconfigured', connected: false, label: '未连接' }, kpis: Object.fromEntries(['active_users', 'treatment_hours', 'reported_events', 'online_rate'].map(k => [k, { ...metric }])), daily: [], users: [], alerts: [], insights: [], constraints: [], alert_distribution: [], fleet: {}, generated_at: 'example', period: { kpi_date: '2026-01-01', start_date: '2025-12-26', end_date: '2026-01-01', time_zone: 'Asia/Shanghai', date_basis: '合成日期' } });
 test('API validation enforces the declared source mode', () => {
-  assert.throws(() => validateDashboard(blank(), 'live'), /来源|未连接/);
+  assert.equal(validateDashboard(blank(), 'live').source.mode, 'unconfigured');
   assert.throws(() => validateDashboard(blank(), 'demo'), /来源/);
+  const invalidUnconfigured = blank();
+  invalidUnconfigured.kpis.reported_events.value = 0;
+  assert.throws(() => validateDashboard(invalidUnconfigured, 'live'), /未连接来源/);
   const live = blank(); live.source = { mode: 'live', connected: true, label: '真实数据' };
   live.kpis.active_users.value = 81;
   live.kpis.avg_ahi = { ...metric };
   assert.equal(validateDashboard(live, 'live').source.mode, 'live');
   const disconnected = blank(); disconnected.source = { mode: 'live', connected: false, label: '未连接' };
-  assert.throws(() => validateDashboard(disconnected, 'live'), /未连接/);
+  assert.throws(() => validateDashboard(disconnected, 'live'), /连接状态/);
   const partial = blank(); partial.source = { mode: 'demo', connected: false, label: '演示' };
   delete partial.kpis.online_rate;
   assert.throws(() => validateDashboard(partial, 'demo'), /指标/);

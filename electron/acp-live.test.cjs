@@ -147,6 +147,31 @@ test('DSH MCP wrappers correlate by tool and arguments in either arrival order',
   assert.doesNotMatch(JSON.stringify(events), /private_value/);
 });
 
+test('ACP thinking shows a live stage without exposing thought text or extending the deadline', () => {
+  const agents = new AcpAgents('unused', 'test');
+  const updates = [];
+  const current = { sessionId: 'session', conversationId: 'conversation' };
+  let progress = 0;
+  const turn = { agentId: 'agent', conversationId: 'conversation', current, promptActive: true, text: '',
+    deadline: { progress() { progress += 1; } }, onUpdate: event => updates.push(event) };
+  turn.live = new AcpLive(turn);
+  agents.turns.set(turn.conversationId, turn);
+  turn.live.setStage('working');
+  const notify = (sessionUpdate, text) => agents.update(current, {
+    sessionId: 'session', update: { sessionUpdate, content: { type: 'text', text } },
+  });
+  notify('agent_thought_chunk', 'private text 1');
+  notify('agent_thought_chunk', 'private text 2');
+  assert.equal(progress, 0);
+  assert.equal(turn.text, '');
+  assert.deepEqual(updates.map(event => event.acpStage), ['working', 'thinking']);
+  assert.doesNotMatch(JSON.stringify(updates), /private text/);
+  notify('agent_message_chunk', '公开回复');
+  assert.equal(progress, 1);
+  assert.equal(updates.at(-2).acpStage, 'responding');
+  assert.equal(updates.at(-1).text, '公开回复');
+});
+
 test('native managed-edit approval revalidates file scope and denies command or unverified Agent', async () => {
   const updates = [];
   const abort = new AbortController();

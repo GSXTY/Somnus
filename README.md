@@ -93,5 +93,3 @@ python launcher.py
 | 版本变更 | [更新记录](RELEASE_NOTES.md) · [GitHub 发布页](https://github.com/GSXTY/Somnus-Releases/releases) |
 
 第三方组件按各自许可证分发。本仓库尚未声明公开开源许可证。
-
-[维护与发布](docs/MAINTAINER.md) · [维护控制台](docs/MAINTAINER_ADMIN.md) · [可选 DeepSeek 转发服务](docs/MODEL_RELAY.md)

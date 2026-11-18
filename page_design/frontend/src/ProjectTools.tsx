@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Segmented, Select, Space, Spin } from 'antd';
-import { BranchesOutlined, CodeOutlined } from '@ant-design/icons';
+import { CodeOutlined } from '@ant-design/icons';
 import { workspaces } from './assistantApi';
 import type { ConversationWorktree } from './assistantApi';
 import type { DevelopmentApprovalDetails } from './assistantAcp';
@@ -16,9 +16,10 @@ export type ProjectToolsBridge = {
   removeTestRunner?: (workspace: string, id: string) => Promise<void>;
   gitDiff?: (workspace: string, source: string, conversationId?: string) => Promise<GitChanges>;
   createWorktree?: (conversationId: string, source: string) => Promise<{ worktree: ConversationWorktree } | null>;
-  openWorktree?: (conversationId: string) => Promise<void>;
+  openWorktree?: (conversationId: string, target?: 'explorer' | 'vscode' | 'git-bash' | 'terminal') => Promise<void>;
   worktreeLocation?: (conversationId: string) => Promise<string>;
   openApprovedFile?: (conversationId: string, proposalId: string) => Promise<void>;
+  revealProposal?: (conversationId: string, proposalId: string) => Promise<void>;
   prepareDevelopment?: (conversationId: string, jobId: string) => Promise<{ kind: 'complete' } | { kind: 'approval'; details: DevelopmentApprovalDetails }>;
   respondDevelopment?: (conversationId: string, jobId: string, approved: boolean) => Promise<{ kind: 'complete' }>;
   cancelDevelopment?: (conversationId: string, jobId: string) => Promise<void>;
@@ -119,15 +120,16 @@ export function ProjectToolsPanel({ workspace, open, conversationId, worktree }:
   </div>;
 }
 
-export function ChatWorktree({ workspace, conversationId, worktree, disabled, onBind, onBusy }: {
+export function ChatWorktree({ workspace, conversationId, worktree, disabled, open, onOpenChange, onBind, onBusy }: {
   workspace: string;
   conversationId: string;
   worktree?: ConversationWorktree | null;
   disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onBind: (worktree: ConversationWorktree) => void;
   onBusy: (busy: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [source, setSource] = useState('source_1');
   const [busy, setBusy] = useState(false);
   const { bridge, folders, loading, error, setError } = useProjectTools(workspace, open, false);
@@ -144,7 +146,7 @@ export function ChatWorktree({ workspace, conversationId, worktree, disabled, on
       const result = await bridge.createWorktree(conversationId, selected);
       if (result) {
         onBind(result.worktree);
-        setOpen(false);
+        onOpenChange(false);
       }
     } catch (failure) { setError(describeError(failure, '无法创建会话工作树')); }
     finally { setBusy(false); onBusy(false); }
@@ -155,15 +157,13 @@ export function ChatWorktree({ workspace, conversationId, worktree, disabled, on
     catch (failure) { setError(describeError(failure, '无法打开工作树')); }
   }
   return <>
-    <Button type="text" size="small" icon={<BranchesOutlined />} aria-label={worktree ? '会话工作树' : '创建会话工作树'}
-      disabled={!worktree && disabled} onClick={() => setOpen(true)}>{worktree ? '工作树 · ' + worktree.label : '工作树'}</Button>
-    <Modal open={open} title={worktree ? '会话工作树' : '创建会话工作树'} onCancel={() => { if (!busy) setOpen(false); }}
+    <Modal open={open} title={worktree ? '会话工作树' : '创建会话工作树'} onCancel={() => { if (!busy) onOpenChange(false); }}
       closable={!busy} keyboard={!busy} maskClosable={!busy}
       footer={worktree ? <Space>
-        <Button onClick={() => setOpen(false)}>关闭</Button>
+        <Button onClick={() => onOpenChange(false)}>关闭</Button>
         {bridge?.openWorktree && <Button type="primary" onClick={() => void openFolder()}>打开工作树</Button>}
       </Space> : <Space>
-        <Button disabled={busy} onClick={() => setOpen(false)}>取消</Button>
+        <Button disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
         <Button type="primary" loading={busy} disabled={loading || !selected || disabled} onClick={() => void create()}>创建并绑定</Button>
       </Space>}>
       {worktree ? <dl className="project-test-result">

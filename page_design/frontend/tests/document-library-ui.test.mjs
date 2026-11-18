@@ -107,6 +107,44 @@ test('project folder picker uses only personal folders and requires a named fold
   assert.deepEqual(calls, [['private', ''], ['private', folder.path], ['private', folder.path]]);
 });
 
+test('personal document actions create inside the open folder and delete only after confirmation', async () => {
+  const calls = [];
+  const bridge = {
+    list: async (scope, path) => ({ folder: path, entries: scope === 'shared' ? [shared] : path ? [] : [folder] }),
+    createFile: async (path, name, content) => {
+      calls.push(['create', path, name, content]);
+      return { folder: path, entries: [file] };
+    },
+    deleteEntry: async path => {
+      calls.push(['delete', path]);
+      return { folder: folder.path, entries: [] };
+    },
+  };
+  const personal = harness(bridge)('private');
+  personal();
+  await settle();
+  personal()('button').props.onClick();
+  personal();
+  await settle();
+  personal()('Button', props => props.children === '新建文件').props.onClick();
+  personal()('Input').props.onChange({ target: { value: file.name } });
+  await personal()('Modal').props.onOk();
+  const remove = () => personal()('Button', props => props['aria-label'] === '移到回收站 ' + file.name);
+  remove().props.onClick();
+  personal()('Modal').props.onCancel();
+  assert.deepEqual(calls, [['create', folder.path, file.name, '']]);
+  remove().props.onClick();
+  await personal()('Modal').props.onOk();
+  assert.deepEqual(calls.at(-1), ['delete', file.path]);
+  assert.equal(remove(), undefined);
+
+  const sharedView = harness(bridge)('shared');
+  sharedView();
+  await settle();
+  assert.equal(sharedView()('Button', props => props.children === '新建文件'), undefined);
+  assert.equal(sharedView()('Button', props => props.danger), undefined);
+});
+
 test('an approved write refreshes private document views without reloading shared documents', async () => {
   const events = new EventTarget();
   const calls = [];

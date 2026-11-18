@@ -1,0 +1,109 @@
+.extension-settings {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+  color: var(--shell-ink);
+}
+.extension-heading, .extension-section { display: grid; gap: 12px; }
+.extension-heading-line, .extension-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.extension-heading-line { gap: 12px; }
+.extension-heading-copy { flex: 1 1 220px; min-width: 0; }
+.extension-heading-copy h2 { margin: 0; font-size: 21px; line-height: 1.35; font-weight: 650; overflow-wrap: anywhere; }
+.extension-heading-copy p, .extension-note { margin: 4px 0 0; color: var(--shell-muted); line-height: 1.5; overflow-wrap: anywhere; }
+.extension-heading .extension-icon { width: 44px; height: 44px; font-size: 20px; }
+.extension-back {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-self: start;
+  padding: 5px 8px;
+  margin-inline-start: -8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--shell-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.extension-back:hover { background: var(--shell-selected); color: var(--shell-ink); }
+.extension-search { max-width: 310px; }
+.extension-section > h3 { margin: 0; color: var(--shell-muted); font-size: 13px; font-weight: 600; }
+.extension-list { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.extension-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 6px 10px 6px 6px;
+  min-width: 0;
+  border: 1px solid var(--shell-line);
+  border-radius: 10px;
+  background: var(--shell-surface);
+}
+.extension-item:has(.extension-item-open:hover) { background: var(--shell-selected); }
+.extension-item-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  flex: 1 1 194px;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  border: 0;
+  border-radius: 7px;
+  padding: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.extension-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 8px;
+  color: var(--shell-accent);
+  background: var(--shell-selected);
+  font-size: 17px;
+}
+.extension-item-copy { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.extension-item-copy strong { font-weight: 600; font-size: var(--shell-type-body, 14px); }
+.extension-item-copy > span { color: var(--shell-muted); font-size: var(--desktop-type-secondary, 13px); }
+.extension-chevron { color: var(--shell-muted); font-size: 10px; }
+.extension-actions { margin-inline-start: auto; }
+.extension-actions .ant-tag { margin: 0; }
+.extension-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--shell-muted); }
+.extension-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.extension-status[data-tone='ready']::before { color: var(--ant-color-success, #288253); }
+.extension-status[data-tone='error']::before { color: var(--ant-color-error, #c54545); }
+.extension-status[data-tone='unavailable']::before { color: var(--ant-color-warning, #af7022); }
+.extension-detail {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--shell-line);
+  border-radius: 10px;
+  background: var(--shell-surface);
+  overflow-wrap: anywhere;
+}
+.extension-detail :is(p, ul, h3, dl) { margin: 0; }
+.extension-detail > h3 { font-size: 14px; font-weight: 600; }
+.extension-detail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; }
+.extension-detail dt { color: var(--shell-muted); }
+.extension-detail dd { margin: 0; }
+.extension-empty { margin: 4px 0; padding: 16px; color: var(--shell-muted); font-size: 13px; }
+.extension-back:focus-visible, .extension-item-open:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 1px; }
+
+@media (max-width: 540px) {
+  .extension-item > .extension-actions { padding-inline-start: 48px; margin-inline-start: 0; }
+  .extension-heading .extension-actions { margin-inline-start: 0; }
+}

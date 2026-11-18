@@ -153,28 +153,79 @@ def dashboard(query, now=None, *, settings=None):
     labels = [('active_users','昨日活跃用户','人'), ('treatment_hours','昨日治疗时长','小时'),
               ('reported_events','昨日演示模型候选','次'), ('online_rate','当前设备在线率','%')]
     if source == 'live':
-        from agent_core.live_dashboard import available, snapshot
+        from agent_core.live_dashboard import (
+            SNORE_SUMMARY_TABLES, YA50_INDEX_LABEL, YA50_MODEL, YA50_TABLE, SummaryFieldsUnavailable,
+            available, device_types, snapshot, snore_product_options, snore_product_snapshot,
+            ya50_available, ya50_snapshot,
+        )
         from agent_core.sql_access import SqlSettings
         settings = settings or SqlSettings.from_env()
-        if not available(settings):
-            return dict(base, kpis={key: dict(value=None, previous=None, trend=[], label=label, unit=unit)
-                                    for key, label, unit in labels}, daily=[], users=[], alerts=[],
+        show_ya50 = YA50_TABLE in settings.allowed_tables and settings.driver == 'mysql'
+        home_options = [dict(value=YA50_MODEL, label=YA50_MODEL)] if show_ya50 else []
+        home_options.extend(snore_product_options(settings))
+        base['model_options'] = home_options
+        snore_product = model in SNORE_SUMMARY_TABLES
+        if snore_product:
+            base['home'] = dict(metrics=[], charts=[])
+            base['period']['date_basis'] = '后台汇总记录日期待核对'
+
+        unavailable_labels = [*labels[:2], ('reported_events', '昨日设备上报事件', '次'), labels[3],
+            ('avg_ahi', YA50_INDEX_LABEL if model == YA50_MODEL else '设备上报平均 AHI', '次/小时')
+        ]
+        missing_kpis = {key: dict(value=None, previous=None, trend=[], label=label, unit=unit)
+                        for key, label, unit in unavailable_labels}
+
+        def unavailable(message):
+            base['source'] = dict(mode='unconfigured', connected=False, label=message)
+            return dict(base, kpis=missing_kpis, daily=[], users=[], alerts=[],
                         fleet=dict(online=None, total=None, in_therapy=None, offline=None, latency_seconds=None),
                         data_quality=reporting_quality(), alert_distribution=[],
-                        insights=[dict(kind='next_step', title='真实数据源连接失败',
-                                       text='无法连接只读数据库，请检查 ANALYTICS_DB_URL 与白名单。', evidence=[])])
-        live = snapshot(settings, now, model)
+                        insights=[dict(kind='next_step', title='检查数据源', text=message, evidence=[])])
+
+        if snore_product and not any(option['value'] == model for option in home_options):
+            return unavailable(f'{model} 汇总表 {SNORE_SUMMARY_TABLES[model]} 尚未加入当前数据源白名单')
+        if not available(settings):
+            return unavailable('暂时无法连接只读数据库')
         try:
-            from agent_core.live_dashboard import device_types
             live_models = device_types(settings)
         except Exception:
             live_models = []
+        base['model_options'] = [*live_models, *home_options]
+        if snore_product:
+            try:
+                live = snore_product_snapshot(settings, now, model)
+            except SummaryFieldsUnavailable as exc:
+                return unavailable(str(exc))
+            except Exception:
+                return unavailable(f'无法读取 {model} 汇总记录，请检查数据库连接和表权限')
+            base['source'] = dict(mode='live', connected=True, label='真实数据（RDS 只读）')
+            base['period']['date_basis'] = live['date_basis']
+            base['home'] = live['home']
+            base['constraints'] = live['constraints']
+            return dict(base, kpis=missing_kpis, daily=[], users=[], alerts=[],
+                        fleet=dict(online=None, total=None, in_therapy=None, offline=None, latency_seconds=None),
+                        data_quality=reporting_quality(), alert_distribution=[], insights=[])
+
+        if model == YA50_MODEL:
+            base['period']['date_basis'] = '真实后台治疗报告日期（resp_statistics.record_date）'
+            if not ya50_available(settings):
+                return unavailable('无法读取 YA50 治疗日报，请核对当前数据源的表和字段权限')
+            try:
+                live = ya50_snapshot(settings, now)
+            except Exception:
+                return unavailable('YA50 治疗日报查询失败，请检查数据库连接和字段权限')
+            base['source'] = dict(mode='live', connected=True, label='真实数据（RDS 只读）')
+            base['constraints'] = live['constraints']
+            return dict(base, kpis=live['kpis'], daily=live['daily'], users=[], alerts=[],
+                        fleet=dict(online=None, total=None, in_therapy=None, offline=None, latency_seconds=None),
+                        data_quality=reporting_quality(), alert_distribution=[], insights=[])
+
+        live = snapshot(settings, now, model)
         base['source'] = dict(mode='live', connected=True, label='真实数据（RDS 只读）')
-        base['model_scope'] = [item['value'] for item in live_models] or ['all']
-        base['model_options'] = live_models
+        base['model_scope'] = ([item['value'] for item in live_models] or ['all']) if model == 'all' else [model]
         base['period']['date_basis'] = '真实后台自然日（resp_statistics_ya70.recorde_date）'
         base['constraints'] = [
-            '真实数据来自只读账号的聚合查询，仅覆盖白名单内的 14 张表。',
+            '真实数据来自只读账号，查询范围遵循当前白名单。',
             '在线率、漏气判级与事件候选尚未接入真实来源，保持未知。',
             'AHI 为设备上报值，与工程候选事件不是同一口径，不作诊断依据。',
         ]

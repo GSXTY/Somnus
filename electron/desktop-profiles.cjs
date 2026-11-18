@@ -42,6 +42,28 @@ function json(value) {
   return JSON.stringify(value, null, 2) + '\n';
 }
 
+function initializeRuntimeProfiles(roamingDir) {
+  const home = path.join(roamingDir, 'dsh-home');
+  try { fs.mkdirSync(home, { recursive: false }); } catch (error) {
+    if (error.code === 'EEXIST') return;
+    throw error;
+  }
+  for (const [mode, bundle] of Object.entries(RUNTIME_PROFILES)) {
+    const folder = path.join(home, 'profiles', mode);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'package.json'), json({
+      name: 'dsh-profile-' + mode, private: true, dependencies: {},
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', bundle] } },
+      ...(mode === 'web' ? { vvman: { defaultIm: 'pending' } } : {}),
+    }), { flag: 'wx' });
+    for (const entry of ['cordis.yml', 'cordis.patch.yml']) {
+      fs.writeFileSync(path.join(folder, entry), '[]\n', { flag: 'wx' });
+    }
+    fs.writeFileSync(path.join(folder, 'pnpm-workspace.yaml'),
+      'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n', { flag: 'wx' });
+  }
+}
+
 class DesktopProfileStore {
   constructor(baseDir, isolatedDefault = false) {
     this.baseDir = path.resolve(baseDir);
@@ -97,9 +119,14 @@ class DesktopProfileStore {
   }
 
   prepare(profile) {
-    if (!profile.dataDir || profile.id !== DEFAULT) return;
-    fs.mkdirSync(profile.dataDir, { recursive: true });
-    plainDirectory(profile.dataDir);
+    if (profile.id !== DEFAULT) return;
+    fs.mkdirSync(profile.roamingDir, { recursive: true });
+    plainDirectory(profile.roamingDir);
+    initializeRuntimeProfiles(profile.roamingDir);
+    if (profile.dataDir) {
+      fs.mkdirSync(profile.dataDir, { recursive: true });
+      plainDirectory(profile.dataDir);
+    }
   }
 
   create(name) {
@@ -116,19 +143,8 @@ class DesktopProfileStore {
     fs.mkdirSync(root);
     const roamingDir = path.join(root, 'roaming');
     fs.mkdirSync(path.join(root, 'data'));
-    for (const [mode, bundle] of Object.entries(RUNTIME_PROFILES)) {
-      const folder = path.join(roamingDir, 'dsh-home', 'profiles', mode);
-      fs.mkdirSync(folder, { recursive: true });
-      fs.writeFileSync(path.join(folder, 'package.json'), json({
-        name: 'dsh-profile-' + mode, private: true, dependencies: {},
-        dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', bundle] } },
-      }), { flag: 'wx' });
-      for (const entry of ['cordis.yml', 'cordis.patch.yml']) {
-        fs.writeFileSync(path.join(folder, entry), '[]\n', { flag: 'wx' });
-      }
-      fs.writeFileSync(path.join(folder, 'pnpm-workspace.yaml'),
-        'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n', { flag: 'wx' });
-    }
+    fs.mkdirSync(roamingDir);
+    initializeRuntimeProfiles(roamingDir);
     fs.writeFileSync(path.join(root, PROFILE_INFO), json({ id, name }), { flag: 'wx' });
     state.profiles.push({ id, name });
     atomicWrite(this.file, json(state));

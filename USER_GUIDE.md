@@ -1,4 +1,4 @@
-# Somnus 使用说明（v0.3.0-beta.6）
+# Somnus 使用说明（v0.3.0-beta.4）
 
 ## 启动桌面版
 
@@ -9,13 +9,13 @@ Windows 上关闭主窗口会把 Somnus 留在系统托盘，打开托盘菜单�
 
 左侧「项目」用于创建项目、切换项目和查看项目内的会话。原工作空间及其会话继续在对应项目下显示，内置项目显示为「默认项目」。
 
-DeepSeek Harness 通过 ACP 接入 Somnus 工作台。可在配置中心连接 DSH 账号、管理 DSH 插件，在会话中选择 DSH Agent。需要命令行操作时，可在插件市场选择「打开 DSH 终端」。
+DeepSeek Harness 通过 ACP 接入 Somnus 工作台。可在配置中心连接 DSH 账号、管理 DSH 插件，在会话中选择 DSH Agent。需要命令行操作时，可在会话右侧工作区打开「终端」标签页。
 
 ## 本机数据和配置
 
 打包版默认把 `events.sqlite3`（标记和检测批次）及 `assistant.sqlite3`（会话）保存在以下目录。`AI_AGENT_DATA_DIR` 可用于指定其他存储位置。
 
-- Windows：`%LOCALAPPDATA%\VVFLY\Somnus\`。beta.6 首次启动时自动复制旧数据目录。全新安装可在 Windows 安装向导中选择程序目录，用户配置仍保存在此处。如果旧版的 `.env` 放在 EXE 同级目录，在本机复制到上述数据目录即可沿用配置。
+- Windows：`%LOCALAPPDATA%\VVFLY\Somnus\`。默认配置首次运行时会沿用旧 `RespiratoryViewer` 目录的数据，已有默认配置继续使用原存储。可将 `.env` 放入默认配置的数据目录。
 - macOS：`~/Library/Application Support/VVFLY/RespiratoryViewer/`。如需使用 `.env`，放在该目录。启动环境设置 `AI_AGENT_DATA_DIR` 时，把 `.env` 放在指定目录。
 
 应用更新时保留数据目录和本机配置。需要迁移标记时，可使用现有 JSON 导出功能备份。

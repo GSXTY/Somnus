@@ -27,12 +27,12 @@ function projectFileTools(prepared) {
   });
   const tools = [schema(READ_FILE, '读取已授权项目的 UTF-8 文本。返回原文和版本 sha256。',
     pathFields, ['source', 'path'])];
-  if (mayPropose(prepared)) tools.push(schema(PROPOSE_FILE,
-    '保存现有文件的修改候选，等待用户在 Somnus 审核应用。返回待审核状态。先读取原文和 sha256。',
+  tools.push(schema(PROPOSE_FILE,
+    '请求用户批准修改现有文件，只读模式也可提交。等待用户在 Somnus 审核应用，先读取原文和 sha256。',
     { ...pathFields, expected_sha256: { type: 'string' }, new_content: { type: 'string', description: '完整的文件替换文本。' } },
     ['source', 'path', 'expected_sha256', 'new_content']));
-  if (mayPropose(prepared) && prepared.project.supports_create === true) tools.push(schema(CREATE_FILE,
-    '提交新文本文件的待审核候选。目标必须不存在，且父目录已存在。用户批准后才会在真实项目保存。',
+  if (prepared.project.supports_create === true) tools.push(schema(CREATE_FILE,
+    '请求用户批准新建文本文件，只读模式也可提交。目标必须不存在且父目录已存在。获批后才会保存。',
     { ...pathFields, new_content: { type: 'string', description: '新文件的完整 UTF-8 文本。' } },
     ['source', 'path', 'new_content']));
   return tools;
@@ -51,12 +51,14 @@ function backendRequest(origin, token, conversationId, turnId, action, payload, 
   return new Promise((resolve, reject) => {
     const request = http.request(address, {
       agent: false, method: 'POST', signal: requestSignal,
-      headers: { 'X-Data-Agent-Native': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: { 'X-Data-Agent-Native': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+        ...(action === 'steers' ? { 'X-Data-Agent-Local': '1' } : {}) },
     }, response => {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         response.resume();
         reject(new AcpError(action === 'prepare'
           ? '本机服务无法准备附件、Skill 或项目上下文，请检查当前对话授权。'
+          : action.startsWith('steers/') ? '本机服务未能确认这条追加消息仍属于当前任务。'
           : '本机服务未授权该项目文件操作，文件也可能已变更。'));
         return;
       }
@@ -87,21 +89,102 @@ function backendRequest(origin, token, conversationId, turnId, action, payload, 
 function createProjectClient(origin, token) {
   const companyEndpoint = (conversationId, turnId) => new URL('/api/assistant/conversations/' +
     encodeURIComponent(conversationId) + '/external-turns/' + encodeURIComponent(turnId) + '/company-provider', origin).href;
+  const companyWebEndpoint = new URL('/api/assistant/company-web-runtime', origin).href;
   return {
     companyEndpoint,
-    async companyReady(modelId) {
+    async steerMessage(conversationId, steerId) {
+      const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(conversationId), origin);
+      const response = await fetch(endpoint, {
+        headers: { 'X-Data-Agent-Native': token }, redirect: 'error', signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new AcpError('无法确认队列引导结果。');
+      const { messages } = await response.json();
+      if (!Array.isArray(messages)) throw new AcpError('队列引导回执格式无效。');
+      return messages.find(message => message.id === steerId && message.role === 'user' && message.status === 'complete') ?? null;
+    },
+    async nativeTurnIds(conversationId) {
+      const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(conversationId), origin);
+      const response = await fetch(endpoint, {
+        headers: { 'X-Data-Agent-Native': token }, redirect: 'error', signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return new Set();
+      const { messages } = await response.json();
+      return new Set((messages ?? []).filter(message =>
+        message.role === 'assistant' && message.reply_meta?.transport === 'dsh-native').map(message => message.id));
+    },
+    async hasNativeSubagent(conversationId, turnId, subagentId) {
+      const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(conversationId), origin);
+      const response = await fetch(endpoint, {
+        headers: { 'X-Data-Agent-Native': token }, redirect: 'error', signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return false;
+      const { messages } = await response.json();
+      return messages?.some(message => message.id === turnId && message.role === 'assistant' &&
+        message.reply_meta?.transport === 'dsh-native' &&
+        message.reply_meta.execution?.steps?.some(step => step.id === subagentId && step.kind === 'subagent')) === true;
+    },
+    async openCompanyWeb(expectedRevision) {
+      const headers = { 'X-Data-Agent-Native': token, 'Content-Type': 'application/json' };
+      const response = await fetch(companyWebEndpoint, {
+        method: 'POST', headers, body: JSON.stringify(expectedRevision ? { revision: expectedRevision } : {}),
+        redirect: 'error', signal: AbortSignal.timeout(5000),
+      });
+      if (response.status === 503) return null;
+      if (!response.ok) throw new AcpError('本机服务未能授权公司默认模型。');
+      const config = await response.json();
+      if (typeof config?.id !== 'string' || !/^[a-f0-9]{32}$/.test(config.id)) {
+        throw new AcpError('本机服务返回了无效的公司模型授权。');
+      }
+      const endpoint = companyWebEndpoint + '/' + config.id;
+      const dispose = async () => {
+        await fetch(endpoint, { method: 'DELETE', headers, redirect: 'error', signal: AbortSignal.timeout(5000) });
+      };
+      if (typeof config.token !== 'string' || !/^[a-f0-9]{64}$/.test(config.token) ||
+          typeof config.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,149}$/.test(config.model) ||
+          (expectedRevision && config.revision !== expectedRevision)) {
+        await dispose().catch(() => {});
+        throw new AcpError('本机服务返回了无效的公司模型授权。');
+      }
+      const { data_servers: dataServersConfig, data: legacyData, ...modelConfig } = config;
+      let dataServers;
+      if (dataServersConfig !== undefined) {
+        const ids = new Set(['database', 'text-to-sql']);
+        if (!Array.isArray(dataServersConfig) || ![0, 2].includes(dataServersConfig.length) ||
+            dataServersConfig.some(server => !server || !ids.delete(server.id) ||
+              typeof server.token !== 'string' || !/^[a-f0-9]{64}$/.test(server.token)) ||
+            new Set([config.token, ...dataServersConfig.map(server => server.token)]).size !== dataServersConfig.length + 1) {
+          await dispose().catch(() => {});
+          throw new AcpError('公司数据 MCP 启动参数无效。');
+        }
+        dataServers = dataServersConfig.map(({ id, token: serverToken }) =>
+          ({ id, endpoint: endpoint + '/mcp/' + id, token: serverToken }));
+      }
+      const data = !dataServers && legacyData?.available === true && /^[a-f0-9]{64}$/.test(legacyData.token ?? '')
+        ? { endpoint: endpoint + '/mcp', token: legacyData.token } : undefined;
+      return { ...modelConfig, data, dataServers, endpoint: endpoint + '/provider', dispose };
+    },
+    async companyRuntime(modelId) {
       const endpoint = new URL('/api/assistant/company-runtime', origin);
       if (modelId != null) endpoint.searchParams.set('model_id', modelId);
-      try {
-        const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(3000),
-          headers: { 'X-Data-Agent-Native': token } });
-        return response.ok && (await response.json()).ready === true;
-      } catch {
-        return false;
+      const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(3000),
+        headers: { 'X-Data-Agent-Native': token } });
+      if (!response.ok) throw new AcpError('暂时无法读取公司默认模型的当前配置。');
+      const config = await response.json();
+      const revision = config?.ready === true ? config.revision : null;
+      if (typeof config?.ready !== 'boolean' ||
+          (config.ready && (typeof revision !== 'string' || !/^[a-f0-9-]{32,36}$/.test(revision)))) {
+        throw new AcpError('本机服务返回了无效的公司默认模型配置。');
       }
+      return { ready: config.ready, revision };
     },
     prepare: ({ agentId, conversationId, turnId }, signal) =>
       backendRequest(origin, token, conversationId, turnId, 'prepare', { agent_id: agentId }, signal),
+    reserveSteer: (conversationId, turnId, content) =>
+      backendRequest(origin, token, conversationId, turnId, 'steers', { content }),
+    prepareSteer: ({ agentId, conversationId, turnId }, steerId, signal) =>
+      backendRequest(origin, token, conversationId, turnId, 'steers/' + steerId + '/prepare', { agent_id: agentId }, signal),
+    finishSteer: ({ agentId, conversationId, turnId }, steerId, accepted) =>
+      backendRequest(origin, token, conversationId, turnId, 'steers/' + steerId + '/finish', { agent_id: agentId, accepted }),
     file: ({ agentId, conversationId, turnId }, params, signal) =>
       backendRequest(origin, token, conversationId, turnId, 'project-file', { ...params, agent_id: agentId }, signal),
     tool: ({ agentId, conversationId, turnId }, params, signal) =>
@@ -245,6 +328,10 @@ class AcpProjectTurn {
     if (!reply?.proposal || typeof reply.proposal.id !== 'string') throw new AcpError('项目修改候选未能保存。');
     this.proposals.push(reply.proposal);
     this.proposed.add(this.key(entry));
+    this.turn.onUpdate?.({
+      agentId: this.turn.agentId, conversationId: this.turn.conversationId, text: '',
+      projectProposal: reply.proposal,
+    });
   }
 
   async mcpFile(name, args, signal) {
@@ -259,7 +346,7 @@ class AcpProjectTurn {
       const reply = await this.file('read', entry, {}, signal);
       return result({ source: entry.source, path: entry.path, content: reply.content, sha256: reply.sha256 });
     }
-    if (!mayPropose(this.prepared) || typeof args.new_content !== 'string' ||
+    if (typeof args.new_content !== 'string' ||
         Buffer.byteLength(args.new_content) > PROJECT_TEXT_LIMIT) {
       throw new AcpError('当前权限或文本大小不支持文件候选。');
     }

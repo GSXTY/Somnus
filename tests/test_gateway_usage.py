@@ -194,3 +194,4 @@ class DesktopPresenceTests(unittest.TestCase):
                 with TestClient(app) as client:
                     self.assertEqual(client.get('/api/health').status_code, 200)
                 self.assertEqual(heartbeat.called, expected)
+

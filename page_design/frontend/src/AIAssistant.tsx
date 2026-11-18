@@ -2,40 +2,88 @@ import { SomnusMark } from './SomnusMark';
 import { DocumentPicker } from './DocumentLibrary';
 import { documentBridge, readDocumentFile } from './documentLibraryBridge';
 import { DshRecommendationCards } from './DshRecommendationCards';
-import { ActionApproval, ExecutionDetails } from './ExecutionDetails';
+import { ActionApproval, AgentQuestions, ExecutionDetails } from './ExecutionDetails';
 import { DelegationOutcome, DelegationReview } from './DelegationReview';
-import { DOT_PROMPT_LIMIT, DotTaskCards, useDotTasks } from './DotTasks';
 import type { PendingDelegation } from './DelegationReview';
-import type { AcpPermission } from './assistantAcp';
+import type { AcpPermission, AcpStage, DshAnswers, DshCommand, DshQuestion, DshTaskState } from './assistantAcp';
 import type { ContextUsage, DshRecommendation, ExecutionApproval, ExecutionStep, ExecutionSummary, McpApprovalBlocked, ReplyUsage } from './assistantApi';
 import { mainChatBridge } from './assistantAcp';
-import type { ExternalReasoning, ExternalSelection } from './assistantAcp';
+import type { DurableQueuedMessage, ExternalReasoning, ExternalResult, ExternalSelection, QueuedTurnRoute as TurnRoute } from './assistantAcp';
+import type { ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent } from 'react';
+import { ComposerEditor } from './ComposerEditor';
+import type { ComposerEditorRef, ComposerReference } from './ComposerEditor';
 import { ModelSwitch } from './ModelSwitch';
+import { ComposerExtensions } from './ComposerExtensions';
+import { ComposerTeamwork } from './ComposerTeamwork';
+import { ComposerCommands, composerCommandListId, composerCommandRowId } from './ComposerCommands';
+import { ChatTaskControls } from './ChatTaskControls';
+import type { ComposerCommand } from './ComposerCommands';
 import type { ReasoningEffort } from './assistantApi';
-import { PluginChips, PluginPicker } from './PluginPicker';
+import { PluginChips } from './PluginPicker';
 import type { InstalledPlugin } from './assistantApi';
-import { SkillChips, SkillPicker } from './SkillPicker';
+import { SkillChips } from './SkillPicker';
 import type { Skill } from './assistantApi';
 import { PermissionSwitch } from './PermissionSwitch';
 import { ChatWorktree } from './ProjectTools';
 import { ChatProjectContext } from './ChatProjectContext';
 import { ChatWorkspacePanel } from './ChatWorkspacePanel';
-import { ConversationTraceButton } from './ConversationTrace';
+import { ConversationTrajectory } from './ConversationTrace';
+import { ConversationReplyRating, ConversationTurnRail } from './ConversationSessionChrome';
 import { associateFileProposals, FileChangeCards, FileProposalReview, useFileProposals } from './FileProposalReview';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RecentSessions } from './RecentSessions';
-import { Alert, Button, Dropdown, Input, Modal, Skeleton, Space, Spin, Tag, Tooltip } from 'antd';
-import { DatabaseOutlined, DownOutlined, ArrowDownOutlined, FileTextOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, PaperClipOutlined, CloseOutlined, LayoutOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, StopOutlined, SwapOutlined } from '@ant-design/icons';
-import { assistantStatus, beginExternalTurn, finishExternalTurn, cancelConversation, conversation, conversations, createConversation, deleteConversation, renameConversation, respondToDelegation, respondToMcpApproval, sendMessage } from './assistantApi';
+import { Alert, Badge, Button, Dropdown, Input, Modal, Skeleton, Space, Spin, Tag, Tooltip } from 'antd';
+import { AimOutlined, BranchesOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DatabaseOutlined, DownloadOutlined, EllipsisOutlined, FolderOpenOutlined, SendOutlined, ShareAltOutlined, DownOutlined, ArrowDownOutlined, FileTextOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, CloseOutlined, LayoutOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, BellOutlined, EditOutlined, AppstoreOutlined } from '@ant-design/icons';
+import { assistantStatus, beginExternalTurn, branchConversation, finishExternalTurn, cancelConversation, conversation, conversationTrace, conversations, createConversation, deleteConversation, listProviders, renameConversation, reserveExternalSteer, respondToDelegation, respondToMcpApproval, saveConversationPermission, sendMessage } from './assistantApi';
 import { linkedConversation, reportConversationFinished, watchAnalysisTask } from './taskAttention';
 import type { DelegationResult } from './assistantApi';
-import type { AssistantStatus, ChatEvent, ChatMessage, ChatAttachment, Conversation, FileProposal } from './assistantApi';
+import type { AssistantStatus, ChatEvent, ChatMessage, ChatAttachment, CompanyModel, CompanyReasoningEffort, Conversation, ConversationPermission, FileProposal } from './assistantApi';
 
 import { isLocalImage, prepareImages } from './assistantImages.mjs';
 import { Markdown } from './MarkdownView';
 import { formatDateTime } from './format.mjs';
 import { describeError } from './errors.mjs';
+import { addonInstallIntent } from './chatAddonInstall';
+import type { AddonInstall, AddonSettings, AddonStage } from './chatAddonInstall';
+
+const ADDON_INSTALLER_ID = '33aa3fc7-482f-496a-adf1-e241ca7307a7';
+const COMPANY_PROVIDER_ID = 'deepseek';
+const companyEffortLabels: Record<CompanyReasoningEffort, string> = { none: '关闭', low: '低', high: '高', max: '最高' };
+const COMPANY_NATIVE_AGENT = 'fbbce833-544a-42a1-8579-cba2a817383e';
+const addonStages: Record<AddonStage, string> = {
+  discovering: '查找安装来源',
+  installing: '安装到实际使用的配置',
+  verifying: '验证安装结果',
+};
+
+type WorkspaceApp = 'explorer' | 'vscode' | 'git-bash' | 'terminal';
+const workspaceApps = [
+  { key: 'explorer', label: '文件资源管理器（默认）' },
+  { key: 'vscode', label: 'VS Code' },
+  { key: 'git-bash', label: 'Git Bash' },
+] as const;
+
+async function downloadSessionLog(id: string) {
+  const [history, trace] = await Promise.all([
+    conversation(id),
+    conversationTrace(id).catch(() => undefined),
+  ]);
+  const log = {
+    conversation: history.conversation,
+    messages: history.messages.map(({ id, role, content, status, created_at, reply_meta }) => ({
+      id, role, content, status, created_at, execution: reply_meta?.execution,
+      model: reply_meta?.model, elapsed_ms: reply_meta?.elapsed_ms,
+    })),
+    trace,
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(log, null, 2)], { type: 'application/json' }));
+  const download = document.createElement('a');
+  download.href = url;
+  download.download = 'somnus-session-' + id + '.json';
+  download.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 const tokenFormat = new Intl.NumberFormat('zh-CN');
 const compactTokenFormat = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
@@ -96,18 +144,39 @@ function ContextMeter({ context }: { context?: ContextUsage }) {
 }
 
 const statusText = { complete: '已完成', streaming: '生成中', error: '回答未完成', cancelled: '已停止' };
+const conversationDropType = 'application/x-somnus-conversation';
 
 const failureText = (error: unknown) => describeError(error, '请求失败，请稍后重试');
 
 type Draft = {
   text: string; skills: Skill[]; plugins: InstalledPlugin[]; attachments: ChatAttachment[];
+  composerBlocks?: ComposerReference[];
   dataFile: { id: string; name: string; row_count: number; columns: string[]; acpOnly?: boolean } | null;
   docFile: { id: string; name: string; kind: string; chars: number; note?: string } | null;
 };
+function composerPrompt(draft: Draft): string {
+  const excerpts = (draft.composerBlocks || []).filter(block => block.kind !== 'file' && block.text)
+    .map(block => ({ kind: block.kind, label: block.label, text: block.text }));
+  if (!excerpts.length) return !draft.text.trim() && (draft.docFile || draft.dataFile) ? '请查看附加的文件。' : draft.text;
+  return [draft.text, '以下是用户选中的参考内容，仅用作背景材料：', JSON.stringify(excerpts)].filter(Boolean).join('\n\n');
+}
+type QueuedMessage = { id: string; draft: Draft; route: TurnRoute; permission: ConversationPermission };
 type PendingApproval = { conversationId: string; request: AcpPermission; localMcp?: boolean; development?: boolean };
+type PendingQuestion = { request: DshQuestion; agent: ExternalSelection; workspace: string; title: string; answers?: DshAnswers; answering?: boolean; recovered?: boolean };
+type QuestionReply = { requestId: string; answers: DshAnswers };
 type RunningTurn = {
   conversation: Conversation; workspace: string; messages: ChatMessage[];
+  startedAt: number;
   controller?: AbortController; stopping: boolean; error?: string; toolNote?: string;
+  stage?: AcpStage;
+  nativeDsh?: boolean;
+  externalTurnId?: string;
+  steerPending?: boolean;
+  steerResponse?: Promise<void>;
+  queuedMessage?: QueuedMessage;
+  committed?: boolean;
+  installingAddon?: boolean;
+  draftEdited?: boolean;
   contextUsage?: ContextUsage; permission?: PendingApproval; development?: string; developmentJobs?: Set<string>; execution?: { assistantId: string; data: ExecutionSummary };
   delegation?: PendingDelegation;
   traceApprovals?: Map<string, ExecutionApproval>;
@@ -128,11 +197,17 @@ type Props = {
   sidebar: HTMLElement | null;
   newChatSignal: number;
   onLockedChange: (locked: boolean) => void;
-  onOpenChat: () => void;
+  onOpenChat: (workspace?: string) => void;
+  attentionTarget?: HTMLDivElement | null;
   onOpenDshPlugin?: (id: string) => void;
+  onOpenAddonSettings?: (settings: AddonSettings, name: string) => void;
+  onOpenExtensionConfig?: (view: 'skills' | 'plugin-config' | 'mcp') => void;
+  expandRunningActivity?: boolean;
+  workspaceLinks?: boolean;
+  busySendMode?: 'queue' | 'steer';
 };
 
-export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLockedChange, onOpenChat, onModelConfig, onOpenDshPlugin, allowLocalAnalysisUpload = true, windowsDesktop = false }: Props) {
+export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newChatSignal, onLockedChange, onOpenChat, onModelConfig, onOpenDshPlugin, onOpenAddonSettings, onOpenExtensionConfig, allowLocalAnalysisUpload = true, windowsDesktop = false, expandRunningActivity = false, workspaceLinks = false, busySendMode = 'queue' }: Props) {
   const [chosenModel, setChosenModel] = useState<{ id?: string; effort?: ReasoningEffort }>(() => {
     try { return JSON.parse(localStorage.getItem('vvman.chat-model') || '{}') || {}; } catch { return {}; }
   });
@@ -145,7 +220,32 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [reasoning, setReasoning] = useState<{ key: string; settings?: ExternalReasoning }>();
   const [reasoningChoices, setReasoningChoices] = useState<Record<string, string>>({});
   const [companyRuntime, setCompanyRuntime] = useState<{ model?: string; agentId: string }>();
+  const [companyCatalog, setCompanyCatalog] = useState<CompanyModel[]>([]);
+  const [companyModel, setCompanyModel] = useState<string>();
+  const [companyEfforts, setCompanyEfforts] = useState<Partial<Record<string, CompanyReasoningEffort>>>({});
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [showExtensions, setShowExtensions] = useState(false);
+  const [dismissedCommandText, setDismissedCommandText] = useState<string>();
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [modelPickerRequest, setModelPickerRequest] = useState(0);
+  const [permissionPickerRequest, setPermissionPickerRequest] = useState(0);
+  const [nativeCommands, setNativeCommands] = useState<{ id: string; entries: DshCommand[] }>();
+  const [commandLoading, setCommandLoading] = useState(false);
+  const [taskStates, setTaskStates] = useState<Record<string, DshTaskState>>({});
+  const [goalRequest, setGoalRequest] = useState(0);
+  const composerInput = useRef<ComposerEditorRef>(null);
+  const compositionEnd = useRef(0);
+  const composerEscape = useRef<{ turn: RunningTurn; time: number }>();
+  const [composerDragging, setComposerDragging] = useState(false);
+  const commandMenu = useRef<HTMLDivElement>(null);
   const turns = useRef(new Map<string, RunningTurn>());
+  const queues = useRef(new Map<string, QueuedMessage[]>());
+  const queueStarting = useRef(new Set<string>());
+  const knownQueues = useRef(new Set<string>());
+  const restoredQueues = useRef(new Set<string>());
+  const uncertainQueues = useRef(new Set<string>());
+  const queueWrites = useRef(new Map<string, Promise<void>>());
+  const questions = useRef(new Map<string, PendingQuestion>());
   const drafts = useRef(new Map<string, Draft>());
   const turnErrors = useRef(new Map<string, string>());
   const creatingTurn = useRef(false);
@@ -156,11 +256,25 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const lastKey = workspace === 'default' ? 'ya70-assistant-last-conversation' : 'ya70-assistant-last-conversation.' + workspace;
   const [status, setStatus] = useState<AssistantStatus | null>(null), [statusLoading, setStatusLoading] = useState(true);
   const [items, setItems] = useState<Conversation[]>([]), [active, setActive] = useState<Conversation | null>(null);
+  const [draftTeamwork, setDraftTeamwork] = useState<Record<string, boolean>>({});
+  const [teamworkRevision, setTeamworkRevision] = useState(0);
+  const teamworkChanges = useRef(new Set<string>());
+  const pendingTeamwork = useRef(new Set<string>());
+  const [pendingPermissions, setPendingPermissions] = useState<Record<string, ConversationPermission>>({});
+  const permissionKey = active?.id || 'new:' + workspace;
+  const nextPermission = pendingPermissions[permissionKey];
   const [history, setMessages] = useState<ChatMessage[]>([]), [text, setText] = useState('');
+  const [composerBlocks, setComposerBlocks] = useState<ComposerReference[]>([]);
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const [referenceIndex, setReferenceIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [notificationConversation, setNotificationConversation] = useState(linkedConversation);
-  const dot = useDotTasks(loading ? undefined : active?.id, windowsDesktop && visible && !loading);
+  const [attentionChat, setAttentionChat] = useState<{ id: string; workspace: string }>();
   const selectedTurn = active ? turns.current.get(active.id) : undefined;
+  const pendingQueue = active ? queues.current.get(active.id) || [] : [];
+  const queueUncertain = Boolean(active && uncertainQueues.current.has(active.id));
+  const startingQueuedMessage = Boolean(active && queueStarting.current.has(active.id));
+  const question = active ? questions.current.get(active.id) : undefined;
   const messages = selectedTurn?.messages || history;
   const busy = Boolean(selectedTurn);
   const stopping = Boolean(selectedTurn?.stopping);
@@ -173,6 +287,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [docFile, setDocFile] = useState<{ id: string; name: string; kind: string; chars: number; note?: string } | null>(null);
   const [docUploading, setDocUploading] = useState(false);
   const [attachmentLibraryOpen, setAttachmentLibraryOpen] = useState(false);
+  const attachmentReferenceText = useRef<string>();
   const [libraryLoading, setLibraryLoading] = useState(false);
   const libraryLock = useRef(false);
   useEffect(() => { setAttachmentLibraryOpen(false); }, [visible, workspace]);
@@ -182,6 +297,24 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const [configOpen, setConfigOpen] = useState(false);
   const [projectContextOpen, setProjectContextOpen] = useState(false);
   const [workspacePanelChat, setWorkspacePanelChat] = useState<string>();
+  const [workspaceWebRequest, setWorkspaceWebRequest] = useState<{ conversationId: string; url: string; sequence: number }>();
+  const workspaceWebSequence = useRef(0);
+  const [workspaceActionError, setWorkspaceActionError] = useState<{ conversationId: string; message: string }>();
+  async function openWorkspaceApp(target: WorkspaceApp) {
+    if (!active || !window.vvmanProjects) return;
+    setWorkspaceActionError(undefined);
+    if (active.worktree && window.vvmanProjects.openWorktree) {
+      await window.vvmanProjects.openWorktree(active.id, target);
+    } else {
+      await window.vvmanProjects.openDirectory(workspace, 0, target);
+    }
+  }
+  async function runWorkspaceAction(action: () => Promise<void>) {
+    if (!active) return;
+    setWorkspaceActionError(undefined);
+    try { await action(); }
+    catch (failure) { setWorkspaceActionError({ conversationId: active.id, message: describeError(failure) }); }
+  }
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   useEffect(() => {
@@ -203,17 +336,27 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const visibleError = error || selectedTurn?.error || (active && turnErrors.current.get(active.id));
   const [mcpBlocked, setMcpBlocked] = useState<Record<string, McpApprovalBlocked>>({});
   const alive = useRef(true), activeId = useRef<string | null>(null), historyToken = useRef(0), log = useRef<HTMLDivElement>(null);
-  const [dotSelection, setDotSelection] = useState<number>();
-  const dotMode = dotSelection === historyToken.current;
-  const dotReady = Boolean(dot.availability?.enabled && dot.availability.ready && !dot.availability.paused);
-  const dotLimitExceeded = dotMode && Array.from(text.trim()).length > DOT_PROMPT_LIMIT;
-  const dotHasExtras = dotMode && Boolean(attachments.length || dataFile || docFile || skills.length || plugins.length);
   const [atBottom, setAtBottom] = useState(true);
+  const [trajectoryFor, setTrajectoryFor] = useState<string>();
+  const trajectoryOpen = Boolean(active && active.id === trajectoryFor && !loading);
   const stick = useRef(true);
-  const canChat = Boolean(external ? externalBridge : !statusLoading && status?.configured && status.capabilities.chat);
-  const companyAgent = !external && !chosenModel.effort && !statusLoading && companyRuntime?.model === chosenModel.id && companyRuntime
-    ? { agentId: companyRuntime.agentId, agentName: '公司默认', modelName: status?.model || undefined }
+  const matchingCompanyRuntime = Boolean(companyRuntime && companyRuntime.model === chosenModel.id);
+  const companyRequested = !external && !statusLoading &&
+    (matchingCompanyRuntime || windowsDesktop && status?.provider_id === COMPANY_PROVIDER_ID);
+  const selectedCompanyModel = companyRequested
+    ? companyCatalog.find(item => item.model === companyModel) || companyCatalog.find(item => item.model === status?.model)
     : undefined;
+  const selectedCompanyEffort = selectedCompanyModel && companyEfforts[selectedCompanyModel.model];
+  const companyAgent = companyRequested && matchingCompanyRuntime && companyRuntime && window.somnusNativeDshChat
+    ? { agentId: companyRuntime.agentId, agentName: '默认 Agent', modelName: selectedCompanyModel?.model || status?.model || undefined }
+    : undefined;
+  const canChat = Boolean(external ? externalBridge
+    : !statusLoading && status?.configured && status.capabilities.chat && (!companyRequested || companyAgent));
+  const addon = window.somnusAddonInstaller && !attachments.length && !dataFile && !docFile && !skills.length && !plugins.length
+    ? addonInstallIntent(text) : undefined;
+  const canSendChat = canChat || Boolean(addon);
+  const assistantVisible = useRef(visible);
+  assistantVisible.current = visible;
   const selectedAgent = external || companyAgent;
   const reasoningAgentId = selectedAgent?.agentId;
   const lastReply = messages.slice().reverse().find(message => message.role === 'assistant')?.reply_meta;
@@ -224,7 +367,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const activeContext = selectedTurn ? selectedTurn.contextUsage : savedContext;
   const tokenUsage = !loading && conversationUsage(messages);
   const reasoningModelId = external?.modelId;
-  const reasoningKey = reasoningAgentId && JSON.stringify([reasoningAgentId, reasoningModelId]);
+  const reasoningKey = external && reasoningAgentId && JSON.stringify([reasoningAgentId, reasoningModelId]);
   const reasoningSettings = reasoningKey && reasoning?.key === reasoningKey ? reasoning.settings : undefined;
   const reasoningChoice = reasoningKey ? reasoningChoices[reasoningKey] : undefined;
   const reasoningValue = reasoningSettings?.options.some(option => option.id === reasoningChoice) ? reasoningChoice : undefined;
@@ -236,22 +379,127 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }).catch(() => { if (current) setReasoning({ key: reasoningKey }); });
     return () => { current = false; };
   }, [externalBridge, reasoningAgentId, reasoningModelId, reasoningKey, visible]);
-  const agentReasoning = reasoningKey ? {
+  const agentReasoning = selectedCompanyModel && selectedCompanyModel.reasoning_efforts.length ? {
+    settings: {
+      modelId: selectedCompanyModel.model,
+      value: selectedCompanyModel.default_reasoning_effort ?? '',
+      options: [{ id: '', name: '默认' }, ...selectedCompanyModel.reasoning_efforts.map(id => ({ id, name: companyEffortLabels[id] }))],
+    },
+    value: selectedCompanyEffort || '',
+    onChange: (value: string) => setCompanyEfforts(previous => ({
+      ...previous, [selectedCompanyModel.model]: selectedCompanyModel.reasoning_efforts.find(effort => effort === value),
+    })),
+  } : reasoningKey ? {
     settings: reasoningSettings,
     value: reasoningValue,
     onChange: (value: string) => setReasoningChoices(previous => ({ ...previous, [reasoningKey]: value })),
   } : undefined;
   const [permissionSaving, setPermissionSaving] = useState(false);
+  const [copiedReply, setCopiedReply] = useState<string>();
+  const [sharedReply, setSharedReply] = useState<string>();
+  const [branchingReply, setBranchingReply] = useState<string>();
+  const branchLock = useRef(false);
   const worktreeLock = useRef(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
-  const navigationLocked = worktreeBusy || permissionSaving || creatingTurn.current || loading || deleteBusy || renameBusy || imageLoading || dataUploading || docUploading || libraryLoading;
-  const locked = navigationLocked || busy;
+  const [worktreeOpenFor, setWorktreeOpenFor] = useState<string>();
+  const navigationLocked = worktreeBusy || permissionSaving || creatingTurn.current || Boolean(branchingReply) || loading || deleteBusy || renameBusy || imageLoading || dataUploading || docUploading || libraryLoading;
+  const locked = navigationLocked || busy || startingQueuedMessage;
+  const hasDraft = Boolean(text.trim() || composerBlocks.length || attachments.length || dataFile || docFile);
+  const currentTaskState = active ? taskStates[active.id] : undefined;
+  const steerAvailable = Boolean(selectedTurn?.nativeDsh && selectedTurn.externalTurnId && window.somnusNativeDshChat?.steer &&
+    !attachments.length && !dataFile && !docFile && !skills.length && !plugins.length && !addon && !/^\s*\//.test(text));
+  const preferredBusyMode = busySendMode === 'steer' && steerAvailable ? 'steer' : 'queue';
+  const canSendBusyDraft = busy && !queueUncertain && !navigationLocked && !stopping && !selectedTurn?.installingAddon && !selectedTurn?.steerPending &&
+    hasDraft && !addon && !/^\s*\//.test(text);
+  const busySendLabel = preferredBusyMode === 'steer' ? '追加指导' : '排队';
+  const canRecallQueue = !navigationLocked && !startingQueuedMessage && !text && !composerBlocks.length && !attachments.length && !dataFile && !docFile && !skills.length && !plugins.length;
+  const canSteerQueue = canRecallQueue && Boolean(selectedTurn?.nativeDsh && selectedTurn.externalTurnId && window.somnusNativeDshChat?.steerQueue &&
+    !selectedTurn.stopping && !selectedTurn.steerPending && !selectedTurn.installingAddon && !selectedTurn.permission && !question &&
+    pendingQueue.length && pendingQueue.every(({ draft }) => draft.text.trim() && !/^\s*\//.test(draft.text) &&
+      !draft.attachments.length && !draft.dataFile && !draft.docFile && !draft.skills.length && !draft.plugins.length));
+  const nativeTasks = Boolean(companyAgent && window.somnusNativeDshChat?.taskState && window.somnusNativeDshChat?.executeCommand);
+  const planLabel = currentTaskState?.plan?.active ? '退出计划模式' : '计划模式';
+  const goalLabel = currentTaskState?.goal ? '编辑目标' : '设定目标';
+  const planActionAvailable = !locked && !currentTaskState?.plan?.pending;
+  const hasDocumentLibrary = Boolean(documentBridge());
+  const collaborationAvailable = Boolean(companyAgent && window.somnusDesktop?.teamwork && window.somnusDesktop?.setTeamwork);
+  const extensionsAvailable = Boolean(window.vvmanProjects) || collaborationAvailable;
+  const slashName = composerBlocks.length ? undefined : /^\s*\/([a-z0-9_-]*)(?:[ \t]*$)/i.exec(text)?.[1]?.toLowerCase();
+  const commandMenuOpen = visible && !navigationLocked && !showExtensions && !plusMenuOpen && slashName !== undefined && dismissedCommandText !== text;
+  const referenceQuery = /(?:^|\s)@([^\n@]*)$/.exec(text)?.[1];
+  const referenceConversations = referenceQuery === undefined ? [] : items.filter(item => item.id !== active?.id && item.message_count > 0 &&
+    item.title.toLowerCase().includes(referenceQuery.trim().toLowerCase())).slice(0, 8);
+  const referenceCount = referenceConversations.length + Number(hasDocumentLibrary);
+  const activeReferenceIndex = Math.min(referenceIndex, Math.max(0, referenceCount - 1));
+  const referenceMenuOpen = visible && referenceQuery !== undefined && referenceCount > 0 && !referenceLoading && !navigationLocked && !showExtensions &&
+    !commandMenuOpen && !plusMenuOpen && !attachmentLibraryOpen && dismissedCommandText !== text;
+  useEffect(() => {
+    if (!commandMenuOpen && !referenceMenuOpen) return;
+    function closeFromOutside(event: Event) {
+      const target = event.target;
+      if (!(target instanceof Node) || commandMenu.current?.contains(target) || composerInput.current?.root()?.contains(target)) return;
+      setDismissedCommandText(text);
+    }
+    document.addEventListener('pointerdown', closeFromOutside, true);
+    document.addEventListener('focusin', closeFromOutside, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeFromOutside, true);
+      document.removeEventListener('focusin', closeFromOutside, true);
+    };
+  }, [commandMenuOpen, referenceMenuOpen, text]);
+  useEffect(() => {
+    if (!visible || navigationLocked) { setShowExtensions(false); setPlusMenuOpen(false); }
+  }, [visible, navigationLocked]);
+  const commandScope = workspace + ':' + (active?.id || '');
+  const availableNativeCommands = companyAgent && nativeCommands?.id === commandScope ? nativeCommands.entries : [];
+  const localCommands: ComposerCommand[] = [
+    { name: 'file', description: '添加文件和图片', executable: true },
+    { name: 'new', description: '新建会话', executable: true },
+    ...(onModelConfig ? [{ name: 'model', description: '选择模型或 Agent', executable: true }] : []),
+    { name: 'permission', description: '选择文件权限', executable: true },
+    ...(nativeTasks ? [
+      { name: 'plan', description: planLabel, executable: planActionAvailable },
+      { name: 'goal', description: goalLabel, executable: !locked },
+    ] : []),
+    ...(active && window.vvmanProjects ? [{ name: 'workspace', description: '打开会话工作区', executable: true }] : []),
+    ...(onOpenExtensionConfig ? [
+      { name: 'skills', description: '管理 Skills', executable: true },
+      { name: 'plugins', description: '管理插件', executable: true },
+      { name: 'mcp', description: '管理 MCP', executable: true },
+    ] : []),
+  ];
+  const allCommands = [...localCommands, ...availableNativeCommands.filter(command =>
+    !localCommands.some(item => item.name === command.name)).map(command => ({
+      ...command, native: true, executable: command.executable && !busy,
+      reason: busy && command.executable ? '当前任务完成后可运行' : command.reason,
+    }))];
+  const filteredCommands = allCommands.filter(command =>
+    !slashName || command.name.toLowerCase().includes(slashName));
+  const selectedCommandIndex = Math.min(commandIndex, Math.max(0, filteredCommands.length - 1));
   useEffect(() => onLockedChange(navigationLocked), [navigationLocked, onLockedChange]);
-  const imageBlocked = !external && attachments.length > 0 && !status?.capabilities.vision;
+  const needsCommands = plusMenuOpen || commandMenuOpen || /^\s*\/[a-z]/i.test(text);
+  useEffect(() => {
+    const list = window.somnusNativeDshChat?.listCommands;
+    if (!visible || !companyAgent || !list || !needsCommands) {
+      setCommandLoading(false);
+      return;
+    }
+    let current = true;
+    setCommandLoading(true);
+    void list({ conversationId: active?.id, workspaceId: /^ws_[a-f0-9]{12}$/.test(workspace) ? workspace : undefined }).then(result => {
+      if (current) setNativeCommands({ id: commandScope, entries: result.commands });
+    }).catch(() => {
+      if (current) setNativeCommands({ id: commandScope, entries: [] });
+    }).finally(() => { if (current) setCommandLoading(false); });
+    return () => { current = false; };
+  }, [visible, Boolean(companyAgent), commandScope, needsCommands]);
+  const imageBlocked = !external && attachments.length > 0 && !(selectedCompanyModel?.vision ?? status?.capabilities.vision);
+  const showBusySend = canSendBusyDraft && canChat && !imageBlocked && (!dataFile?.acpOnly || Boolean(selectedAgent));
   async function addImages(files: File[]) {
-    if (locked || imageLock.current || !files.length) return;
+    if (navigationLocked || imageLock.current || !files.length) return;
+    markDraftEdited();
     imageLock.current = true; setImageLoading(true); setError('');
-    try { const next = await prepareImages(files, attachments); if (alive.current) setAttachments(next); }
+    try { const next = await prepareImages(files, attachments); if (alive.current) editDraftMedia({ attachments: next }); }
     catch (failure) { if (alive.current) setError(failureText(failure)); }
     finally { imageLock.current = false; if (alive.current) setImageLoading(false); }
   }
@@ -308,7 +556,8 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       setItems(current.sort((a, b) => b.updated_at - a.updated_at));
       if (restore) {
         let stored: string | null = null; try { stored = localStorage.getItem(lastKey); } catch { /* optional preference */ }
-        const selected = current.find(item => item.id === stored) || current[0];
+        const requested = attentionChat?.workspace === workspace ? attentionChat.id : undefined;
+        const selected = current.find(item => item.id === requested) || current.find(item => item.id === stored) || current[0];
         if (selected) { restoreDraft(drafts.current.get(selected.id)); await openHistory(selected.id); } else setLoading(false);
       }
     } catch (failure) { if (alive.current && workspaceRef.current === workspace && token === listToken.current) { setLoading(false); setError(failureText(failure)); } }
@@ -332,8 +581,26 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   }, [workspace]);
 
   useEffect(() => { if (visible) void loadStatus(); }, [visible, chosenModel.id]);
+  useEffect(() => {
+    const state = window.somnusNativeDshChat?.taskState;
+    if (!visible || !companyAgent || !active || !state || busy) return;
+    let current = true;
+    const id = active.id;
+    void state({ conversationId: id, workspaceId: /^ws_[a-f0-9]{12}$/.test(workspace) ? workspace : undefined }).then(result => {
+      if (current) setTaskStates(previous => ({ ...previous, [id]: result }));
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [visible, Boolean(companyAgent), active?.id, workspace, busy]);
+  useEffect(() => {
+    if (!visible || !window.somnusNativeDshChat || !listProviders) return;
+    const controller = new AbortController();
+    void listProviders(controller.signal).then(result => {
+      if (!controller.signal.aborted) setCompanyCatalog(result.company_models || []);
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [visible]);
   useEffect(() => { if (stick.current) log.current?.scrollTo({ top: log.current.scrollHeight, behavior: 'auto' }); },
-    [messages, busy, dot.snapshot?.tasks, liveExecution, permissionRequest, selectedTurn?.delegation, toolNote]);
+    [messages, busy, liveExecution, permissionRequest, selectedTurn?.delegation, question?.request, toolNote]);
   function followLog() {
     const element = log.current;
     if (!element) return;
@@ -360,13 +627,217 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     setSkills([]);
     setPlugins([]);
     setText('');
+    setComposerBlocks([]);
     setAttachments([]);
     setDataFile(null);
     setDocFile(null);
   }
-  function snapshotDraft(): Draft { return { text, skills, plugins, attachments, dataFile, docFile }; }
+  function snapshotDraft(): Draft { return { text, composerBlocks, skills, plugins, attachments, dataFile, docFile }; }
+  function snapshotRoute(): TurnRoute {
+    return {
+      agent: selectedAgent, nativeDsh: Boolean(companyAgent), reasoningEffort: reasoningValue,
+      modelId: chosenModel.id, effort: chosenModel.effort,
+      companyOptions: selectedCompanyModel ? { model: selectedCompanyModel.model, effort: selectedCompanyEffort } : undefined,
+    };
+  }
+  function setQueuedMessages(id: string, items: QueuedMessage[]) {
+    knownQueues.current.add(id);
+    if (items.length) queues.current.set(id, items);
+    else {
+      queues.current.delete(id);
+      restoredQueues.current.delete(id);
+    }
+    const save = window.somnusNativeDshChat?.saveQueue;
+    if (!save) return;
+    const payload: DurableQueuedMessage[] = items.map(({ draft, ...rest }) => ({
+      ...rest,
+      draft: {
+        text: draft.text,
+        ...(draft.composerBlocks?.length ? { composerBlocks: draft.composerBlocks } : {}),
+        ...(draft.attachments.length ? { attachments: draft.attachments } : {}),
+        ...(draft.docFile ? { docFile: draft.docFile } : {}),
+        ...(draft.dataFile ? { dataFile: draft.dataFile } : {}),
+        ...(draft.skills.length ? { skillIds: draft.skills.map(skill => skill.id) } : {}),
+        ...(draft.plugins.length ? { pluginIds: draft.plugins.map(plugin => plugin.id) } : {}),
+      },
+    }));
+    const pending = (queueWrites.current.get(id) || Promise.resolve()).catch(() => {}).then(() => save(id, payload));
+    queueWrites.current.set(id, pending);
+    void pending.catch(() => {
+      const problem = '这批排队消息暂未保存到本机。请在退出前处理。';
+      if (activeId.current === id) setError(problem);
+      else turnErrors.current.set(id, problem);
+      refreshTurns();
+    }).finally(() => { if (queueWrites.current.get(id) === pending) queueWrites.current.delete(id); });
+  }
+  function queueDraft() {
+    const id = activeId.current;
+    const turn = id ? turns.current.get(id) : undefined;
+    if (!id || !turn || uncertainQueues.current.has(id) || navigationLocked || turn.stopping || turn.installingAddon || turn.steerPending) return;
+    if (window.somnusNativeDshChat?.getQueue && !knownQueues.current.has(id)) {
+      setError('正在恢复本机排队消息，请稍后再试。');
+      return;
+    }
+    if (!canChat || imageBlocked || addon || /^\s*\//.test(text) || !hasDraft ||
+      !selectedAgent && dataFile?.acpOnly) {
+      setError('当前草稿不能排队。请检查模型能力、附件或命令。');
+      return;
+    }
+    if (composerPrompt(snapshotDraft()).length > 12000) { setError('正文和引用共计最多 12000 字符。请缩短草稿或移除引用。'); return; }
+    const queue = queues.current.get(id) || [];
+    if (queue.length >= 8) { setError('此会话最多可排队 8 条消息。'); return; }
+    setQueuedMessages(id, [...queue, {
+      id: crypto.randomUUID().replaceAll('-', ''), draft: snapshotDraft(), route: snapshotRoute(),
+      permission: nextPermission || turn.conversation.permission_mode || 'read_only',
+    }]);
+    turn.draftEdited = true;
+    drafts.current.delete(id);
+    persistDraft(id, '');
+    clearDraft();
+    setError('');
+    refreshTurns();
+  }
+  async function steerCurrentTurn() {
+    const id = activeId.current;
+    const turn = id ? turns.current.get(id) : undefined;
+    const bridge = window.somnusNativeDshChat;
+    if (!id || !turn?.nativeDsh || !turn.externalTurnId || !bridge?.steer || turn.stopping || turn.installingAddon ||
+      turn.steerPending || navigationLocked) {
+      setError('当前回合无法追加指导。可以将草稿排队，等回复结束后发送。');
+      return;
+    }
+    if (!hasDraft || attachments.length || dataFile || docFile || skills.length || plugins.length || addon || /^\s*\//.test(text)) {
+      setError('追加指导仅接受普通文字。附件和扩展可随排队消息发送。');
+      return;
+    }
+    const original = text;
+    const originalBlocks = composerBlocks;
+    const content = composerPrompt(snapshotDraft()).trim();
+    if (content.length > 12000) { setError('正文和引用共计最多 12000 字符。请缩短草稿或移除引用。'); return; }
+    const turnId = turn.externalTurnId;
+    turn.steerPending = true;
+    refreshTurns();
+    const response = (async () => {
+      try {
+        const { steer_id } = await reserveExternalSteer(id, turnId, content);
+        const result = await bridge.steer!({ conversationId: id, turnId, steerId: steer_id });
+        if (!result.accepted || !result.message) throw new Error('Agent 已结束当前操作，指导未发送。');
+        const accepted = result.message;
+        if (!turn.messages.some(message => message.id === accepted.id)) turn.messages = [...turn.messages, accepted];
+        const saved = drafts.current.get(id);
+        if (saved?.text === original && (saved.composerBlocks === originalBlocks || !saved.composerBlocks?.length && !originalBlocks.length)) {
+          drafts.current.set(id, { ...saved, text: '', composerBlocks: [] });
+          persistDraft(id, '');
+          if (isSelected(turn)) { setText(current => current === original ? '' : current); setComposerBlocks([]); }
+        }
+        if (isSelected(turn)) setError('');
+      } catch (failure) {
+        if (isSelected(turn)) setError(failureText(failure));
+        else turnErrors.current.set(id, failureText(failure));
+      } finally {
+        turn.steerPending = false;
+        refreshTurns();
+      }
+    })();
+    turn.steerResponse = response;
+    await response;
+  }
+  function steerQueuedMessages() {
+    const id = activeId.current;
+    const turn = id ? turns.current.get(id) : undefined;
+    const sendQueue = window.somnusNativeDshChat?.steerQueue;
+    if (!canSteerQueue || !id || turn !== selectedTurn || !turn?.externalTurnId || !sendQueue || turn.steerPending) return;
+    const queueIds = (queues.current.get(id) || []).map(item => item.id);
+    const turnId = turn.externalTurnId;
+    turn.steerPending = true;
+    refreshTurns();
+    turn.steerResponse = (async () => {
+      try {
+        await queueWrites.current.get(id);
+        if (turn.stopping || turns.current.get(id) !== turn) return;
+        const result = await sendQueue({ conversationId: id, turnId, queueIds });
+        if (!result.accepted) {
+          if (isSelected(turn)) setError('Agent 已结束当前操作，排队消息仍可继续发送。');
+          return;
+        }
+        const accepted = new Set(result.acceptedQueueIds);
+        if (accepted.size !== queueIds.length || queueIds.some(id => !accepted.has(id))) throw Error('整队追加结果无法确认。请重试。');
+        const known = new Set(turn.messages.map(message => message.id));
+        turn.messages = [...turn.messages, ...result.messages.filter(message => !known.has(message.id))];
+        uncertainQueues.current.delete(id);
+        setQueuedMessages(id, (queues.current.get(id) || []).filter(item => !accepted.has(item.id)));
+        if (isSelected(turn)) setError('');
+      } catch (failure) {
+        uncertainQueues.current.add(id);
+        restoredQueues.current.add(id);
+        if (isSelected(turn)) setError(failureText(failure));
+        else turnErrors.current.set(id, failureText(failure));
+      } finally {
+        turn.steerPending = false;
+        refreshTurns();
+      }
+    })();
+  }
+  function removeQueuedMessage(id: string, messageId: string) {
+    if (queueStarting.current.has(id) || uncertainQueues.current.has(id) || turns.current.get(id)?.steerPending) return;
+    const remaining = (queues.current.get(id) || []).filter(message => message.id !== messageId);
+    setQueuedMessages(id, remaining);
+    refreshTurns();
+  }
+  function recallQueuedDraft(messageId?: string) {
+    const id = activeId.current;
+    if (!id || !canRecallQueue || queueStarting.current.has(id) || uncertainQueues.current.has(id) || turns.current.get(id)?.steerPending) return false;
+    const queue = queues.current.get(id) || [];
+    const item = messageId ? queue.find(message => message.id === messageId) : queue.at(-1);
+    if (!item) return false;
+    markDraftEdited();
+    drafts.current.set(id, item.draft);
+    restoreDraft(item.draft);
+    persistDraft(id, item.draft.text);
+    removeQueuedMessage(id, item.id);
+    composerInput.current?.focus();
+    return true;
+  }
+  function draftKey() { return activeId.current || 'workspace:' + workspace; }
+  function editDraftMedia(changes: Partial<Pick<Draft, 'attachments' | 'docFile' | 'dataFile'>>) {
+    const id = draftKey();
+    const current = drafts.current.get(id) || snapshotDraft();
+    let blocks = current.composerBlocks || [];
+    for (const key of ['docFile', 'dataFile'] as const) {
+      if (!(key in changes)) continue;
+      blocks = blocks.filter(block => block.fileId !== current[key]?.id);
+      const file = changes[key];
+      if (file) blocks = [...blocks, { id: crypto.randomUUID(), kind: 'file', label: file.name,
+        fileId: file.id, offset: composerInput.current?.offset() ?? current.text.length }];
+    }
+    blocks = blocks.sort((left, right) => left.offset - right.offset);
+    const draft = { ...current, ...changes, composerBlocks: blocks };
+    drafts.current.set(id, draft);
+    setComposerBlocks(blocks);
+    if ('attachments' in changes) setAttachments(changes.attachments || []);
+    if ('docFile' in changes) setDocFile(changes.docFile || null);
+    if ('dataFile' in changes) setDataFile(changes.dataFile || null);
+    persistDraft(id, draft.text);
+  }
+  function persistDraft(id: string, composerText = drafts.current.get(id)?.text || '') {
+    const bridge = window.somnusNativeDshChat;
+    if (!bridge?.saveDraft) return;
+    const pending = questions.current.get(id);
+    const stored = drafts.current.get(id);
+    const hasAnswers = pending?.answers?.some(answer => answer.selected.length || answer.custom);
+    const draft = {
+      ...(composerText ? { text: composerText } : {}),
+      ...(stored?.composerBlocks?.length ? { composerBlocks: stored.composerBlocks } : {}),
+      ...(hasAnswers ? { questionId: pending?.request.requestId, answers: pending?.answers } : {}),
+      ...(stored?.attachments.length ? { attachments: stored.attachments } : {}),
+      ...(stored?.docFile ? { docFile: stored.docFile } : {}),
+      ...(stored?.dataFile ? { dataFile: stored.dataFile } : {}),
+    };
+    void bridge.saveDraft(id, Object.keys(draft).length ? draft : null).catch(() => {});
+  }
   function restoreDraft(draft?: Draft) {
     setText(draft?.text || '');
+    setComposerBlocks(draft?.composerBlocks || []);
     setSkills(draft?.skills || []);
     setPlugins(draft?.plugins || []);
     setAttachments(draft?.attachments || []);
@@ -375,10 +846,260 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   }
   function saveCurrentDraft() {
     const id = activeId.current;
-    if (id && !turns.current.has(id)) drafts.current.set(id, snapshotDraft());
+    if (id) drafts.current.set(id, snapshotDraft());
+  }
+  function editDraft(value: string, blocks = composerBlocks) {
+    if (value !== text) {
+      setShowExtensions(false);
+      setDismissedCommandText(undefined);
+      setCommandIndex(0);
+      setReferenceIndex(0);
+    }
+    const id = draftKey();
+    markDraftEdited();
+    const removed = composerBlocks.filter(block => block.fileId && !blocks.some(next => next.id === block.id));
+    const nextDoc = removed.some(block => block.fileId === docFile?.id) ? null : docFile;
+    const nextData = removed.some(block => block.fileId === dataFile?.id) ? null : dataFile;
+    drafts.current.set(id, { ...snapshotDraft(), text: value, composerBlocks: blocks, docFile: nextDoc, dataFile: nextData });
+    persistDraft(id, value);
+    setText(value);
+    setComposerBlocks(blocks);
+    if (nextDoc !== docFile) setDocFile(nextDoc);
+    if (nextData !== dataFile) setDataFile(nextData);
+  }
+  function addReference(kind: 'quote' | 'conversation', label: string, excerpt: string, trigger?: string, target = draftKey()) {
+    const current = drafts.current.get(target) || snapshotDraft();
+    const blocks = current.composerBlocks || [];
+    if (blocks.filter(block => block.kind !== 'file').length >= 4) { setError('每条消息最多添加四个会话或文字引用。'); return; }
+    const draft = trigger !== undefined && current.text === trigger ? current.text.replace(/@[^\n@]*$/, '') : current.text;
+    const offset = trigger !== undefined ? draft.length : composerInput.current?.offset() ?? draft.length;
+    const id = crypto.randomUUID();
+    composerInput.current?.after(id);
+    editDraft(draft, [...blocks, { id, kind, label: label.slice(0, 160), offset, text: excerpt.slice(0, 1800) }]
+      .sort((left, right) => left.offset - right.offset));
+    composerInput.current?.focus();
+  }
+  async function addConversationReference(id: string, trigger?: string) {
+    if (navigationLocked || referenceLoading || id === active?.id || !items.some(item => item.id === id)) return;
+    const target = draftKey();
+    setReferenceLoading(true);
+    dismissCommands();
+    try {
+      const selected = await conversation(id);
+      if (!alive.current || draftKey() !== target || workspaceRef.current !== workspace) return;
+      const excerpt = selected.messages.filter(message => message.status === 'complete' && message.content.trim())
+        .slice(-6).map(message => (message.role === 'user' ? '用户：' : '助手：') + message.content.trim().slice(0, 280)).join('\n');
+      if (!excerpt) throw Error('该会话暂无已完成的文字消息可供引用。');
+      addReference('conversation', selected.conversation.title, excerpt, trigger, target);
+    } catch (failure) {
+      if (draftKey() === target && workspaceRef.current === workspace) setError(failureText(failure));
+    } finally { if (alive.current) setReferenceLoading(false); }
+  }
+  function quoteReply(message: ChatMessage, source: HTMLElement) {
+    const selection = source.ownerDocument.getSelection();
+    const article = source.closest('.assistant-message');
+    const excerpt = selection?.anchorNode && selection.focusNode && article?.contains(selection.anchorNode) &&
+      article.contains(selection.focusNode) ? selection.toString().trim() : '';
+    addReference('quote', '引用回复', excerpt || message.content.trim());
+  }
+  function dismissCommands() {
+    setDismissedCommandText(text);
+  }
+  function changeExtensionMenu(open: boolean) {
+    if (open) dismissCommands();
+    setShowExtensions(open);
+  }
+  function openAttachmentReference() {
+    attachmentReferenceText.current = text;
+    dismissCommands();
+    setAttachmentLibraryOpen(true);
+  }
+  function handleComposerKey(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || Date.now() < compositionEnd.current) return;
+    if (event.key !== 'Escape') composerEscape.current = undefined;
+    if (event.key === 'Escape') {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.repeat) return;
+      if (commandMenuOpen || referenceMenuOpen || plusMenuOpen || showExtensions) {
+        event.preventDefault();
+        event.stopPropagation();
+        composerEscape.current = undefined;
+        dismissCommands();
+        setPlusMenuOpen(false);
+        setShowExtensions(false);
+      } else if (selectedTurn && !stopping && !selectedTurn.installingAddon && !question && !selectedTurn.permission && !selectedTurn.delegation) {
+        event.preventDefault();
+        event.stopPropagation();
+        const now = Date.now();
+        const previous = composerEscape.current;
+        composerEscape.current = previous?.turn === selectedTurn && now - previous.time <= 500 ? undefined : { turn: selectedTurn, time: now };
+        if (!composerEscape.current) void stop();
+      }
+      return;
+    }
+    if (event.altKey || event.getModifierState?.('AltGraph') || event.ctrlKey && event.metaKey) return;
+    if (referenceMenuOpen && !event.shiftKey && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      setReferenceIndex((activeReferenceIndex + step + referenceCount) % referenceCount);
+      return;
+    }
+    if (referenceMenuOpen && !event.shiftKey && !event.repeat && (event.key === 'Enter' || event.key === 'Tab')) {
+      event.preventDefault();
+      const item = referenceConversations[activeReferenceIndex - Number(hasDocumentLibrary)];
+      if (item) void addConversationReference(item.id, text);
+      else if (hasDocumentLibrary) openAttachmentReference();
+      return;
+    }
+    if (commandMenuOpen && event.key === 'Tab') {
+      const picked = !event.shiftKey ? filteredCommands[selectedCommandIndex] : undefined;
+      if (picked?.executable) {
+        event.preventDefault();
+        chooseComposerCommand(picked);
+      } else dismissCommands();
+      return;
+    }
+    if (commandMenuOpen && filteredCommands.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      setCommandIndex((selectedCommandIndex + delta + filteredCommands.length) % filteredCommands.length);
+      return;
+    }
+    if (event.key === 'ArrowUp' && !commandMenuOpen && !event.repeat && !event.ctrlKey && !event.metaKey && !event.shiftKey && recallQueuedDraft()) {
+      event.preventDefault();
+      return;
+    }
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    if (event.repeat) return;
+    if ((event.ctrlKey || event.metaKey) && canSteerQueue) { steerQueuedMessages(); return; }
+    const picked = commandMenuOpen ? filteredCommands[selectedCommandIndex] : undefined;
+    if (picked) {
+      if (picked.executable) chooseComposerCommand(picked);
+      else setError(picked.reason || '此命令目前不可执行。');
+    } else if (busy) sendBusyDraft(event.ctrlKey || event.metaKey);
+    else void sendSelected();
+  }
+  function sendBusyDraft(alternate = false) {
+    if (!canSendBusyDraft) return;
+    const action = alternate && steerAvailable ? preferredBusyMode === 'queue' ? 'steer' : 'queue' : preferredBusyMode;
+    if (action === 'steer') void steerCurrentTurn();
+    else queueDraft();
+  }
+  function chooseComposerCommand(command: ComposerCommand) {
+    if (navigationLocked || !command.executable) return;
+    dismissCommands();
+    if (command.native) {
+      if (command.hint && (!text.trim() || slashName !== undefined)) {
+        editDraft('/' + command.name + ' ');
+        setDismissedCommandText('/' + command.name + ' ');
+      } else if (command.hint) setError('请先发送或清空草稿，再输入此命令的参数。');
+      else void send('/' + command.name);
+      return;
+    }
+    if (slashName !== undefined) editDraft('');
+    switch (command.name) {
+      case 'file': fileInput.current?.click(); break;
+      case 'new': void newChat(); break;
+      case 'model': setModelPickerRequest(value => value + 1); break;
+      case 'permission': setPermissionPickerRequest(value => value + 1); break;
+      case 'plan':
+        if (nativeTasks && planActionAvailable) void send(currentTaskState?.plan?.active ? '/plan off' : '/plan');
+        break;
+      case 'goal':
+        if (nativeTasks && !locked) setGoalRequest(value => value + 1);
+        break;
+      case 'workspace': if (active) setWorkspacePanelChat(active.id); break;
+      case 'skills': onOpenExtensionConfig?.('skills'); break;
+      case 'plugins': onOpenExtensionConfig?.('plugin-config'); break;
+      case 'mcp': onOpenExtensionConfig?.('mcp'); break;
+    }
+  }
+  function clearPendingPermission(key: string) {
+    setPendingPermissions(current => {
+      const remaining = { ...current };
+      delete remaining[key];
+      return remaining;
+    });
+  }
+  useEffect(() => {
+    const item = active;
+    const bridge = window.somnusNativeDshChat;
+    if (loading || !bridge?.recoverQuestions && !bridge?.getDraft) return;
+    let current = true;
+    const id = item?.id || 'workspace:' + workspace;
+    void Promise.all([
+      bridge?.getDraft?.(id).catch(() => null),
+      item && bridge?.recoverQuestions?.(id).catch(() => []),
+    ]).then(([stored, pending]) => {
+      if (!current || draftKey() !== id || workspaceRef.current !== workspace) return;
+      if (stored && !drafts.current.has(id) && !turns.current.has(id)) {
+        const attachments = (stored.attachments || []).filter((image): image is ChatAttachment =>
+          isLocalImage(image.data_url) && typeof image.mime === 'string' && Number.isInteger(image.size) &&
+          Number.isInteger(image.width) && Number.isInteger(image.height));
+        const draft = { text: stored.text || '', composerBlocks: stored.composerBlocks || [], skills: [], plugins: [], attachments,
+          dataFile: stored.dataFile || null, docFile: stored.docFile || null };
+        drafts.current.set(id, draft);
+        restoreDraft(draft);
+      }
+      const recovered = pending?.find(question => question.phase !== 'continued') || pending?.[0];
+      if (item && recovered && !questions.current.has(id)) {
+        questions.current.set(id, { request: recovered, agent: { agentId: COMPANY_NATIVE_AGENT, agentName: '默认 Agent' },
+          workspace, title: item.title, recovered: true, answers: stored?.questionId === recovered.requestId ? stored.answers : undefined });
+        refreshTurns();
+      }
+    });
+    return () => { current = false; };
+  }, [active?.id, workspace, loading]);
+  useEffect(() => {
+    const id = active?.id;
+    const read = window.somnusNativeDshChat?.getQueue;
+    if (!id || loading || !read || knownQueues.current.has(id)) return;
+    let current = true;
+    void read(id).then(items => {
+      if (!current || knownQueues.current.has(id)) return;
+      knownQueues.current.add(id);
+      if (!items?.length) return;
+      queues.current.set(id, items.map(item => ({
+        ...item,
+        draft: {
+          text: item.draft.text || '',
+          composerBlocks: item.draft.composerBlocks || [],
+          attachments: (item.draft.attachments || []).filter((image): image is ChatAttachment =>
+            isLocalImage(image.data_url) && typeof image.mime === 'string' && Number.isInteger(image.size) &&
+            Number.isInteger(image.width) && Number.isInteger(image.height)),
+          dataFile: item.draft.dataFile || null,
+          docFile: item.draft.docFile || null,
+          skills: (item.draft.skillIds || []).map(id => ({ id, name: id, description: '', enabled: true, reference_count: 0 })),
+          plugins: (item.draft.pluginIds || []).map(id => ({ id, name: id, description: '', version: '', enabled: true,
+            skill_ids: [], mcp_ids: [], missing_skills: [], missing_mcp: [], inactive_skills: [], inactive_mcp: [] })),
+        },
+      })));
+      restoredQueues.current.add(id);
+      refreshTurns();
+    }).catch(() => {
+      if (current) setError('暂时无法恢复本机排队消息。');
+    });
+    return () => { current = false; };
+  }, [active?.id, loading, workspace]);
+  function markDraftEdited() {
+    const id = activeId.current;
+    const turn = id ? turns.current.get(id) : undefined;
+    if (turn) turn.draftEdited = true;
+  }
+  function changeDraftSkills(next: Skill[]) {
+    markDraftEdited();
+    setSkills(next);
+  }
+  function changeDraftPlugins(next: InstalledPlugin[]) {
+    markDraftEdited();
+    setPlugins(next);
   }
   function selectHistory(id: string) {
     if (navigationLocked || id === activeId.current) return;
+    setTrajectoryFor(undefined);
+    setPlusMenuOpen(false);
+    setShowExtensions(false);
+    setDismissedCommandText(undefined);
     saveCurrentDraft();
     restoreDraft(drafts.current.get(id));
     stick.current = true;
@@ -398,13 +1119,81 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }
     setNotificationConversation(undefined);
   }, [visible, navigationLocked, notificationConversation]);
+  useEffect(() => {
+    if (!visible || navigationLocked || !attentionChat || attentionChat.workspace !== workspace) return;
+    selectHistory(attentionChat.id);
+    setAttentionChat(undefined);
+  }, [visible, navigationLocked, attentionChat, workspace]);
   async function newChat() {
     if (navigationLocked || deleteLock.current) return;
     saveCurrentDraft();
     setError(''); setLoading(true);
-    try { const item = await createConversation(workspace); if (alive.current) { ++historyToken.current; choose(item); updateItem(item); setMessages([]); clearDraft(); } }
+    try {
+      const permission = active ? undefined : nextPermission;
+      const item = await createConversation(workspace, permission);
+      if (alive.current) {
+        if (!active && draftTeamwork[workspace]) transferDraftTeamwork(item.id);
+        if (permission) clearPendingPermission(permissionKey);
+        ++historyToken.current; choose(item); updateItem(item); setMessages([]); clearDraft();
+        await applyPendingTeamwork(item.id);
+      }
+    }
     catch (failure) { if (alive.current) setError(failureText(failure)); }
     finally { if (alive.current) setLoading(false); }
+  }
+  function transferDraftTeamwork(id: string) {
+    pendingTeamwork.current.add(id);
+    setDraftTeamwork(previous => ({ ...previous, [workspace]: false }));
+  }
+  async function applyPendingTeamwork(id: string) {
+    if (!pendingTeamwork.current.has(id)) return;
+    const saved = await window.somnusDesktop?.setTeamwork?.(id, true);
+    if (!saved?.available || !saved.enabled) throw new Error('无法为此会话开启 Teamwork，请重试。');
+    pendingTeamwork.current.delete(id);
+    if (alive.current) setTeamworkRevision(value => value + 1);
+  }
+  async function copyReply(message: ChatMessage) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      if (alive.current) setCopiedReply(message.id);
+    } catch (failure) {
+      if (alive.current) setError(describeError(failure, '无法复制回答'));
+    }
+  }
+  async function shareReply(message: ChatMessage) {
+    if (!active) return;
+    try {
+      const link = new URL(window.location.pathname, window.location.origin);
+      link.hash = 'assistant?conversation=' + encodeURIComponent(active.id);
+      await navigator.clipboard.writeText(link.href);
+      if (alive.current) setSharedReply(message.id);
+    } catch (failure) {
+      if (alive.current) setError(describeError(failure, '无法复制会话链接'));
+    }
+  }
+  async function branchFromReply(messageId: string) {
+    if (!active || locked || branchLock.current || deleteLock.current) return;
+    const source = active.id;
+    branchLock.current = true;
+    setBranchingReply(messageId);
+    setError('');
+    try {
+      const branch = await branchConversation(source, messageId);
+      if (!alive.current || workspaceRef.current !== workspace) return;
+      updateItem(branch);
+      if (activeId.current === source) {
+        saveCurrentDraft();
+        restoreDraft();
+        stick.current = true;
+        setAtBottom(true);
+        await openHistory(branch.id);
+      }
+    } catch (failure) {
+      if (alive.current && activeId.current === source) setError(failureText(failure));
+    } finally {
+      branchLock.current = false;
+      if (alive.current) setBranchingReply(undefined);
+    }
   }
   async function rename() {
     if (!renameTarget || navigationLocked || turns.current.has(renameTarget.id) || deleteLock.current || !name.trim()) return;
@@ -427,16 +1216,20 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     setRenameTarget(item);
   }
   function requestDelete(item: Conversation) {
-    if (turns.current.has(item.id)) return;
+    if (turns.current.has(item.id) || queueStarting.current.has(item.id)) return;
     setDeleteError('');
     setDeleteTarget(item);
   }
   async function removeConversation() {
-    if (!deleteTarget || navigationLocked || turns.current.has(deleteTarget.id) || deleteLock.current) return;
+    if (!deleteTarget || navigationLocked || turns.current.has(deleteTarget.id) || queueStarting.current.has(deleteTarget.id) || deleteLock.current) return;
     const target = deleteTarget.id; deleteLock.current = true; setDeleteBusy(true); setDeleteError(''); ++listToken.current;
     try {
       await deleteConversation(target);
       drafts.current.delete(target);
+      queues.current.delete(target);
+      clearPendingPermission(target);
+      questions.current.delete(target);
+      persistDraft(target, '');
       turnErrors.current.delete(target);
       void mainChatBridge()?.resetConversation(target).catch(() => {});
       if (!alive.current) return;
@@ -455,15 +1248,57 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   }
   function addAnyFiles(files: File[]) {
     const images = files.filter(file => file.type.startsWith('image/'));
+    const others = files.filter(file => !file.type.startsWith('image/'));
+    const tables = others.filter(file => /\.(csv|xlsx|xlsm)$/i.test(file.name));
+    const documents = others.filter(file => !tables.includes(file));
+    if (tables.length > 1 || documents.length > 1) {
+      setError('每条消息可添加一份表格和一份文档。请分别选择要附加的文件。');
+      return;
+    }
     if (images.length) void addImages(images);
-    const other = files.find(file => !file.type.startsWith('image/'));
-    if (!other) return;
-    if (/\.(csv|xlsx|xlsm)$/i.test(other.name)) void addDataFile(other);
-    else void addDocument(other);
+    if (tables[0]) void addDataFile(tables[0]);
+    if (documents[0]) void addDocument(documents[0]);
+  }
+
+  function pasteComposerFiles(event: ClipboardEvent<HTMLDivElement>) {
+    const files = Array.from(event.clipboardData.items)
+      .filter(item => item.kind === 'file' && !item.webkitGetAsEntry?.()?.isDirectory)
+      .map(item => item.getAsFile()).filter((file): file is File => Boolean(file));
+    if (!files.length) return;
+    if (!event.clipboardData.getData?.('text/plain')) event.preventDefault();
+    if (!navigationLocked) addAnyFiles(files);
+  }
+
+  function acceptsComposerDrop(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).some(type => type === 'Files' || type === conversationDropType);
+  }
+
+  function dragConversationReference(event: DragEvent<HTMLButtonElement>, id: string) {
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData(conversationDropType, id);
+  }
+
+  function dropComposerFiles(event: DragEvent<HTMLElement>) {
+    if (!acceptsComposerDrop(event)) return;
+    event.preventDefault();
+    setComposerDragging(false);
+    if (navigationLocked) return;
+    if (Array.from(event.dataTransfer.types).includes(conversationDropType)) {
+      void addConversationReference(event.dataTransfer.getData(conversationDropType));
+      return;
+    }
+    const files = Array.from(event.dataTransfer.items).filter(item => item.kind === 'file' && !item.webkitGetAsEntry?.()?.isDirectory)
+      .map(item => item.getAsFile()).filter((file): file is File => Boolean(file));
+    if (files.length) addAnyFiles(files);
+    else if (!event.dataTransfer.items.length) addAnyFiles(Array.from(event.dataTransfer.files));
+  }
+
+  function keepComposerFocus(event: MouseEvent<HTMLElement>) {
+    if (event.button === 0) event.preventDefault();
   }
 
   async function addLibraryFile(path: string) {
-    if (locked || libraryLock.current) return;
+    if (navigationLocked || libraryLock.current) return;
     const conversationId = activeId.current;
     libraryLock.current = true;
     setLibraryLoading(true);
@@ -488,6 +1323,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
 
   async function addDocument(file: File) {
     if (file.size > 10 * 1024 * 1024) { setError(`文件不能超过 10MB（当前 ${(file.size / 1048576).toFixed(1)} MB）。`); return; }
+    markDraftEdited();
     setDocUploading(true); setError('');
     try {
       const response = await fetch('/api/assistant/files', {
@@ -498,7 +1334,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         const detail = payload?.error;
         throw new Error(typeof detail === 'string' ? detail : detail?.message || '读取文件失败');
       }
-      if (alive.current) setDocFile(payload.file);
+      if (alive.current) editDraftMedia({ docFile: payload.file });
     } catch (failure) { if (alive.current) setError(failureText(failure)); }
     finally { if (alive.current) setDocUploading(false); }
   }
@@ -510,6 +1346,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }
     if (!/\.(csv|xlsx|xlsm)$/i.test(file.name)) { setError('只支持 CSV 或 Excel（.xlsx）文件。'); return; }
     if (file.size > 5 * 1024 * 1024) { setError(`文件不能超过 5MB（当前 ${(file.size / 1048576).toFixed(1)} MB）。原始波形请先导出为日报表。`); return; }
+    markDraftEdited();
     setDataUploading(true); setError('');
     try {
       const acpOnly = Boolean(external);
@@ -521,7 +1358,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         const detail = payload?.error;
         throw new Error(typeof detail === 'string' ? detail : detail?.message || '上传失败');
       }
-      if (alive.current) setDataFile({ ...payload.file, acpOnly });
+      if (alive.current) editDraftMedia({ dataFile: { ...payload.file, acpOnly } });
     } catch (failure) { if (alive.current) setError(failureText(failure)); }
     finally { if (alive.current) setDataUploading(false); }
   }
@@ -537,16 +1374,74 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     updateItem(item);
   }
 
-  function finishTurn(turn: RunningTurn, retryDraft?: Draft) {
+  function finishTurn(turn: RunningTurn, retryDraft?: Draft, continueQueue = false) {
     const id = turn.conversation.id;
     turns.current.delete(id);
+    if (continueQueue && !turn.stopping && !turn.error) acknowledgeQueuedMessage(turn);
     if (turn.error) turnErrors.current.set(id, turn.error);
-    if (retryDraft) drafts.current.set(id, retryDraft);
+    const restore = !turn.draftEdited && retryDraft;
+    if (restore) drafts.current.set(id, restore);
+    if (restore) persistDraft(id, restore.text);
     if (isSelected(turn)) {
       setMessages(turn.messages);
-      if (retryDraft) restoreDraft(retryDraft);
+      if (restore) restoreDraft(restore);
     }
     refreshTurns();
+    if (continueQueue && !turn.stopping && !turn.error && !restoredQueues.current.has(id)) {
+      void startNextQueuedMessage(turn.conversation, turn.workspace, turn.messages);
+    }
+  }
+
+  async function startNextQueuedMessage(item: Conversation, turnWorkspace: string, previousMessages: ChatMessage[]) {
+    const id = item.id;
+    let next = queues.current.get(id)?.[0];
+    if (!alive.current || !next || turns.current.has(id) || queueStarting.current.has(id)) return;
+    queueStarting.current.add(id);
+    refreshTurns();
+    let turn: RunningTurn | undefined;
+    try {
+      await queueWrites.current.get(id);
+      if (uncertainQueues.current.has(id)) {
+        const getQueue = window.somnusNativeDshChat?.getQueue;
+        if (!getQueue) throw Error('无法确认队列状态，请关闭并重新打开会话后重试。');
+        const stored = new Set((await getQueue(id) || []).map(message => message.id));
+        const remaining = (queues.current.get(id) || []).filter(message => stored.has(message.id));
+        if (remaining.length) queues.current.set(id, remaining);
+        else queues.current.delete(id);
+        uncertainQueues.current.delete(id);
+        next = remaining[0];
+        if (!next) return;
+      }
+      restoredQueues.current.delete(id);
+      const conversation = next.permission === (item.permission_mode || 'read_only') ? item
+        : { ...item, permission_mode: await saveConversationPermission(id, next.permission) };
+      if (!alive.current || queues.current.get(id)?.[0] !== next) return;
+      const route = next.route;
+      turn = {
+        conversation, workspace: turnWorkspace, messages: previousMessages, stopping: false, startedAt: Date.now(),
+        controller: route.agent ? undefined : new AbortController(), nativeDsh: route.nativeDsh,
+        draftEdited: true, queuedMessage: next,
+      };
+      turns.current.set(id, turn);
+      turnErrors.current.delete(id);
+      updateTurnConversation(turn, conversation);
+      if (isSelected(turn)) setError('');
+    } catch (failure) {
+      if (alive.current) turnErrors.current.set(id, failureText(failure));
+    } finally {
+      queueStarting.current.delete(id);
+      refreshTurns();
+    }
+    if (!turn) return;
+    const route = next.route;
+    if (route.agent) await sendExternal(turn, route.agent, next.draft, route.reasoningEffort, undefined, route.companyOptions);
+    else await sendInternal(turn, next.draft, route);
+  }
+  function acknowledgeQueuedMessage(turn: RunningTurn) {
+    const queued = turn.queuedMessage;
+    if (!queued || turn.committed) return;
+    turn.committed = true;
+    removeQueuedMessage(turn.conversation.id, queued.id);
   }
 
   function closeDelegation(turn: RunningTurn) {
@@ -591,9 +1486,16 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }
   }
 
-  async function sendExternal(turn: RunningTurn, selection: ExternalSelection, draft: Draft, reasoningEffort?: string) {
+  async function sendExternal(turn: RunningTurn, selection: ExternalSelection, draft: Draft, reasoningEffort?: string,
+    questionReply?: QuestionReply, companyOptions?: { model: string; effort?: CompanyReasoningEffort }, nativeCommand?: string) {
     const bridge = mainChatBridge();
-    if (!bridge) { finishTurn(turn, draft); return; }
+    const nativeDsh = turn.nativeDsh ? window.somnusNativeDshChat : undefined;
+    if (turn.nativeDsh ? !nativeDsh : !bridge) {
+      turn.error = '当前 Agent 的运行环境未就绪。';
+      finishTurn(turn, draft);
+      return;
+    }
+    const transport = nativeDsh || bridge!;
     const id = turn.conversation.id;
     let execution: ExecutionSummary = { steps: [], plan: [] };
     const timings = new Map<string, number>();
@@ -609,14 +1511,26 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     let endStatus: 'complete' | 'cancelled' | 'error' = 'error';
     let unsubscribe: (() => void) | undefined;
     let responseError: unknown;
+    function publishProposals(proposals: FileProposal[]) {
+      if (!proposals.length || !alive.current) return;
+      setFileProposals(current => ({
+        ...current,
+        [id]: [...(current[id] || []).filter(item => !proposals.some(proposal => proposal.id === item.id)),
+          ...proposals.map(proposal => ({ ...proposal, assistant_message_id: proposal.assistant_message_id || assistantId }))],
+      }));
+    }
     try {
       const reserved = await beginExternalTurn(id, {
-        content: draft.text.trim(), agent_id: selection.agentId, agent_name: selection.agentName, model: selection.modelName || selection.modelId,
+        content: composerPrompt(draft).trim(), agent_id: selection.agentId, agent_name: selection.agentName, model: selection.modelName || selection.modelId,
+        ...(turn.queuedMessage ? { queue_id: turn.queuedMessage.id } : {}),
+        ...(companyOptions ? { company_model: companyOptions.model, reasoning_effort: companyOptions.effort } : {}),
         attachments: draft.attachments, file_ids: draft.docFile ? [draft.docFile.id] : undefined,
         analysis_file_id: draft.dataFile?.id, skill_ids: draft.skills.map(skill => skill.id),
         ...(draft.plugins.length ? { plugin_ids: draft.plugins.map(plugin => plugin.id) } : {}),
       });
       turnId = reserved.turn_id;
+      acknowledgeQueuedMessage(turn);
+      turn.externalTurnId = turnId;
       assistantId = reserved.assistant_message.id;
       updateTurnConversation(turn, reserved.conversation);
       turn.messages = [...turn.messages, reserved.user_message, reserved.assistant_message];
@@ -624,7 +1538,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       if (turn.stopping) { endStatus = 'cancelled'; return; }
       function updateStep(step: ExecutionStep) {
         const existing = execution.steps.findIndex(item => item.id === step.id);
-        if (existing < 0 && execution.steps.length >= 40) {
+        if (existing < 0 && execution.steps.length >= (nativeDsh ? 300 : 40)) {
           execution = { ...execution, truncated: true };
           return;
         }
@@ -632,7 +1546,9 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         const started = timings.get(step.id);
         const duration = started === undefined || step.status === 'pending' || step.status === 'in_progress'
           ? undefined : Math.round(performance.now() - started);
-        const safe = { ...step, title: step.title.slice(0, 180), kind: step.kind.slice(0, 60), duration_ms: duration,
+        const parentId = step.parent_id || execution.steps[existing]?.parent_id;
+        const safe = { ...step, title: step.title.slice(0, 180), kind: step.kind.slice(0, 60), duration_ms: step.duration_ms ?? duration,
+          ...(parentId ? { parent_id: parentId } : {}),
           failure_reason: step.status === 'failed' ? step.failure_reason?.trim().slice(0, 240) : undefined };
         const steps = execution.steps.slice();
         if (existing < 0) steps.push(safe);
@@ -643,9 +1559,18 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         turn.execution = { assistantId: reserved.assistant_message.id, data: execution };
         refreshTurns();
       }
-      unsubscribe = bridge.onUpdate(update => {
-        if (update.agentId !== selection.agentId || update.conversationId !== id) return;
-        if (update.acpPermission && bridge.respondPermission) {
+      unsubscribe = transport.onUpdate(update => {
+        if ((!nativeDsh && update.agentId !== selection.agentId) || update.conversationId !== id) return;
+        if (update.acpStage) {
+          turn.stage = update.acpStage;
+          refreshTurns();
+        }
+        if (update.projectProposal) publishProposals([update.projectProposal]);
+        if (nativeDsh && update.dshTaskState) {
+          const next = update.dshTaskState;
+          setTaskStates(previous => ({ ...previous, [id]: next }));
+        }
+        if (update.acpPermission && transport.respondPermission) {
           turn.permission = { conversationId: id, request: update.acpPermission };
           const { requestId, kind } = update.acpPermission;
           if (kind === 'mcp' || kind === 'edit' || kind === 'test') {
@@ -663,6 +1588,18 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           turn.permission = undefined;
           refreshTurns();
         }
+        if (nativeDsh?.respondQuestion && update.dshQuestion) {
+          const pending = questions.current.get(id);
+          const sameQuestion = pending?.request.requestId === update.dshQuestion.requestId;
+          questions.current.set(id, { ...(sameQuestion ? pending : undefined), request: update.dshQuestion, agent: selection,
+            workspace: turn.workspace, title: turn.conversation.title });
+          refreshTurns();
+        }
+        if (update.dshQuestionClosed && questions.current.get(id)?.request.requestId === update.dshQuestionClosed.requestId) {
+          questions.current.delete(id);
+          persistDraft(id);
+          refreshTurns();
+        }
         if (update.contextUsage) {
           turn.contextUsage = update.contextUsage;
           refreshTurns();
@@ -678,14 +1615,14 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           publishExecution();
         }
         if (update.toolProgress) {
-          const { callId, traceId, name, status, message, taskId } = update.toolProgress;
+          const { callId, traceId, name, title, kind, status, message, taskId } = update.toolProgress;
           let stepId = traceId || 'local-call-' + callId;
           if (!traceId && !callId) {
             stepId = status === 'running' ? 'local-' + ++serial : progressIds.get(name) || 'local-' + ++serial;
             if (status === 'running') progressIds.set(name, stepId);
             else progressIds.delete(name);
           }
-          updateStep({ id: stepId, title: name, kind: 'tool', status: status === 'running' ? 'in_progress' : status === 'error' ? 'failed' : 'completed',
+          updateStep({ id: stepId, title: title || name, kind: kind || 'tool', status: status === 'running' ? 'in_progress' : status === 'error' ? 'failed' : 'completed',
             failure_reason: status === 'error' ? message : undefined });
           publishExecution();
           if (status === 'complete' && taskId && /^[a-f0-9]{32}$/.test(taskId)) {
@@ -701,33 +1638,54 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         turn.messages = turn.messages.map(item => item.id === assistantId ? { ...item, content: partial } : item);
         refreshTurns();
       });
-      const result = await bridge.promptConversation({ agentId: selection.agentId, conversationId: id, turnId: reserved.turn_id, modelId: selection.modelId, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) });
-      const proposals = result.projectProposals;
-      if (proposals?.length && alive.current) {
-        setFileProposals(current => ({
-          ...current, [id]: [...(current[id] || []).filter(item => !proposals.some(proposal => item.id === proposal.id)), ...proposals.map(proposal => ({ ...proposal, assistant_message_id: proposal.assistant_message_id || assistantId }))],
-        }));
+      const workspaceId = /^ws_[a-f0-9]{12}$/.test(turn.workspace) ? turn.workspace : undefined;
+      const route = { agentId: selection.agentId, conversationId: id, turnId: reserved.turn_id, workspaceId };
+      let commandResult: (ExternalResult & { ok: boolean; taskState?: DshTaskState }) | undefined;
+      if (nativeCommand) {
+        if (!nativeDsh?.executeCommand) throw new Error('当前桌面连接无法执行原生命令。');
+        commandResult = await nativeDsh.executeCommand({ ...route, line: nativeCommand });
+        const next = commandResult.taskState;
+        if (next) setTaskStates(previous => ({ ...previous, [id]: next }));
       }
+      const result: ExternalResult = commandResult || (nativeDsh
+        ? await nativeDsh.promptConversation({ agentId: selection.agentId, conversationId: id, turnId: reserved.turn_id,
+          ...(questionReply ? { questionReply } : {}),
+          workspaceId })
+        : await bridge!.promptConversation({ agentId: selection.agentId, conversationId: id, turnId: reserved.turn_id,
+          modelId: selection.modelId, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) }));
+      if (result.projectProposals) publishProposals(result.projectProposals);
       if (result.text) partial = result.text.slice(0, 100000);
       resultModel = result.modelName || result.modelId || undefined;
       usage = result.usage;
       turn.contextUsage = result.contextUsage || turn.contextUsage;
-      endStatus = turn.stopping || result.stopReason === 'cancelled' ? 'cancelled' : 'complete';
+      endStatus = turn.stopping || result.stopReason === 'cancelled' ? 'cancelled' : commandResult?.ok === false ? 'error' : 'complete';
       if (endStatus === 'complete') recommendations = result.recommendations;
     } catch (failure) {
-      endStatus = turn.stopping ? 'cancelled' : 'error';
-      responseError = failure;
+      if (turn.queuedMessage && (failure as { code?: string })?.code === 'queue_already_submitted') {
+        acknowledgeQueuedMessage(turn);
+        endStatus = 'complete';
+      } else {
+        endStatus = turn.stopping ? 'cancelled' : 'error';
+        responseError = failure;
+      }
     } finally {
       unsubscribe?.();
+      turn.externalTurnId = undefined;
       if (analysisTasks.size) {
         const links = [...analysisTasks].map(id => '[查看深度分析任务](/#deep-analysis?task=' + id + ')').join('\n');
         partial = partial.slice(0, 100000 - links.length - 2) + '\n\n' + links;
       }
       turn.toolNote = undefined;
       turn.permission = undefined;
+      const pendingQuestion = questions.current.get(id);
+      if (pendingQuestion && pendingQuestion.request.phase !== 'continued') {
+        questions.current.delete(id);
+        persistDraft(id);
+      }
       refreshTurns();
       if (turnId) {
         try {
+          await turn.steerResponse;
           await turn.approvalResponse?.catch(() => {});
           if (turn.traceApprovals?.size) {
             const approvals = [...turn.traceApprovals.values()];
@@ -748,74 +1706,170 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         }
       }
       if (responseError && !turn.stopping && !turn.error) turn.error = failureText(responseError);
-      finishTurn(turn, turn.error ? draft : undefined);
-    }
-  }
-  async function sendDot() {
-    if (locked || creatingTurn.current || deleteLock.current || !dotReady || dot.submitting ||
-      dotHasExtras || dotLimitExceeded || !text.trim()) return;
-    const draft = text;
-    const selection = historyToken.current;
-    let item = active;
-    if (!item) {
-      creatingTurn.current = true;
-      refreshTurns();
-      try {
-        item = await createConversation(workspace);
-        if (!alive.current || workspaceRef.current !== workspace) return;
-        choose(item);
-        updateItem(item);
-      } catch (failure) {
-        if (alive.current) setError(failureText(failure));
-        return;
-      } finally { creatingTurn.current = false; refreshTurns(); }
-    }
-    const id = item.id;
-    const accepted = await dot.dispatch(id, draft);
-    if (!accepted || !alive.current) return;
-    const stored = drafts.current.get(id);
-    if (stored?.text === draft) drafts.current.set(id, { ...stored, text: '' });
-    if (workspaceRef.current === workspace && activeId.current === id && historyToken.current === selection) {
-      setText(current => current === draft ? '' : current);
+      finishTurn(turn, turn.error && !questionReply ? draft : undefined, endStatus === 'complete');
     }
   }
   async function sendSelected() {
-    if (dotMode) await sendDot();
-    else await send();
+    const value = text.trim();
+    const name = /^\/([a-z0-9_-]+)(?:\s|$)/i.exec(value)?.[1].toLowerCase();
+    const nativeWithArgs = name && value.length > name.length + 1
+      ? availableNativeCommands.find(item => item.name.toLowerCase() === name) : undefined;
+    const command = nativeWithArgs ? { ...nativeWithArgs, native: true } :
+      name ? allCommands.find(item => item.name.toLowerCase() === name) : undefined;
+    if (command?.native) {
+      if (!command.executable) { setError(command.reason || '此命令目前不可执行。'); return; }
+      await send(value);
+    } else if (command && value === '/' + name) chooseComposerCommand(command);
+    else if (!commandLoading || !name) await send();
   }
-  async function send() {
-    if (locked || worktreeLock.current || creatingTurn.current || (activeId.current && turns.current.has(activeId.current)) || deleteLock.current || !canChat || imageBlocked || (!text.trim() && !attachments.length)) return;
+  async function installAddon(turn: RunningTurn, draft: Draft, request: AddonInstall) {
+    const bridge = window.somnusAddonInstaller;
+    if (!bridge) { finishTurn(turn, draft); return; }
+    const id = turn.conversation.id;
+    let turnId: string | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const steps: ExecutionStep[] = [];
+    let stage: AddonStage | undefined;
+    let stageStarted = Date.now();
+    let opened: { settings: AddonSettings; name: string } | undefined;
+    function publish() {
+      if (turnId) turn.execution = { assistantId: turnId, data: { steps: [...steps], plan: [] } };
+      refreshTurns();
+    }
+    function closeStage(status: 'completed' | 'failed', failure?: string) {
+      if (!stage) return;
+      const index = steps.length - 1;
+      steps[index] = { ...steps[index], status, duration_ms: Date.now() - stageStarted, failure_reason: failure?.slice(0, 240) };
+    }
+    function progress(next: AddonStage) {
+      if (!(next in addonStages) || next === stage) return;
+      closeStage('completed');
+      stage = next;
+      stageStarted = Date.now();
+      steps.push({ id: 'addon-' + steps.length, kind: 'tool', title: addonStages[next], status: 'in_progress' });
+      publish();
+    }
+    let content = '';
+    let status: 'complete' | 'error' = 'error';
+    try {
+      const reserved = await beginExternalTurn(id, {
+        content: request.request, agent_id: ADDON_INSTALLER_ID, agent_name: 'Somnus 安装器', model: '本机安装',
+      });
+      turnId = reserved.turn_id;
+      updateTurnConversation(turn, reserved.conversation);
+      turn.messages = [...turn.messages, reserved.user_message, reserved.assistant_message];
+      turn.stage = 'working';
+      progress('discovering');
+      unsubscribe = bridge.onProgress?.(progress);
+      const result = await bridge.install(request.kind === 'workspace-skill'
+        ? { ...request, workspaceId: turn.workspace, conversationId: id } : request);
+      const name = result.name || request.reference;
+      const profile = result.profile === 'web' ? '桌面配置' : result.profile === 'acp' ? 'ACP 配置'
+        : result.profile === 'mcp' ? '当前用户的 MCP 配置' : '当前用户的 Skill 目录';
+      const version = result.version ? ' ' + result.version : '';
+      closeStage(result.verified ? 'completed' : 'failed', result.verified ? undefined : '安装后的可用性尚未确认。');
+      content = name + version + (result.alreadyInstalled ? ' 已在' : ' 已安装到') + profile + '。';
+      content += result.verified ? '\n\n安装验证已通过。' : '\n\n未能确认安装后的可用性。';
+      if (result.message) content += '\n\n' + result.message.slice(0, 600);
+      status = 'complete';
+      if (result.settings) opened = { settings: result.settings, name: result.pluginId || name };
+    } catch (failure) {
+      const reason = failureText(failure);
+      closeStage('failed', reason);
+      content = '安装未完成。\n\n' + reason;
+      if (!turnId) turn.error = reason;
+    } finally {
+      unsubscribe?.();
+      if (turnId) {
+        try {
+          const saved = await finishExternalTurn(id, turnId, { content, status, execution: { steps, plan: [] } });
+          updateTurnConversation(turn, saved.conversation);
+          turn.messages = turn.messages.map(message => message.id === saved.message.id ? saved.message : message);
+        } catch (failure) {
+          turn.messages = turn.messages.map(message => message.id === turnId ? { ...message, content, status } : message);
+          turn.error = '无法保存安装结果：' + failureText(failure);
+        }
+      }
+      const selected = isSelected(turn);
+      finishTurn(turn, turnId ? undefined : draft);
+      if (selected && assistantVisible.current && opened && !turn.error) onOpenAddonSettings?.(opened.settings, opened.name);
+    }
+  }
+  async function send(nativeCommand?: string) {
+    if (locked || worktreeLock.current || creatingTurn.current || (activeId.current && turns.current.has(activeId.current)) || deleteLock.current ||
+      (!nativeCommand && (!canSendChat || imageBlocked || !hasDraft))) return;
+    if (!nativeCommand && composerPrompt(snapshotDraft()).length > 12000) { setError('正文和引用共计最多 12000 字符。请缩短草稿或移除引用。'); return; }
+    if (active && teamworkChanges.current.has(active.id)) {
+      setError('正在保存此会话的 Teamwork 设置，请稍后再发送。');
+      return;
+    }
+    if (active && (queues.current.get(active.id)?.length || 0) > 0) {
+      setError('请先继续或移除待发送的排队消息。');
+      return;
+    }
+    if (active && window.somnusNativeDshChat?.getQueue && !knownQueues.current.has(active.id)) {
+      setError('正在恢复本机排队消息，请稍后再试。');
+      return;
+    }
+    if (nativeCommand && (!companyAgent || !window.somnusNativeDshChat?.executeCommand || composerBlocks.length || attachments.length || dataFile || docFile || skills.length || plugins.length)) {
+      setError('原生命令需要默认 Agent，且命令不随附文件或扩展。');
+      return;
+    }
+    const activeAddon = nativeCommand ? undefined : addon;
+    if (activeAddon && [...turns.current.values()].some(turn => turn.installingAddon)) {
+      setError('已有插件或 Skill 正在安装。');
+      return;
+    }
     const agent = selectedAgent;
     if (!agent && dataFile?.acpOnly) { setError('此表格已为外部 Agent 添加。请重新选择外部 Agent，或移除并重新添加表格。'); return; }
     let item = active;
-    if (!item) {
+    if (!item || nextPermission && item.permission_mode !== nextPermission || pendingTeamwork.current.has(item.id)) {
       creatingTurn.current = true;
       refreshTurns();
       try {
-        item = await createConversation(workspace);
+        if (!item) {
+          item = await createConversation(workspace, nextPermission);
+          if (companyAgent && draftTeamwork[workspace]) transferDraftTeamwork(item.id);
+        } else if (nextPermission && item.permission_mode !== nextPermission) {
+          item = { ...item, permission_mode: await saveConversationPermission(item.id, nextPermission) };
+        }
         if (!alive.current || workspaceRef.current !== workspace) return;
         choose(item);
         updateItem(item);
+        await applyPendingTeamwork(item.id);
       } catch (failure) {
         if (alive.current) setError(failureText(failure));
         return;
       } finally { creatingTurn.current = false; refreshTurns(); }
     }
-    const draft = snapshotDraft();
+    if (nextPermission) clearPendingPermission(permissionKey);
+    const preserveDraft = Boolean(nativeCommand && text.trim() && slashName === undefined && text.trim() !== nativeCommand);
+    const draft = { ...snapshotDraft(), text: nativeCommand || text };
     const turn: RunningTurn = {
-      conversation: item, workspace, messages, stopping: false,
-      controller: agent ? undefined : new AbortController(),
+      conversation: item, workspace, messages, stopping: false, startedAt: Date.now(),
+      controller: agent || activeAddon ? undefined : new AbortController(), installingAddon: Boolean(activeAddon),
+      nativeDsh: Boolean(companyAgent && !activeAddon), draftEdited: preserveDraft,
     };
     turns.current.set(item.id, turn);
     turnErrors.current.delete(item.id);
-    drafts.current.delete(item.id);
-    clearDraft();
+    if (!preserveDraft) {
+      drafts.current.delete(item.id);
+      if (!active) {
+        const newKey = 'workspace:' + workspace;
+        drafts.current.delete(newKey);
+        persistDraft(newKey, '');
+      }
+      persistDraft(item.id, '');
+      clearDraft();
+    }
     setError('');
     stick.current = true;
     setAtBottom(true);
     refreshTurns();
-    if (agent) await sendExternal(turn, agent, draft, reasoningValue);
-    else await sendInternal(turn, draft);
+    if (activeAddon) await installAddon(turn, draft, activeAddon);
+    else if (agent) await sendExternal(turn, agent, draft, reasoningValue, undefined,
+      selectedCompanyModel ? { model: selectedCompanyModel.model, effort: selectedCompanyEffort } : undefined, nativeCommand);
+    else await sendInternal(turn, draft, snapshotRoute());
   }
   function cancelDevelopment(turn: RunningTurn) {
     const job = turn.development;
@@ -854,10 +1908,11 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     }
     refreshTurns();
   }
-  async function sendInternal(turn: RunningTurn, draft: Draft) {
+  async function sendInternal(turn: RunningTurn, draft: Draft, route: TurnRoute) {
     const target = turn.conversation.id;
     const abort = turn.controller!;
-    const { text: content, attachments: images, dataFile, docFile, skills } = draft;
+    const { attachments: images, dataFile, docFile, skills } = draft;
+    const content = composerPrompt(draft);
     const dataMeta = dataFile ? { name: dataFile.name, row_count: dataFile.row_count, columns: dataFile.columns.slice(0, 60) } : null;
     let complete = false;
     let assistantId: string | undefined;
@@ -874,6 +1929,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         if (!alive.current) return;
         const data = event.data;
         if (event.type === 'start' && data.user_message && data.assistant_message) {
+          acknowledgeQueuedMessage(turn);
           if (data.conversation) updateTurnConversation(turn, data.conversation);
           assistantId = data.assistant_message.id;
           turn.messages = [...turn.messages.filter(message => message.id !== data.user_message!.id && message.id !== assistantId), data.user_message, data.assistant_message];
@@ -942,20 +1998,23 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
           if (event.type === 'error') turn.error = typeof data.message === 'string' ? data.message : '模型请求失败。会话已保存，可重试。';
         }
         refreshTurns();
-      }, images, dataFile?.id, docFile ? [docFile.id] : [], dataMeta, skills.map(skill => skill.id), chosenModel.id, chosenModel.effort, draft.plugins.map(plugin => plugin.id), delegationAgents);
+      }, images, dataFile?.id, docFile ? [docFile.id] : [], dataMeta, skills.map(skill => skill.id), route.modelId, route.effort, draft.plugins.map(plugin => plugin.id), delegationAgents, turn.queuedMessage?.id);
     } catch (failure) {
-      if (!abort.signal.aborted) turn.error = failureText(failure);
+      if (turn.queuedMessage && (failure as { code?: string })?.code === 'queue_already_submitted') {
+        acknowledgeQueuedMessage(turn);
+        complete = true;
+      } else if (!abort.signal.aborted) turn.error = failureText(failure);
     } finally {
       closeDelegation(turn);
       void cancelDevelopment(turn);
       turn.messages = turn.messages.map(message => message.id === assistantId && message.status === 'streaming' ? { ...message, status: turn.stopping || abort.signal.aborted ? 'cancelled' : 'error' } : message);
-      finishTurn(turn, complete || turn.stopping ? undefined : draft);
+      finishTurn(turn, complete || turn.stopping ? undefined : draft, complete);
     }
   }
   async function stop() {
     const id = activeId.current;
     const turn = id ? turns.current.get(id) : undefined;
-    if (!id || !turn || turn.stopping) return;
+    if (!id || !turn || turn.stopping || turn.installingAddon) return;
     turn.stopping = true;
     turn.error = undefined;
     refreshTurns();
@@ -965,6 +2024,8 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
         closeDelegation(turn);
         void cancelDevelopment(turn);
         turn.controller.abort();
+      } else if (turn.nativeDsh) {
+        await window.somnusNativeDshChat?.cancelConversation(id);
       } else {
         await mainChatBridge()?.cancelConversation(id);
       }
@@ -977,7 +2038,7 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   const hasConversationMessages = messages.length > 0 && !loading;
   useEffect(() => {
     const messageLog = log.current;
-    const chat = messageLog?.parentElement;
+    const chat = messageLog?.closest<HTMLElement>('.assistant-chat');
     if (!messageLog || !chat || typeof ResizeObserver === 'undefined') return;
     const row = messageLog.querySelector('.assistant-column-measure');
     if (!row) return;
@@ -996,9 +2057,9 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
   }, [hasConversationMessages]);
   async function respondToAcpPermission(option: string | null) {
     const pending = permissionRequest;
-    const bridge = mainChatBridge();
     if (!pending) return;
     const turn = turns.current.get(pending.conversationId);
+    const bridge = turn?.nativeDsh ? window.somnusNativeDshChat : mainChatBridge();
     if (pending.development) {
       const respond = window.vvmanProjects?.respondDevelopment;
       if (!turn || turn.permission !== pending || !respond) throw new Error('本次运行确认已结束');
@@ -1034,16 +2095,67 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
       refreshTurns();
     }
   }
-  const restoredIncomplete = !busy && messages.some(message => message.status === 'streaming' || message.status === 'error');
-  const hasDocumentLibrary = Boolean(documentBridge());
-  const attachmentButton = <Button type="text" size="small" icon={<PaperClipOutlined />} disabled={locked}
+  async function answerAgent(item: Conversation, pending: PendingQuestion, answers: DshAnswers | null) {
+    const bridge = window.somnusNativeDshChat;
+    const id = item.id;
+    const requestId = pending.request.requestId;
+    const current = questions.current.get(id);
+    if (current?.request.requestId !== requestId || !bridge?.respondQuestion) {
+      throw new Error('本次提问已关闭。');
+    }
+    if (current.answering) return;
+    current.answering = true;
+    refreshTurns();
+    try {
+      const running = turns.current.get(id);
+      if (running || !answers || current.request.phase !== 'continued') {
+        await bridge.respondQuestion(id, requestId, answers);
+      } else {
+        if (locked || activeId.current !== id || current.request.phase !== 'continued') throw new Error('当前无法提交补充回答。');
+        const summary = current.request.questions.flatMap(part => {
+          const answer = answers.find(candidate => candidate.id === part.id);
+          const content = [...(answer?.selected || []), answer?.custom].filter(Boolean).join('、');
+          return content ? [part.question + ' — ' + content] : [];
+        }).join('\n');
+        const turn: RunningTurn = { conversation: item, workspace, messages, stopping: false, startedAt: Date.now(), nativeDsh: true };
+        turns.current.set(id, turn);
+        turnErrors.current.delete(id);
+        refreshTurns();
+        await sendExternal(turn, current.agent, { text: ('补充回答任务问题\n' + summary).slice(0, 12000), attachments: [],
+          dataFile: null, docFile: null, skills: [], plugins: [] }, undefined, { requestId, answers });
+        if (turn.error) throw new Error(turn.error);
+      }
+      if (questions.current.get(id)?.request.requestId === requestId) {
+        questions.current.delete(id);
+        persistDraft(id);
+      }
+    } finally {
+      const latest = questions.current.get(id);
+      if (latest?.request.requestId === requestId) latest.answering = false;
+      refreshTurns();
+    }
+  }
+  const composerPlaceholder = canSteerQueue ? 'Ctrl / Cmd + Enter 追加全部排队消息' : !canSendChat ? '配置模型后即可发送' :
+    currentTaskState?.plan?.active ? '描述接下来要执行的计划' :
+      '发消息或执行任务，/ 调用命令，@ 引用文件或会话';
+  const attachmentButton = <Button className="assistant-attach-button" type="text" size="small" icon={<PlusOutlined />} disabled={navigationLocked}
     loading={imageLoading || dataUploading || docUploading || libraryLoading}
-    aria-label="添加文件" title="添加文件"
-    onClick={hasDocumentLibrary ? undefined : () => fileInput.current?.click()} />;
-  const runningReply = messages.find(message => message.role === 'assistant' && message.status === 'streaming');
-  const terminalApproval = permissionRequest?.request.details?.kind === 'powershell' ? permissionRequest.request.details : undefined;
+    aria-label="添加文件" title="添加文件或运行命令" aria-haspopup="menu" aria-expanded={plusMenuOpen}
+    onMouseDown={keepComposerFocus} />;
+  const runningReply = busy && messages.find(message => message.role === 'assistant' && message.status === 'streaming');
   const lastTool = liveExecution?.data.steps[liveExecution.data.steps.length - 1];
+  const questionCard = active && question && <AgentQuestions key={question.request.requestId}
+    request={question.request} recovered={question.recovered} initialAnswers={question.answers} onDraftChange={answers => {
+      const pending = questions.current.get(active.id);
+      if (pending?.request.requestId === question.request.requestId) {
+        pending.answers = answers;
+        persistDraft(active.id, text);
+      }
+    }} onHold={window.somnusNativeDshChat?.holdQuestion ? held =>
+      window.somnusNativeDshChat!.holdQuestion!(active.id, question.request.requestId, held) : undefined}
+    submittingDisabled={question.answering || !selectedTurn && locked} onRespond={answerAgent.bind(null, active, question)} />;
   const liveTaskCards = <>
+    {questionCard}
     {permissionRequest && permissionRequest.conversationId === active?.id &&
       <ActionApproval key={permissionRequest.conversationId + ':' + permissionRequest.request.requestId} request={permissionRequest.request} onRespond={respondToAcpPermission} />}
     {selectedTurn?.delegation && <DelegationReview key={selectedTurn.delegation.id} request={selectedTurn.delegation} stopping={stopping}
@@ -1054,18 +2166,54 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
     </div>}
   </>;
 
+  const attentionItems = new Map<string, { id: string; workspace: string; title: string; label: string }>();
+  for (const [id, turn] of turns.current) {
+    if (turn.permission || turn.delegation) attentionItems.set(id, {
+      id, workspace: turn.workspace, title: turn.conversation.title, label: '等待确认',
+    });
+  }
+  for (const [id, pending] of questions.current) {
+    if (pending.request.phase !== 'continued' && !attentionItems.has(id)) attentionItems.set(id, {
+      id, workspace: pending.workspace, title: pending.title, label: '等待回答',
+    });
+  }
   return <><div className="assistant-page">
+    {attentionTarget && attentionItems.size > 0 && createPortal(<Dropdown trigger={['click']} menu={{
+      items: [...attentionItems.values()].map(({ id, title, label }) => ({ key: id, label: label + ' · ' + (title || '新会话') })),
+      onClick: ({ key }) => {
+        const target = attentionItems.get(key);
+        if (!target) return;
+        if (visible && target.workspace === workspace && target.id === activeId.current) {
+          const reveal = () => log.current?.querySelector('.assistant-action-approval')?.scrollIntoView({ block: 'nearest' });
+          if (trajectoryOpen) {
+            setTrajectoryFor(undefined);
+            window.requestAnimationFrame(reveal);
+          } else reveal();
+          return;
+        }
+        setAttentionChat({ id: target.id, workspace: target.workspace });
+        onOpenChat(target.workspace);
+      },
+    }}><Button type="text" title="查看待处理的会话提醒" aria-label={`${attentionItems.size} 个会话待处理`}
+      icon={<Badge count={attentionItems.size} size="small"><BellOutlined /></Badge>} /></Dropdown>, attentionTarget)}
     {sidebar && createPortal(<RecentSessions items={items} activeId={visible ? active?.id : undefined}
       locked={navigationLocked} runningIds={turns.current} loading={loading} onOpen={id => { onOpenChat(); selectHistory(id); }}
-      onRename={requestRename} onDelete={requestDelete} />, sidebar)}
+      onReferenceDrag={visible ? dragConversationReference : undefined} onRename={requestRename} onDelete={requestDelete} />, sidebar)}
+    {companyRequested && status?.configured && !companyAgent && <Alert type="warning" showIcon className="assistant-error" message="默认模型的原生运行环境未就绪。请检查 Agent 配置，或选择其他模型。" />}
+    {companyRequested && status && !status.configured && <Alert type="warning" showIcon className="assistant-error"
+      message="默认模型尚未填写 DeepSeek API Key。"
+      action={<Button size="small" onClick={onModelConfig}>配置 API Key</Button>} />}
     {!external && statusError && <Alert type="warning" showIcon className="assistant-error" message="暂时无法读取模型状态" description={statusError} />}
     <div className="assistant-layout">
       <aside className="assistant-history" aria-label="AI会话历史"><div className="assistant-history-head"><strong>会话历史</strong><Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => void newChat()} disabled={navigationLocked}>新建会话</Button></div><div className="assistant-history-list">{loading && !items.length ? <div className="assistant-loading"><Spin size="small" />读取历史…</div> : items.length ? items.map(item => <button type="button" className={`assistant-history-item ${active?.id === item.id ? 'active' : ''}`} key={item.id} onClick={() => selectHistory(item.id)} disabled={navigationLocked} title={item.title} aria-pressed={active?.id === item.id}><MessageOutlined /><span><strong>{item.title || '新会话'}</strong><small>{item.message_count} 条消息 · {formatDateTime(item.updated_at)}</small></span></button>) : <div className="assistant-history-empty">暂无会话</div>}</div><div className="assistant-history-foot">会话保存在本机。</div></aside>
-      <section className="assistant-chat" aria-label="会话"><header className="assistant-chat-head assistant-chat-head-compact">
-        <div className="assistant-chat-heading"><h1><Dropdown trigger={['click']} menu={{
+      <section className="assistant-chat assistant-session" aria-label="会话"><header className="assistant-chat-head assistant-chat-head-compact">
+        <div className="assistant-session-title-row"><div className="assistant-chat-heading"><h1><Dropdown trigger={['click']} menu={{
           items: [
             ...(active ? [{ key: 'rename', label: '重命名', disabled: locked }] : []),
             { key: 'project', label: '项目与文件权限' },
+            ...(active && workspace !== 'default' && (active.worktree || window.vvmanProjects?.createWorktree)
+              ? [{ key: 'worktree', label: active.worktree ? '会话工作树' : '创建会话工作树', disabled: !active.worktree && locked }]
+              : []),
             { key: 'model', label: '模型连接设置' },
             ...(active ? [{ key: 'delete', label: '删除会话', disabled: locked, danger: true }] : []),
           ],
@@ -1073,38 +2221,130 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
             if (key === 'rename' && active) requestRename(active);
             if (key === 'delete' && active) requestDelete(active);
             if (key === 'project') setProjectContextOpen(true);
+            if (key === 'worktree' && active) setWorktreeOpenFor(active.id);
             if (key === 'model') setConfigOpen(true);
           },
         }}>
           <button type="button" className="assistant-chat-title-button" aria-label={'会话菜单 · ' + (active?.title || '新会话')}>
             <span>{active?.title || '新会话'}</span><DownOutlined aria-hidden="true" />
           </button>
-        </Dropdown></h1></div>
-        {active && !loading && window.vvmanProjects && <Space className="assistant-chat-head-actions" size={4}>
-          <ConversationTraceButton key={active.id} conversationId={active.id} />
-          <Button type="text" size="small" icon={<LayoutOutlined />} aria-label="工作区" title="工作区"
-            aria-expanded={workspacePanelChat === active.id} onClick={() => setWorkspacePanelChat(value => value === active.id ? undefined : active.id)} />
+        </Dropdown></h1>
+          {active && <span className="assistant-session-mode" title="当前会话的 Agent 模式">
+            <AppstoreOutlined aria-hidden="true" /><span>{external?.agentName || '标准模式'}</span>
+          </span>}
+        </div>
+        {active && !loading && <Space className="assistant-chat-head-actions" size={4}>
+          <Dropdown trigger={['click']} menu={{
+            items: [
+              ...(window.vvmanProjects ? [{ key: 'workspace-app', icon: <FolderOpenOutlined />, label: '打开工作区',
+                disabled: workspace === 'default' && !active.worktree, children: [...workspaceApps] }] : []),
+              { key: 'project', label: '查看项目上下文' },
+              { key: 'feedback', icon: <SendOutlined />, label: '反馈' },
+            ],
+            onClick: ({ key }) => {
+              if (workspaceApps.some(app => app.key === key)) void runWorkspaceAction(() => openWorkspaceApp(key as WorkspaceApp));
+              if (key === 'project') setProjectContextOpen(true);
+              if (key === 'feedback') window.open('https://github.com/GSXTY/Somnus/issues', '_blank', 'noopener,noreferrer');
+            },
+          }}><Button type="text" size="small" icon={<EllipsisOutlined />} aria-label="会话操作" /></Dropdown>
+          {window.vvmanProjects && <Button type="text" size="small" icon={<LayoutOutlined />} aria-label="工作区" title="工作区"
+            aria-expanded={workspacePanelChat === active.id} onClick={() => setWorkspacePanelChat(value => value === active.id ? undefined : active.id)} />}
         </Space>}
+        </div>
+        {active && <div className="assistant-session-views">
+          <div className="assistant-session-tabs" role="tablist" aria-label="会话视图" onKeyDown={event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === 'Home' ? false : event.key === 'End' || !trajectoryOpen;
+            setTrajectoryFor(next ? active.id : undefined);
+            event.currentTarget.querySelector<HTMLButtonElement>(next ? '#assistant-tab-trajectory' : '#assistant-tab-chat')?.focus();
+          }}>
+            <button type="button" role="tab" id="assistant-tab-chat" aria-controls="assistant-panel-chat"
+              aria-selected={!trajectoryOpen} tabIndex={trajectoryOpen ? -1 : 0} onClick={() => setTrajectoryFor(undefined)}>聊天</button>
+            <button type="button" role="tab" id="assistant-tab-trajectory" aria-controls="assistant-panel-trajectory"
+              aria-selected={trajectoryOpen} tabIndex={trajectoryOpen ? 0 : -1} onClick={() => setTrajectoryFor(active.id)}>轨迹</button>
+          </div>
+          <Dropdown trigger={['click']} menu={{ items: [{ key: 'download', icon: <DownloadOutlined />, label: '下载会话日志' }],
+            onClick: () => void runWorkspaceAction(() => downloadSessionLog(active.id)) }}>
+            <Button type="text" size="small" icon={<EllipsisOutlined />} aria-label="更多会话视图操作" />
+          </Dropdown>
+        </div>}
       </header>
+        {workspaceActionError && workspaceActionError.conversationId === active?.id && <Alert
+          className="assistant-error" type="error" showIcon message={workspaceActionError.message}
+          closable onClose={() => setWorkspaceActionError(undefined)} />}
         {visibleError && <Alert className="assistant-error" type="error" showIcon message={visibleError} action={<Button size="small" onClick={() => void loadList(true)} disabled={locked}>重新加载历史</Button>} />}
-        {restoredIncomplete && <div className="assistant-incomplete">部分历史回答在完成前中断。</div>}
+        {active && trajectoryOpen && <div id="assistant-panel-trajectory" role="tabpanel" aria-labelledby="assistant-tab-trajectory"
+          className="assistant-trajectory-panel">
+          <ConversationTrajectory key={active.id} conversationId={active.id} messages={messages} running={busy}
+            onReadChat={() => setTrajectoryFor(undefined)} />
+        </div>}
+        <div className="assistant-session-body" hidden={trajectoryOpen} id={active ? 'assistant-panel-chat' : undefined}
+          role={active ? 'tabpanel' : undefined} aria-labelledby={active ? 'assistant-tab-chat' : undefined}>
+        <div className="assistant-transcript-frame">
         <div className="assistant-message-log" ref={log} onScroll={followLog} role="log" aria-live="polite" aria-label="会话消息"><div className="assistant-column-measure" aria-hidden="true" />{loading ? <div className="skeleton-list">{[0, 1, 2].map(index => <Skeleton key={index} active title={false} paragraph={{ rows: 2, width: ['92%', '68%'] }} />)}</div> : messages.length ? messages.map(message => {
           const notice = message.reply_meta?.mcp_approval_blocked || mcpBlocked[message.id];
-          return <article key={message.id} className={`assistant-message ${message.role}`}><div className="assistant-message-main">{message.role === 'assistant' && message.status !== 'complete' && <div className="assistant-message-label"><small>{statusText[message.status]}</small></div>}{message.role === 'assistant' && (message.reply_meta?.execution || liveExecution?.assistantId === message.id) &&
-          <ExecutionDetails execution={message.reply_meta?.execution || liveExecution!.data} replyStatus={message.status} />}
-          {runningReply?.id === message.id && liveTaskCards}
+          const isRunningReply = Boolean(runningReply && runningReply.id === message.id);
+          const execution = liveExecution?.assistantId === message.id ? liveExecution.data : message.reply_meta?.execution;
+          const messageStatus = !isRunningReply && message.status === 'streaming' ? 'error' : message.status;
+          return <article key={message.id} data-turn-anchor={message.role === 'user' ? message.id : undefined} className={`assistant-message ${message.role}`}><div className="assistant-message-main">{message.role === 'assistant' && messageStatus !== 'complete' && !isRunningReply && <div className="assistant-message-label"><small>{statusText[messageStatus]}</small></div>}{message.role === 'assistant' &&
+          <ExecutionDetails execution={execution} replyStatus={messageStatus} autoExpand={expandRunningActivity}
+            startedAt={isRunningReply ? selectedTurn?.startedAt : undefined} elapsedMs={message.reply_meta?.elapsed_ms}
+            nativeTurn={active && window.somnusNativeDshChat?.subagentDetail &&
+              (message.reply_meta?.transport === 'dsh-native' || isRunningReply && selectedTurn?.nativeDsh)
+              ? { conversationId: active.id, turnId: message.id } : undefined}
+            stage={isRunningReply ? selectedTurn?.stage || (message.content ? 'responding' : 'working') : undefined} />}
+          {isRunningReply && liveTaskCards}
           {notice && <Alert type="warning" showIcon message={notice.reason} description={notice.tool_name} />}
-          <div className="assistant-message-content">{message.content ? (message.role === 'assistant' ? <Markdown text={message.content} /> : message.content) : (message.status === 'streaming' ? '正在思考…' : message.attachments?.length ? '' : '未返回回答内容')}{message.attachments?.length ? <div className="assistant-message-images">{message.attachments.filter(image => isLocalImage(image.data_url)).map((image, index) => <img key={index} src={image.data_url} alt={image.name || '会话图片'} loading="lazy" />)}</div> : null}</div>{message.role === 'assistant' && message.reply_meta?.delegation && <DelegationOutcome result={message.reply_meta.delegation} />}{message.role === 'assistant' && message.reply_meta && <div className="assistant-reply-metadata">
+          <div className="assistant-message-content">{message.content ? (message.role === 'assistant' ? <Markdown text={message.content} onOpenExternalLink={workspaceLinks && window.somnusWorkspaceWeb && active ? url => {
+            setWorkspaceWebRequest({ conversationId: active.id, url, sequence: ++workspaceWebSequence.current });
+            setWorkspacePanelChat(active.id);
+          } : undefined} /> : message.content) : (isRunningReply || message.attachments?.length ? '' : '未返回回答内容')}{message.attachments?.length ? <div className="assistant-message-images">{message.attachments.filter(image => isLocalImage(image.data_url)).map((image, index) => <img key={index} src={image.data_url} alt={image.name || '会话图片'} loading="lazy" />)}</div> : null}</div>{message.role === 'assistant' && message.reply_meta?.delegation && <DelegationOutcome result={message.reply_meta.delegation} />}{message.role === 'assistant' && messageStatus !== 'complete' && message.reply_meta && <div className="assistant-reply-metadata">
       <span>{message.reply_meta.model}</span>{typeof message.reply_meta.elapsed_ms === 'number' && <span>{(message.reply_meta.elapsed_ms / 1000).toFixed(1)} 秒</span>}
       </div>}
       {message.role === 'assistant' && <DshRecommendationCards cards={message.reply_meta?.recommendations} onOpenPlugin={onOpenDshPlugin} />}
-      {message.role === 'assistant' && <FileChangeCards items={proposalReplies.get(message.id) || []} onPreview={previewProposal} />}
+      {message.role === 'assistant' && <FileChangeCards conversationId={proposalConversation} items={proposalReplies.get(message.id) || []} onPreview={previewProposal} />}
+      {active && message.role === 'assistant' && messageStatus === 'complete' && <div className="assistant-reply-actions">
+        {message.content && <Button type="text" size="small" aria-label="复制回答" title="复制回答"
+          icon={copiedReply === message.id ? <CheckCircleOutlined /> : <CopyOutlined />} onClick={() => void copyReply(message)} />}
+        <ConversationReplyRating key={message.id} conversationId={active.id} messageId={message.id} />
+        <Button type="text" size="small" aria-label="分享会话" title="复制本机会话链接"
+          icon={sharedReply === message.id ? <CheckCircleOutlined /> : <ShareAltOutlined />} onClick={() => void shareReply(message)} />
+        {message.content && <Button type="text" size="small" aria-label="引用回答" title="引用选中文字或这条回答"
+          icon={<MessageOutlined />} disabled={navigationLocked} onMouseDown={keepComposerFocus}
+          onClick={event => quoteReply(message, event.currentTarget)} />}
+        <Button type="text" size="small" icon={<BranchesOutlined />} loading={branchingReply === message.id}
+          aria-label="从此处新建分支" title="从此处新建分支" disabled={locked}
+          onClick={() => void branchFromReply(message.id)} />
+        {message.reply_meta?.usage && <Tooltip title={<>
+          {message.reply_meta.model && <div>{message.reply_meta.model}</div>}
+          <div>输入 {tokenFormat.format(message.reply_meta.usage.input_tokens)} · 输出 {tokenFormat.format(message.reply_meta.usage.output_tokens)}</div>
+          {typeof message.reply_meta.usage.cached_input_tokens === 'number' && <div>缓存 {tokenFormat.format(message.reply_meta.usage.cached_input_tokens)}</div>}
+          {typeof message.reply_meta.elapsed_ms === 'number' && <div>{(message.reply_meta.elapsed_ms / 1000).toFixed(1)} 秒</div>}
+          {message.reply_meta.usage.partial && <div>部分用量记录</div>}
+        </>} trigger={['hover', 'focus']}>
+          <button type="button" className="assistant-reply-usage" aria-label="查看这条回复的 Token 用量">
+            <DatabaseOutlined aria-hidden="true" />
+            {compactTokenFormat.format(message.reply_meta.usage.input_tokens + message.reply_meta.usage.output_tokens)}
+          </button>
+        </Tooltip>}
+        <time className="assistant-reply-time" title={formatDateTime(message.created_at, { seconds: true })}>
+          {formatDateTime(message.created_at, { seconds: true }).slice(-8)}
+        </time>
+        {sharedReply === message.id && <small role="status">已复制会话链接</small>}
+        {copiedReply === message.id && <small role="status">已复制</small>}
+      </div>}
       </div></article>;
-        }) : !dot.snapshot?.tasks.length && <div className="assistant-welcome"><SomnusMark className="assistant-welcome-mark" /><h2>这个项目想做什么？</h2></div>}
+        }) : <div className="assistant-welcome"><SomnusMark className="assistant-welcome-mark" /><h2>这个项目想做什么？</h2></div>}
         {busy && !runningReply && <div className="assistant-live-tasks">{liveTaskCards}<div className="assistant-loading"><Spin size="small" />正在连接模型…</div></div>}
-        {!loading && dot.snapshot && <DotTaskCards tasks={dot.snapshot.tasks} />}</div>
+        {!busy && questionCard && <div className="assistant-live-tasks">{questionCard}</div>}
+        </div>
+        {!loading && !trajectoryOpen && <ConversationTurnRail messages={messages} log={log}
+          onNavigate={() => { stick.current = false; }} />}
+        </div>
         <div className="assistant-project-actions">
-          {active && <ChatWorktree key={active.id} workspace={workspace} conversationId={active.id} worktree={active.worktree}
+          {active && worktreeOpenFor === active.id && <ChatWorktree key={active.id} workspace={workspace} conversationId={active.id} worktree={active.worktree}
+            open onOpenChange={open => setWorktreeOpenFor(open ? active.id : undefined)}
             disabled={locked} onBusy={value => { worktreeLock.current = value; setWorktreeBusy(value); }}
             onBind={worktree => {
               if (workspaceRef.current !== workspace || activeId.current !== active.id) return;
@@ -1114,53 +2354,204 @@ export function AIAssistant({ workspace, visible, sidebar, newChatSignal, onLock
             }} />}
           {!loading && legacyProposals.length > 0 && <details key={proposalConversation} className="assistant-proposal-history">
             <summary>修改记录{legacyProposals.some(item => item.status === 'pending') ? ' · 有待审修改' : ''}</summary>
-            <FileChangeCards items={legacyProposals} onPreview={previewProposal} />
+            <FileChangeCards conversationId={proposalConversation} items={legacyProposals} onPreview={previewProposal} />
           </details>}
           {proposalConversation && proposalPreview?.conversationId === proposalConversation && <FileProposalReview
             key={proposalPreview.item.id} conversationId={proposalConversation} preview={proposalPreview.item}
             onClose={() => setProposalPreview(undefined)} onDecision={proposals.record} />}
         </div>
-        {dotMode && (!dotReady || dotHasExtras || dotLimitExceeded) && <div className="assistant-dot-mode-notice" role="status">
-          {!dotReady ? (dot.availability?.paused ? 'dot 已停用。' : 'dot 连接不可用。') : dotHasExtras ?
-            'dot 只接收文字，请先移除附件和扩展。' : 'dot 任务最多 4000 字符。'}
-          {!dotReady && <Button type="link" size="small" onClick={() => setDotSelection(undefined)}>切回 Agent</Button>}
-        </div>}
-        {dot.error && <Alert className="assistant-error" type="error" showIcon message={dot.error} />}
-        <div className="assistant-composer">{!atBottom && <button type="button" className="assistant-jump-bottom" onClick={scrollToBottom} aria-label="回到底部" title="回到底部"><ArrowDownOutlined /></button>}{attachments.length > 0 && <div className="assistant-image-drafts" aria-label="待发送图片">{attachments.map((image, index) => <div className="assistant-image-draft" key={index}><img src={image.data_url} alt={image.name} /><button type="button" aria-label={'移除图片 ' + image.name} disabled={locked} onClick={() => setAttachments(old => old.filter((_, current) => current !== index))}><CloseOutlined /></button><small>{image.name}</small></div>)}</div>}{imageBlocked && <div className="assistant-image-notice">发送图片时请选择支持图片的模型，或移除图片以发送文字。</div>}{dataFile && <div className="assistant-data-chip" aria-label="待分析 CSV"><FileTextOutlined /><span><strong>{dataFile.name}</strong><small>{dataFile.row_count} 行 · {dataFile.columns.length} 列 · {external ? '随消息提供给 Agent' : '可交给深度分析'}</small></span><button type="button" aria-label="移除 CSV" disabled={locked} onClick={() => setDataFile(null)}><CloseOutlined /></button></div>}{docFile && <div className="assistant-data-chip" aria-label="已读取的文档"><FileTextOutlined /><span><strong>{docFile.name}</strong><small>已读取 {docFile.chars.toLocaleString()} 字{docFile.note ? ` · ${docFile.note}` : ''} · 内容会随问题发送给模型</small></span><button type="button" aria-label="移除文档" disabled={locked} onClick={() => setDocFile(null)}><CloseOutlined /></button></div>}<input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,.csv,.xlsx,text/csv,.pdf,.docx,.txt,.md,.markdown,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.java,.c,.cpp,.h,.go,.rs,.sql,.sh,.bat,.ps1,.ini,.toml,.conf,.html,.htm,.xml" onChange={event => { void addAnyFiles(Array.from(event.target.files || [])); event.target.value = ''; }} /><Input.TextArea aria-label="发送消息" placeholder={dotMode ? '输入 dot 任务…' : canChat ? '输入消息…' : '配置模型后即可发送'} value={text} onPaste={event => { const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => Boolean(file)); if (files.length) { event.preventDefault(); void addImages(files); } }} onChange={event => setText(event.target.value)} autoSize={{ minRows: 1, maxRows: 5 }} maxLength={12000} disabled={locked} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendSelected(); } }} />{window.vvmanProjects && <><SkillChips selected={skills} onChange={setSkills} disabled={locked} /><PluginChips selected={plugins} onChange={setPlugins} disabled={locked} /></>}<div className="assistant-composer-actions"><div className="assistant-composer-tools">{hasDocumentLibrary ?
-          <Dropdown trigger={['click']} disabled={locked} menu={{
-            items: [{ key: 'computer', label: '从本机选择' }, { key: 'library', label: '从个人文档选择' }],
-            onClick: ({ key }) => {
-              if (key === 'computer') fileInput.current?.click();
-              if (key === 'library') setAttachmentLibraryOpen(true);
-            },
-          }}>{attachmentButton}</Dropdown> : attachmentButton}{window.vvmanProjects && <><SkillPicker selected={skills} onChange={setSkills} disabled={locked} /><PluginPicker selected={plugins} onChange={setPlugins} disabled={locked} /></>}{onModelConfig && <span className="assistant-model-inline"><ModelSwitch modelId={chosenModel.id} effort={chosenModel.effort}
-      onChange={chooseModel} external={external} agentReasoning={agentReasoning} onExternal={setExternal} onConfig={onModelConfig} disabled={locked} /></span>}<PermissionSwitch key={active?.id || 'new'} conversationId={active?.id} permission={active?.permission_mode} external={Boolean(external)} allowFullAccess={windowsDesktop}
-        disabled={locked} onBusyChange={setPermissionSaving} onChange={permission => setActive(item => item?.id === active?.id && item ? { ...item, permission_mode: permission } : item)} />{dotReady && <Dropdown trigger={['click']} disabled={locked || dot.submitting} menu={{
-        items: [{ key: 'agent', label: '当前 Agent' }, { key: 'dot', label: 'dot' }],
-        selectedKeys: [dotMode ? 'dot' : 'agent'],
-        onClick: ({ key }) => setDotSelection(key === 'dot' ? historyToken.current : undefined),
-      }}>
-        <Button size="small" type="text" icon={<SwapOutlined />} aria-label="发送对象" title="发送对象"
-          disabled={locked || dot.submitting}>{dotMode ? 'dot' : '当前 Agent'}</Button>
-      </Dropdown>}{tokenUsage && <Tooltip title={<>{tokenUsage.details.map(detail => <div key={detail}>{detail}</div>)}</>} trigger={['hover', 'focus']}>
-        <button type="button" className="assistant-token-usage" aria-label={'会话用量，' + tokenUsage.details.join(', ')}>
-          <DatabaseOutlined aria-hidden="true" /> {tokenUsage.summary}
-        </button>
-      </Tooltip>}<ContextMeter context={activeContext} /></div>{busy ? <Button className="assistant-send-button" shape="circle" aria-label="停止生成" title="停止生成" icon={<StopOutlined />} loading={stopping} onClick={() => void stop()} /> : <Button className="assistant-send-button" type="primary" aria-label="发送" title="发送" icon={<ArrowUpOutlined />} loading={dotMode && dot.submitting} disabled={locked || (dotMode ? !dotReady || dot.submitting || dotHasExtras || dotLimitExceeded || !text.trim() : !canChat || imageBlocked || (!text.trim() && !attachments.length))} onClick={() => void sendSelected()} />}</div></div>
+        {active && pendingQueue.length > 0 && <section className="assistant-busy-queue" aria-label="排队消息">
+          <header><strong>排队消息 · {pendingQueue.length}</strong>
+            {!busy && <Button type="link" size="small" loading={startingQueuedMessage} disabled={navigationLocked}
+              onClick={() => void startNextQueuedMessage(active, workspace, messages)}>继续发送</Button>}
+          </header>
+          {restoredQueues.current.has(active.id) && <small>已恢复，等待你继续发送。</small>}
+          <ol>{pendingQueue.map(message => <li key={message.id}>
+            <span title={message.draft.text}>{message.draft.text.trim() || message.draft.composerBlocks?.[0]?.label || '附件消息'}</span>
+            <Button type="text" size="small" icon={<EditOutlined />} disabled={!canRecallQueue || queueUncertain || selectedTurn?.steerPending}
+              aria-label="将排队消息带回输入框" title="带回输入框（↑ 取回最后一条）" onClick={() => recallQueuedDraft(message.id)} />
+            <Button type="text" size="small" icon={<CloseOutlined />} disabled={startingQueuedMessage || queueUncertain || selectedTurn?.steerPending}
+              aria-label="移除此排队消息" title="移除此排队消息" onClick={() => removeQueuedMessage(active.id, message.id)} />
+          </li>)}</ol>
+        </section>}
+        {nativeTasks &&
+          <ChatTaskControls key={active?.id || 'new:' + workspace} state={currentTaskState} goalRequest={goalRequest}
+            disabled={locked} onCommand={line => void send(line)} onPauseActive={busy && !stopping ? () => void stop() : undefined} />}
+        <div className="assistant-input-stack">
+          <div className="assistant-composer" data-composer-card data-composer-hero={active ? undefined : true}
+            data-dragging={composerDragging || undefined}
+            onDragOver={event => {
+              if (!acceptsComposerDrop(event)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = navigationLocked ? 'none' : 'copy';
+              if (!navigationLocked) setComposerDragging(true);
+            }}
+            onDragLeave={event => {
+              if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setComposerDragging(false);
+            }}
+            onDrop={dropComposerFiles}>
+            {commandMenuOpen && <ComposerCommands menuRef={commandMenu} commands={filteredCommands} selected={selectedCommandIndex}
+              loading={commandLoading} onChoose={chooseComposerCommand} onPoint={setCommandIndex} />}
+            {referenceMenuOpen && <div className="composer-command-menu" ref={commandMenu}>
+              <div id={composerCommandListId} role="listbox" aria-label="引用文件或会话">
+                {hasDocumentLibrary && <button id={composerCommandRowId(0)} type="button" role="option" tabIndex={-1} aria-selected={activeReferenceIndex === 0}
+                  onMouseDown={keepComposerFocus} onClick={openAttachmentReference}>
+                  <FolderOpenOutlined aria-hidden="true" /><span><strong>从个人文档引用文件</strong></span>
+                </button>}
+                {referenceConversations.map((item, index) => {
+                  const row = index + Number(hasDocumentLibrary);
+                  return <button key={item.id} id={composerCommandRowId(row)} type="button" role="option" tabIndex={-1}
+                    aria-selected={activeReferenceIndex === row} onMouseEnter={() => setReferenceIndex(row)}
+                    onMouseDown={keepComposerFocus} onClick={() => void addConversationReference(item.id, text)}>
+                    <MessageOutlined aria-hidden="true" /><span><strong>{item.title}</strong><small>引用当前项目的会话</small></span>
+                  </button>;
+                })}
+              </div>
+            </div>}
+            {!atBottom && <button type="button" className="assistant-jump-bottom" onClick={scrollToBottom} aria-label="回到底部" title="回到底部"><ArrowDownOutlined /></button>}
+            {attachments.length > 0 && <div className="assistant-image-drafts" aria-label="待发送图片">
+              {attachments.map((image, index) => <div className="assistant-image-draft" key={index}>
+                <img src={image.data_url} alt={image.name} />
+                <button type="button" aria-label={'移除图片 ' + image.name} disabled={navigationLocked}
+                  onClick={() => { markDraftEdited(); editDraftMedia({ attachments: attachments.filter((_, current) => current !== index) }); }}><CloseOutlined /></button>
+                <small>{image.name}</small>
+              </div>)}
+            </div>}
+            {imageBlocked && <div className="assistant-image-notice">当前模型不支持识别图片。图片已保留在草稿中，切换到支持图片的模型，或移除图片后发送文字。</div>}
+            {(dataFile && !composerBlocks.some(block => block.fileId === dataFile.id) || docFile && !composerBlocks.some(block => block.fileId === docFile.id)) && <div className="assistant-composer-files">
+              {dataFile && !composerBlocks.some(block => block.fileId === dataFile.id) && <div className="assistant-data-chip" aria-label="待分析 CSV">
+                <FileTextOutlined /><span><strong>{dataFile.name}</strong><small>{dataFile.row_count} 行 · {dataFile.columns.length} 列 · {external ? '随消息提供给 Agent' : '可交给深度分析'}</small></span>
+                <button type="button" aria-label="移除 CSV" disabled={navigationLocked}
+                  onClick={() => { markDraftEdited(); editDraftMedia({ dataFile: null }); }}><CloseOutlined /></button>
+              </div>}
+              {docFile && !composerBlocks.some(block => block.fileId === docFile.id) && <div className="assistant-data-chip" aria-label="已读取的文档">
+                <FileTextOutlined /><span><strong>{docFile.name}</strong><small>已读取 {docFile.chars.toLocaleString()} 字{docFile.note ? ` · ${docFile.note}` : ''} · 内容会随问题发送给模型</small></span>
+                <button type="button" aria-label="移除文档" disabled={navigationLocked}
+                  onClick={() => { markDraftEdited(); editDraftMedia({ docFile: null }); }}><CloseOutlined /></button>
+              </div>}
+            </div>}
+            <input ref={fileInput} type="file" multiple hidden disabled={navigationLocked}
+              accept="image/png,image/jpeg,image/webp,.csv,.xlsx,.xlsm,text/csv,.pdf,.docx,.txt,.md,.markdown,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.java,.c,.cpp,.h,.go,.rs,.sql,.sh,.bat,.ps1,.ini,.toml,.conf,.html,.htm,.xml"
+              onChange={event => { addAnyFiles(Array.from(event.target.files || [])); event.target.value = ''; }} />
+            <ComposerEditor ref={composerInput} ariaLabel="发送消息" placeholder={composerPlaceholder} value={text} references={composerBlocks}
+              onPaste={pasteComposerFiles} onCompositionEnd={() => { compositionEnd.current = Date.now() + 10; }}
+              onBlur={() => { composerEscape.current = undefined; }}
+              onChange={editDraft} disabled={navigationLocked} onKeyDown={handleComposerKey}
+              controls={commandMenuOpen || referenceMenuOpen ? composerCommandListId : undefined}
+              activeDescendant={referenceMenuOpen ? composerCommandRowId(activeReferenceIndex) :
+                commandMenuOpen && filteredCommands.length ? composerCommandRowId(selectedCommandIndex) : undefined} />
+            {window.vvmanProjects && <div className="assistant-composer-picks">
+              <SkillChips selected={skills} onChange={changeDraftSkills} disabled={navigationLocked} />
+              <PluginChips selected={plugins} onChange={changeDraftPlugins} disabled={navigationLocked} />
+            </div>}
+            <div className="assistant-composer-actions">
+              <div className="assistant-composer-tools">
+                <Dropdown placement="topLeft" trigger={['click']} disabled={navigationLocked} open={plusMenuOpen}
+                  onOpenChange={open => { if (open) setShowExtensions(false); setPlusMenuOpen(open); }} menu={{
+                  items: [
+                    { key: 'computer', label: '添加文件和图片', icon: <FileTextOutlined /> },
+                    ...(hasDocumentLibrary ? [{ key: 'library', label: '从个人文档选择', icon: <FolderOpenOutlined /> }] : []),
+                    { type: 'divider' },
+                    ...(extensionsAvailable ? [{ key: 'settings:extensions', label: window.vvmanProjects ? '扩展与协作' : '会话协作',
+                      icon: <AppstoreOutlined /> }] : []),
+                    ...(nativeTasks ? [{ key: 'plan', label: planLabel, icon: <BulbOutlined />, disabled: !planActionAvailable }] : []),
+                    ...allCommands.filter(command => command.name !== 'file' && (!nativeTasks || command.name !== 'plan'))
+                      .map(command => ({
+                        key: command.name, label: command.native ? '/' + command.name : command.description,
+                        icon: command.name === 'plan' ? <BulbOutlined /> : command.name === 'goal' ? <AimOutlined /> : <CodeOutlined />,
+                        title: command.reason || command.description, disabled: !command.executable,
+                      })),
+                    ...(commandLoading ? [{ key: 'loading', label: '正在读取会话命令…', disabled: true }] : []),
+                  ],
+                  onClick: ({ key }) => {
+                    setPlusMenuOpen(false);
+                    if (key === 'computer') fileInput.current?.click();
+                    else if (key === 'library') { attachmentReferenceText.current = undefined; setAttachmentLibraryOpen(true); }
+                    else if (key === 'settings:extensions') changeExtensionMenu(true);
+                    else if (key === 'plan' && nativeTasks) {
+                      if (planActionAvailable) void send(currentTaskState?.plan?.active ? '/plan off' : '/plan');
+                    } else {
+                      const action = allCommands.find(item => item.name === key);
+                      if (action) chooseComposerCommand(action);
+                    }
+                  },
+                }}>{attachmentButton}</Dropdown>
+                <PermissionSwitch key={permissionKey} conversationId={active?.id} permission={nextPermission || active?.permission_mode}
+                  external={Boolean(external)} allowFullAccess={windowsDesktop} openRequest={permissionPickerRequest}
+                  disabled={navigationLocked} defer={busy || Boolean(nextPermission)} onBusyChange={setPermissionSaving} onChange={permission => {
+                    if (!active || busy || nextPermission) setPendingPermissions(current => ({ ...current, [permissionKey]: permission }));
+                    else {
+                      clearPendingPermission(permissionKey);
+                      const updated = { ...active, permission_mode: permission };
+                      choose(updated);
+                      updateItem(updated);
+                    }
+                  }} />
+              </div>
+              <div className="assistant-composer-tools assistant-composer-model">
+                {onModelConfig && <span className="assistant-model-inline" title={busy ? '模型选择用于下一条消息' : undefined}>
+                  <ModelSwitch modelId={chosenModel.id} effort={chosenModel.effort} onChange={chooseModel}
+                    external={external} agentReasoning={agentReasoning} companyModel={selectedCompanyModel?.model || companyModel}
+                    companyCatalog={companyCatalog} onCompanyModel={setCompanyModel} hideReasoning={companyRequested && !selectedCompanyModel}
+                    onExternal={setExternal} onConfig={onModelConfig} disabled={navigationLocked} openRequest={modelPickerRequest} />
+                </span>}
+                {busy && <Button className={'assistant-send-button' + (showBusySend || canSteerQueue ? ' assistant-secondary-stop' : '')}
+                  shape="circle" aria-label={selectedTurn?.installingAddon ? '正在安装' : '停止生成'}
+                  title={selectedTurn?.installingAddon ? '正在安装' : '停止生成（连按两次 Esc）'}
+                  icon={<span className="assistant-stop-icon" aria-hidden="true" />}
+                  loading={stopping || selectedTurn?.installingAddon} onMouseDown={keepComposerFocus} onClick={() => void stop()} />}
+                {showBusySend && <Button className="assistant-send-button assistant-busy-send" type="primary" shape="circle"
+                  aria-label={busySendLabel} title={busySendLabel} icon={<ArrowUpOutlined />}
+                  onMouseDown={keepComposerFocus} onClick={() => sendBusyDraft()} />}
+                {canSteerQueue && <Button className="assistant-send-button assistant-busy-send" type="primary" shape="circle"
+                  aria-label="追加全部排队消息" title="追加全部排队消息（Ctrl / Cmd + Enter）" icon={<ArrowUpOutlined />}
+                  onMouseDown={keepComposerFocus} onClick={steerQueuedMessages} />}
+                {!busy && <Button className="assistant-send-button" type="primary" shape="circle" aria-label="发送" title="发送"
+                  icon={<ArrowUpOutlined />}
+                  disabled={locked || pendingQueue.length > 0 || !canSendChat || imageBlocked || !hasDraft}
+                  onMouseDown={keepComposerFocus} onClick={() => void sendSelected()} />}
+              </div>
+            </div>
+            {composerDragging && <div className="assistant-composer-drop" aria-hidden="true">将文件或会话拖到这里添加</div>}
+          </div>
+          {(active || tokenUsage || activeContext) && <div className="assistant-composer-dock" data-composer-dock>
+            {tokenUsage && <Tooltip title={<>{tokenUsage.details.map(detail => <div key={detail}>{detail}</div>)}</>} trigger={['hover', 'focus']}>
+              <button type="button" className="assistant-token-usage" aria-label={'会话用量，' + tokenUsage.details.join(', ')}>
+                <DatabaseOutlined aria-hidden="true" /> {tokenUsage.summary}
+              </button>
+            </Tooltip>}
+            <ContextMeter context={activeContext} />
+          </div>}
+        </div>
+        {extensionsAvailable && <ComposerExtensions open={visible && !navigationLocked && showExtensions} onOpenChange={changeExtensionMenu}
+          skills={skills} plugins={plugins} onSkills={changeDraftSkills} onPlugins={changeDraftPlugins}
+          showCatalog={Boolean(window.vvmanProjects)} onConfigure={onOpenExtensionConfig}>
+          {collaborationAvailable && <ComposerTeamwork key={(active?.id || 'teamwork:' + workspace) + ':' + teamworkRevision}
+            conversationId={active?.id} draftEnabled={Boolean(draftTeamwork[workspace])} visible={visible && showExtensions}
+            disabled={locked || pendingQueue.length > 0}
+            onDraftChange={enabled => setDraftTeamwork(previous => ({ ...previous, [workspace]: enabled }))}
+            onChanging={changing => {
+              if (!active) return;
+              if (changing) teamworkChanges.current.add(active.id);
+              else teamworkChanges.current.delete(active.id);
+            }} onError={failure => setError(failureText(failure))} />}
+        </ComposerExtensions>}
+        </div>
       </section>
       {visible && active && !loading && workspacePanelChat === active.id && <ChatWorkspacePanel key={active.id}
-        conversationId={active.id} workspace={workspace} worktree={active.worktree} running={busy} terminalApproval={terminalApproval}
-        onRequestCommand={command => {
-          if (locked) return;
-          setDotSelection(undefined);
-          setText(current => [current, '请在当前项目使用 PowerShell 运行以下命令，并在运行前让我确认。', command].filter(Boolean).join('\n\n'));
-        }}
+        conversationId={active.id} workspace={workspace} worktree={active.worktree}
+        webRequest={workspaceWebRequest?.conversationId === active.id ? workspaceWebRequest : undefined}
         proposals={proposals.items} onDecision={proposals.record} onClose={() => setWorkspacePanelChat(undefined)} />}
     </div>
     <DocumentPicker open={visible && attachmentLibraryOpen} kind="file" title="从个人文档添加附件"
-      onClose={() => setAttachmentLibraryOpen(false)} onPick={(scope, entry) => {
+      onClose={() => { attachmentReferenceText.current = undefined; setAttachmentLibraryOpen(false); }} onPick={(scope, entry) => {
         setAttachmentLibraryOpen(false);
-        if (scope === 'private' && entry.kind === 'file') void addLibraryFile(entry.path);
+        const referenceText = attachmentReferenceText.current;
+        attachmentReferenceText.current = undefined;
+        if (scope === 'private' && entry.kind === 'file') {
+          if (referenceText === text) editDraft(text.replace(/@[^\n@]*$/, ''));
+          void addLibraryFile(entry.path);
+        }
       }} />
     <Modal title="项目与文件权限" open={visible && projectContextOpen} onCancel={() => setProjectContextOpen(false)}
       footer={<Button onClick={() => setProjectContextOpen(false)}>关闭</Button>}>

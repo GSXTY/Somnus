@@ -47,6 +47,7 @@ class AcpLive {
     this.localMcp = new Map();
     this.matchedMcp = new Set();
     this.plan = [];
+    this.stage = null;
     this.events = 0;
     this.approvalLimits = { mcp: mcpApprovalLimit, edit: NATIVE_EDIT_LIMIT };
     this.approvalCounts = { mcp: 0, edit: 0 };
@@ -71,6 +72,12 @@ class AcpLive {
 
   endLocalMcp(callId) {
     this.localMcp.delete(callId);
+  }
+
+  setStage(stage) {
+    if (this.stage === stage) return;
+    this.stage = stage;
+    emitTurn(this.turn, { acpStage: stage });
   }
 
   update(update, localTitle, mcpToolName) {

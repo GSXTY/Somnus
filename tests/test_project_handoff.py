@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from ai_assistant import project_files, project_handoff
 from ai_assistant.service import AssistantService, Config
+from ai_assistant.skill_library import HANDOFF_ID, SkillError
 
 
 class ProjectHandoffTests(unittest.TestCase):
@@ -23,14 +24,7 @@ class ProjectHandoffTests(unittest.TestCase):
         workspace = self.service.create_workspace('Handoff fixture', str(self.project))
         self.cid = self.service.create(workspace=workspace['id'])['id']
         self.agent = 'aabbccdd-0101-0101-0101-aabbccddeeff'
-        skill = self.service.skills.add(
-            'SKILL.md', b'---\nname: project-handoff\ndescription: Fixture.\n---\nUse a rolling handoff.\n')
-        self.skill_id = skill['id']
-        plugin = self.service.plugins.add({
-            'name': 'Project Handoff', 'version': '1.0.0', 'description': 'Fixture', 'skill_ids': [self.skill_id],
-            'mcp_ids': [],
-        }, None)
-        self.service.plugins.publish_default(plugin['id'], None)
+        self.skill_id = HANDOFF_ID
 
     def native(self, text, **context):
         response = io.BytesIO(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
@@ -38,24 +32,45 @@ class ProjectHandoffTests(unittest.TestCase):
         with patch('ai_assistant.service.urlopen', return_value=response) as upstream:
             result = list(self.service.stream(self.cid, *self.service.begin(self.cid, text, tool_context=context)))
         self.assertEqual(result[-1][0], 'done')
-        return json.loads(upstream.call_args.args[0].data)
+        messages = json.loads(upstream.call_args.args[0].data)['messages']
+        return '\n'.join(message['content'] for message in messages if message['role'] == 'system')
 
     def test_native_context_uses_current_file_only_in_desktop_project(self):
-        first = self.native('Continue', project_desktop=True)
-        self.assertIn('Previous milestone: fixture-only', str(first))
-        self.assertNotIn('本轮用户要求更新项目交接', str(first))
+        selected = self.service.skills.for_turn([self.skill_id])
+        unselected = self.native('Continue without selecting a skill', project_desktop=True)
+        self.assertNotIn('Previous milestone: fixture-only', unselected)
+        first = self.native('Continue', project_desktop=True, selected_skills=selected)
+        self.assertIn('Previous milestone: fixture-only', first)
+        self.assertNotIn('本轮用户要求更新项目交接', first)
         self.handoff.write_text('New milestone: fixture-only', encoding='utf-8')
-        trigger = self.native('请帮我更新交接', project_desktop=True)
-        self.assertIn('New milestone: fixture-only', str(trigger))
-        self.assertIn('只允许提供交接草稿', str(trigger))
-        self.assertNotIn('New milestone: fixture-only', str(self.native('Read without desktop authorization')))
-        self.service.skills.set_enabled(self.skill_id, False)
-        self.assertNotIn('New milestone: fixture-only', str(self.native('Continue', project_desktop=True)))
+        trigger = self.native('请帮我更新交接', project_desktop=True, selected_skills=selected)
+        self.assertIn('New milestone: fixture-only', trigger)
+        self.assertIn('通过项目文件修改或新建建议工具提交', trigger)
+        unauthorized = self.native('Read without desktop authorization', selected_skills=selected)
+        self.assertNotIn('New milestone: fixture-only', unauthorized)
+        with self.assertRaises(SkillError):
+            self.service.skills.set_enabled(self.skill_id, False)
+        self.assertIn('New milestone: fixture-only', self.native('Continue', project_desktop=True,
+                                                                selected_skills=selected))
+
+    def test_legacy_private_payload_cannot_replace_builtin_skill(self):
+        old_id = 'a' * 32
+        with self.service.db() as db:
+            db.execute('INSERT INTO personal_skills VALUES(?,?,?,?,?,?,?,?,?)',
+                       (old_id, 'project-handoff', 'Legacy', 0, 0, 'LEGACY_PAYLOAD', '[]', 0, 0))
+        skill, = self.service.skills.list()
+        self.assertEqual(skill['id'], HANDOFF_ID)
+        self.assertTrue(skill['builtin'])
+        instructions, = self.service.skills.for_turn([old_id, HANDOFF_ID])
+        self.assertNotIn('LEGACY_PAYLOAD', instructions['instructions'])
+        with self.assertRaises(SkillError):
+            self.service.skills.remove(old_id)
 
     def test_external_context_and_pending_project_proposal(self):
         original = self.handoff.read_bytes()
         self.service.set_permission(self.cid, 'workspace_write')
-        turn = self.service.begin_external_turn(self.cid, '更新交接', self.agent, 'External fixture')
+        turn = self.service.begin_external_turn(self.cid, '更新交接', self.agent, 'External fixture',
+                                                skill_ids=[self.skill_id])
         prepared = self.service.prepare_external_turn(self.cid, turn['turn_id'], self.agent)
         self.assertIn('Previous milestone: fixture-only', prepared['text'])
         self.assertIn('通过项目文件修改或新建建议工具提交', prepared['text'])

@@ -5,11 +5,10 @@ import re
 from urllib.parse import unquote
 import anyio
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from deep_analysis.service import AnalysisError
 from . import company_runtime, delegation, plugin_package
 from .configuration_checkpoints import ConfigurationCheckpoints
-from .dot_tasks import DotError
 from .external_context import TABLE_OWNER, TABLE_UPLOAD_LIMIT
 from .models import ModelError
 from .project_access import DesktopAccess
@@ -17,6 +16,7 @@ from .project_files import ProjectFileError
 from .plugin_bundles import BundleError, MAX_MANIFEST_BYTES
 from .service import AUTO_TITLE, AssistantError
 from .skill_library import MAX_UPLOAD as SKILL_UPLOAD_LIMIT, SkillError
+from .web_data_mcp import MAX_BODY_BYTES as WEB_MCP_BODY_LIMIT
 
 LIMIT = 15 * 1024 * 1024
 
@@ -303,66 +303,6 @@ def create_router():
         if not desktop.allowed(request, native=native):
             raise AssistantError('desktop_required', '项目目录和修改确认仅可从本机桌面访问。', 403)
 
-    @router.get('/dot-tasks/status')
-    async def dot_task_status(request: Request):
-        companion = getattr(request.app.state, 'dot_tasks', None)
-        status = (companion.status() if companion and desktop.allowed(request)
-                  else {'enabled': False, 'ready': False, 'paused': False})
-        return JSONResponse(status, headers={'Cache-Control': 'no-store'})
-
-    @router.get('/dot-tasks/setup')
-    @router.post('/dot-tasks/setup')
-    @router.post('/dot-tasks/enabled')
-    async def dot_task_setup(request: Request):
-        headers = {'Cache-Control': 'no-store'}
-        try:
-            require_desktop(request)
-            companion = getattr(request.app.state, 'dot_tasks', None)
-            if companion is None:
-                raise AssistantError('dot_unavailable', '本机 Dot 未启用。', 403)
-            if request.method == 'GET':
-                result = await anyio.to_thread.run_sync(companion.setup_status)
-            else:
-                body = await body_for(request, limit=4096)
-                if request.url.path.endswith('/enabled'):
-                    if set(body) != {'enabled'}:
-                        raise AssistantError('invalid_dot_enabled', '请选择开启或暂停 Dot。')
-                    result = await anyio.to_thread.run_sync(companion.set_enabled, body['enabled'])
-                else:
-                    if set(body) - {'port'}:
-                        raise AssistantError('invalid_dot_setup', 'Dot 配置只接受可选端口。')
-                    result = await anyio.to_thread.run_sync(companion.setup, body.get('port'))
-            return JSONResponse(result, headers=headers)
-        except (AssistantError, DotError) as exc:
-            response = failure(exc)
-            response.headers.update(headers)
-            return response
-
-    @router.get('/conversations/{cid}/dot-tasks')
-    @router.post('/conversations/{cid}/dot-tasks')
-    async def dot_tasks(cid: str, request: Request):
-        try:
-            require_desktop(request)
-            companion = getattr(request.app.state, 'dot_tasks', None)
-            if not companion:
-                raise AssistantError('dot_unavailable', '本机 Dot 未启用。', 403)
-            service = await service_for(request)
-
-            def checked_task(body=None):
-                with service.db() as db:
-                    service._conversation(db, cid)
-                if body is None:
-                    return companion.list_tasks(cid)
-                return {'task': companion.create_task(cid, body.get('prompt'))}
-
-            body = await body_for(request, limit=32768) if request.method == 'POST' else None
-            if body is not None and set(body) != {'prompt'}:
-                raise AssistantError('invalid_dot_prompt', 'Dot 任务只接受手动输入的文本。')
-            payload = await anyio.to_thread.run_sync(checked_task, body)
-            return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
-        except (AssistantError, DotError) as exc:
-            return failure(exc)
-
     def workspace_fields(request, body, *, creating=False):
         fields = body.copy()
         grant = fields.pop('folder_grant', None)
@@ -437,6 +377,7 @@ def create_router():
         try:
             service = await models_service(request)
             result = await anyio.to_thread.run_sync(service.models.list, service.builtin_model())
+            result['company_models'] = await anyio.to_thread.run_sync(service.company_models)
             return JSONResponse(result, headers={'Cache-Control': 'no-store'})
         except (AssistantError, ModelError) as exc:
             return failure(exc)
@@ -445,6 +386,18 @@ def create_router():
         if not desktop.allowed(request):
             raise AssistantError('desktop_required', '模型配置仅可从本机 Windows 桌面访问。', 403)
         return await service_for(request)
+
+    @router.get('/company-provider')
+    @router.patch('/company-provider')
+    @router.delete('/company-provider')
+    async def company_provider(request: Request):
+        try:
+            service = await models_service(request)
+            changes = (await body_for(request, 16384)) if request.method == 'PATCH' else None if request.method == 'DELETE' else False
+            result = await anyio.to_thread.run_sync(service.company_key_view, changes)
+            return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+        except (AssistantError, ModelError) as exc:
+            return failure(exc)
 
     @router.post('/models')
     async def models_add(request: Request):
@@ -640,8 +593,22 @@ def create_router():
     async def create(request: Request):
         try:
             service, body = await service_for(request), await body_for(request)
-            result = await anyio.to_thread.run_sync(service.create, body.get('title', AUTO_TITLE), body.get('workspace'))
+            mode = body.get('permission_mode', 'read_only')
+            if mode == 'full':
+                require_desktop(request)
+            result = await anyio.to_thread.run_sync(service.create, body.get('title', AUTO_TITLE), body.get('workspace'), mode)
             return JSONResponse({'conversation': result}, status_code=201)
+        except AssistantError as exc:
+            return failure(exc)
+
+    @router.post('/conversations/{cid}/branch')
+    async def branch(cid: str, request: Request):
+        try:
+            service, body = await service_for(request), await body_for(request, limit=1024)
+            if set(body) != {'message_id'}:
+                raise AssistantError('invalid_branch_message', '请选择要从中分支的回答。')
+            result = await anyio.to_thread.run_sync(service.branch, cid, body['message_id'])
+            return JSONResponse({'conversation': result}, status_code=201, headers={'Cache-Control': 'no-store'})
         except AssistantError as exc:
             return failure(exc)
 
@@ -651,10 +618,13 @@ def create_router():
             if not desktop.allowed(request):
                 raise AssistantError('desktop_required', '外部 Agent 会话仅可从本机 Windows 桌面访问。', 403)
             service, body = await service_for(request), await body_for(request)
-            if set(body) - {'content', 'agent_id', 'agent_name', 'model', 'attachments', 'file_ids', 'analysis_file_id', 'skill_ids', 'plugin_ids'}:
+            if set(body) - {'content', 'agent_id', 'agent_name', 'model', 'attachments', 'file_ids', 'analysis_file_id',
+                            'skill_ids', 'plugin_ids', 'company_model', 'reasoning_effort', 'queue_id'}:
                 raise AssistantError('invalid_external_turn', '外部 Agent 消息字段无效。')
             result = await anyio.to_thread.run_sync(lambda: service.begin_external_turn(
                 cid, body.get('content', ''), body.get('agent_id'), body.get('agent_name'), body.get('model'),
+                company_model=body.get('company_model'), reasoning_effort=body.get('reasoning_effort'),
+                queue_id=body.get('queue_id'),
                 attachments=body.get('attachments'), file_ids=body.get('file_ids'),
                 analysis_file_id=body.get('analysis_file_id'), skill_ids=body.get('skill_ids'),
                 plugin_ids=body.get('plugin_ids', []),
@@ -701,6 +671,35 @@ def create_router():
         except (AssistantError, AnalysisError) as exc:
             return failure(exc)
 
+    @router.post('/conversations/{cid}/external-turns/{turn_id}/steers')
+    async def reserve_native_steer(cid: str, turn_id: str, request: Request):
+        try:
+            require_desktop(request)
+            service, body = await service_for(request), await body_for(request, 64 * 1024)
+            if set(body) != {'content'}:
+                raise AssistantError('invalid_external_steer', '引导消息格式无效。')
+            result = await anyio.to_thread.run_sync(service.reserve_native_steer, cid, turn_id, body['content'])
+            return JSONResponse(result, status_code=201, headers={'Cache-Control': 'no-store'})
+        except AssistantError as exc:
+            return failure(exc)
+
+    @router.post('/conversations/{cid}/external-turns/{turn_id}/steers/{steer_id}/{action}')
+    async def native_steer(cid: str, turn_id: str, steer_id: str, action: str, request: Request):
+        try:
+            require_desktop(request, native=True)
+            service, body = await service_for(request), await body_for(request, 1024)
+            if action == 'prepare' and set(body) == {'agent_id'}:
+                accepted = None
+            elif action == 'finish' and set(body) == {'agent_id', 'accepted'} and type(body['accepted']) is bool:
+                accepted = body['accepted']
+            else:
+                raise AssistantError('invalid_external_steer', '引导消息回传格式无效。')
+            result = await anyio.to_thread.run_sync(lambda: service.native_steer(
+                cid, turn_id, steer_id, body['agent_id'], accepted=accepted))
+            return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+        except AssistantError as exc:
+            return failure(exc)
+
     @router.post('/conversations/{cid}/external-turns/{turn_id}/prepare')
     async def prepare_external_turn(cid: str, turn_id: str, request: Request):
         try:
@@ -719,22 +718,100 @@ def create_router():
             require_desktop(request, native=True)
             service = await service_for(request)
             result = await anyio.to_thread.run_sync(company_runtime.selected, service, request.query_params.get('model_id'))
-            return JSONResponse({'ready': result is not None}, headers={'Cache-Control': 'no-store'})
+            return JSONResponse(dict(ready=result is not None, **(result or {})), headers={'Cache-Control': 'no-store'})
         except (AssistantError, ModelError) as exc:
             return failure(exc)
 
-    @router.post('/conversations/{cid}/external-turns/{turn_id}/company-provider/chat/completions')
-    async def company_provider(cid: str, turn_id: str, request: Request):
+    @router.post('/company-web-runtime')
+    async def start_company_web_runtime(request: Request):
         try:
-            header = request.headers.getlist('authorization')
-            if (not desktop.local(request) or len(header) != 1 or not header[0].startswith('Bearer ')
-                    or len(header[0]) != 71 or any(ch not in '0123456789abcdef' for ch in header[0][7:])):
-                raise AssistantError('invalid_company_relay', '公司模型请求未授权。', 403)
-            service, body = await service_for(request), await body_for(request, company_runtime.RELAY_LIMIT)
-            response, cancel, lease = await anyio.to_thread.run_sync(service.open_company_stream, cid, turn_id, header[0][7:], body)
+            require_desktop(request, native=True)
+            service = await service_for(request)
+            runtime = await anyio.to_thread.run_sync(service.start_company_web_runtime,
+                                                      getattr(request.app.state, 'remote_data', None))
+            return JSONResponse(runtime, headers={'Cache-Control': 'no-store'})
+        except (AssistantError, ModelError) as exc:
+            return failure(exc)
+
+    @router.delete('/company-web-runtime/{ident}')
+    async def stop_company_web_runtime(ident: str, request: Request):
+        try:
+            require_desktop(request, native=True)
+            service = await service_for(request)
+            result = await anyio.to_thread.run_sync(service.stop_company_web_runtime, ident)
+            return JSONResponse(result, headers={'Cache-Control': 'no-store'})
         except AssistantError as exc:
             return failure(exc)
 
+    @router.post('/dsh-next-runtime')
+    async def begin_dsh_next_runtime(request: Request):
+        try:
+            require_desktop(request, native=True)
+            service = await service_for(request)
+            record = await anyio.to_thread.run_sync(service.dsh_next_runtime.open,
+                                                     getattr(request.app.state, 'remote_data', None))
+            return JSONResponse(record, headers={'Cache-Control': 'no-store'})
+        except (AssistantError, ModelError) as exc:
+            return failure(exc)
+
+    @router.delete('/dsh-next-runtime/{ident}')
+    async def close_dsh_next_runtime(ident: str, request: Request):
+        try:
+            require_desktop(request, native=True)
+            service = await service_for(request)
+            revoked = await anyio.to_thread.run_sync(service.dsh_next_runtime.close, ident)
+            return JSONResponse({'revoked': revoked}, headers={'Cache-Control': 'no-store'})
+        except AssistantError as exc:
+            return failure(exc)
+
+    @router.post('/dsh-next-runtime/{ident}/provider/chat/completions')
+    @router.post('/dsh-next-runtime/{ident}/provider/responses')
+    @router.post('/company-web-runtime/{ident}/provider/chat/completions')
+    @router.post('/company-web-runtime/{ident}/provider/responses')
+    async def company_web_provider(ident: str, request: Request):
+        try:
+            token = company_provider_token(request)
+            service, body = await service_for(request), await body_for(request, company_runtime.RELAY_LIMIT)
+            responses = request.url.path.endswith('/responses')
+            open_stream = (service.open_dsh_next_stream if '/dsh-next-runtime/' in request.url.path
+                           else service.open_company_web_stream)
+            stream = await anyio.to_thread.run_sync(open_stream, ident, token, body, responses)
+            return company_provider_response(*stream)
+        except AssistantError as exc:
+            return failure(exc)
+
+    async def dispatch_company_mcp(ident, request, server_id=None, *, dsh_next=False):
+        try:
+            token = company_provider_token(request)
+            service, body = await service_for(request), await body_for(request, WEB_MCP_BODY_LIMIT)
+            dispatch = service.dispatch_dsh_next_mcp if dsh_next else service.dispatch_company_web_mcp
+            packet = await anyio.to_thread.run_sync(dispatch, ident, token, body, server_id)
+            headers = {'Cache-Control': 'no-store'}
+            if packet is None:
+                return Response(status_code=202, headers=headers)
+            return JSONResponse(packet, headers=headers)
+        except AssistantError as exc:
+            return failure(exc)
+
+    @router.post('/company-web-runtime/{ident}/mcp')
+    async def company_web_mcp(ident: str, request: Request):
+        return await dispatch_company_mcp(ident, request)
+
+    @router.post('/company-web-runtime/{ident}/mcp/{server_id}')
+    async def company_web_named_mcp(ident: str, server_id: str, request: Request):
+        return await dispatch_company_mcp(ident, request, server_id)
+
+    @router.post('/dsh-next-runtime/{ident}/mcp/{server_id}')
+    async def dsh_next_named_mcp(ident: str, server_id: str, request: Request):
+        return await dispatch_company_mcp(ident, request, server_id, dsh_next=True)
+
+    def company_provider_token(request):
+        headers = request.headers.getlist('authorization')
+        if (not desktop.local(request) or len(headers) != 1 or not re.fullmatch(r'Bearer [0-9a-f]{64}', headers[0])):
+            raise AssistantError('invalid_company_relay', '公司模型请求未授权。', 403)
+        return headers[0][7:]
+
+    def company_provider_response(response, cancel, lease):
         def close_stream():
             try:
                 response.close()
@@ -847,6 +924,18 @@ def create_router():
         except AssistantError as exc:
             return failure(exc)
 
+    @router.get('/delegation-settings')
+    @router.patch('/delegation-settings')
+    async def delegation_settings(request: Request):
+        try:
+            require_desktop(request)
+            service = await service_for(request)
+            changes = await body_for(request) if request.method == 'PATCH' else None
+            settings = await anyio.to_thread.run_sync(service.delegation_settings, changes)
+            return JSONResponse(settings, headers={'Cache-Control': 'no-store'})
+        except AssistantError as exc:
+            return failure(exc)
+
     @router.post('/conversations/{cid}/delegations/{request_id}')
     async def complete_delegation(cid: str, request_id: str, request: Request):
         try:
@@ -879,6 +968,9 @@ def create_router():
                                 analysis_file_meta=body.get('analysis_file_meta') or None,
                                 file_ids=body.get('file_ids') or [], project_desktop=desktop.allowed(request),
                                 model_id=body.get('model_id'), reasoning_effort=body.get('reasoning_effort'))
+            if body.get('queue_id') is not None:
+                require_desktop(request)
+                tool_context['queue_id'] = body['queue_id']
             agent_catalog = body.get('delegation_agents', [])
             if agent_catalog != []:
                 require_desktop(request)

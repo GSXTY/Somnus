@@ -1,5 +1,10 @@
-/* Somnus workspace colors are also available to dropdowns and dialogs rendered outside the app shell. */
+/* Shared workspace tokens also apply to dropdowns and dialogs outside the app shell. */
 :root {
+  --shell-font-ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --shell-font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --shell-type-title: 16px;
+  --shell-type-body: 14px;
+  --shell-type-support: 12px;
   --shell-bg: #F5F8F7;
   --shell-surface: #fff;
   --shell-line: #DCE8E3;
@@ -14,6 +19,7 @@
 .codex-theme {
   background: var(--shell-bg);
   color: var(--shell-ink);
+  font-size: var(--shell-type-body);
 }
 
 .codex-theme .global-header.ant-layout-header {
@@ -271,7 +277,7 @@
 .model-picker-row button span { overflow-wrap: anywhere; }
 .model-picker-trigger { max-width: min(152px, 32vw); }
 .model-picker-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.assistant-reply-metadata { display: flex; gap: 8px; flex-wrap: wrap; margin-block-start: 7px; color: var(--shell-muted); font-size: 11px; }
+.assistant-reply-metadata { display: flex; gap: 8px; flex-wrap: wrap; margin-block-start: 7px; color: var(--shell-muted); font-size: var(--shell-type-support); }
 @media (max-width: 640px) { .configuration-agents { grid-template-columns: minmax(0,1fr); } }
 
 .model-picker-popover { width: min(370px, calc(100vw - 44px)); }
@@ -288,12 +294,31 @@
 
 .external-model-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-inline: 6px; }
 
-.assistant-execution { margin-bottom: 8px; color: var(--shell-muted); font-size: 12px; }
-.assistant-execution summary { cursor: pointer; }
-.assistant-execution ol, .assistant-execution ul { margin-block: 5px; padding-inline-start: 20px; }
-.assistant-execution li { margin-block: 4px; overflow-wrap: anywhere; }
-.assistant-execution small { color: var(--shell-muted); }
-.assistant-execution-counts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-block-start: 5px; }
+.assistant-execution { margin-block: 2px 14px; color: var(--shell-muted); font-size: 13px; line-height: 1.5; }
+.assistant-execution summary { cursor: pointer; list-style: none; }
+.assistant-execution summary::-webkit-details-marker { display: none; }
+.assistant-execution-heading,
+.assistant-execution-operation > summary,
+.assistant-execution-plan li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.assistant-execution-heading { min-height: 32px; }
+.assistant-execution[open] > .assistant-execution-heading { padding-block-end: 5px; border-bottom: 1px solid var(--shell-line); }
+.assistant-execution-heading-main { min-width: 0; color: var(--shell-ink); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.assistant-execution-heading-step { color: var(--shell-muted); }
+.assistant-execution-chevron { font-size: 10px; flex: none; }
+.assistant-execution details[open] > summary .assistant-execution-chevron,
+.assistant-execution[open] > summary .assistant-execution-chevron { transform: rotate(180deg); }
+.assistant-execution-operations, .assistant-execution-plan ul { list-style: none; padding: 0; margin: 5px 0; }
+.assistant-execution-operations .assistant-execution-operations { margin-inline-start: 10px; padding-inline-start: 6px; border-inline-start: 1px solid var(--shell-line); }
+.assistant-execution-operation > summary, .assistant-execution-plan li { padding: 5px 8px; min-height: 28px; border-radius: 6px; }
+.assistant-execution-operation > summary:hover { background: var(--shell-bg); }
+.assistant-execution-operation-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.assistant-execution-kind, .assistant-execution-outcome, .assistant-execution-time, .assistant-execution-total { flex: none; font-size: 12px; }
+.assistant-execution-time { font-variant-numeric: tabular-nums; }
+.assistant-execution-outcome { padding: 1px 6px; border-radius: 10px; background: var(--shell-bg); }
+.assistant-execution-operation[data-status="failed"] .assistant-execution-outcome { color: #b93532; }
+.assistant-execution-operation-detail { margin: 2px 8px 5px 25px; padding: 7px 10px; border-inline-start: 1px solid var(--shell-line); overflow-wrap: anywhere; }
+.assistant-execution-plan li > span:not(.anticon) { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.assistant-execution-counts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 7px 0 2px; font-size: 12px; }
 .assistant-execution-reason { display: block; white-space: pre-wrap; }
 .assistant-action-approval {
   width: min(var(--conversation-width), calc(100% - 28px));
@@ -305,6 +330,11 @@
   overflow-wrap: anywhere;
 }
 .assistant-action-approval p { margin: 5px 0; }
+.assistant-permission-card { padding: 12px 14px; }
+.assistant-permission-heading { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.assistant-permission-heading small { color: var(--shell-muted); margin-inline-start: auto; }
+.assistant-permission-symbol { display: grid; place-items: center; inline-size: 30px; block-size: 30px; border-radius: 7px; background: var(--shell-hover); color: var(--shell-ink); }
+.assistant-permission-actions { margin-block-start: 7px; }
 .assistant-delegation .ant-select { min-width: min(100%, 210px); }
 .assistant-delegation-preview {
   max-height: min(240px, 28vh);
@@ -320,3 +350,4 @@
 }
 .assistant-delegation-result pre { max-height: 320px; overflow: auto; }
 .assistant-delegation .ant-alert { margin-top: 8px; }
+.chat-attention-slot:empty { display: none; }

@@ -4,7 +4,20 @@ const { detectAdapter, detectManagedCodex, matchesLaunch } = require('./acp-disc
 const { trustWorkbench } = require('./project-folders.cjs');
 const { createProjectClient } = require('./acp-project.cjs');
 const { ProjectWorkflow } = require('./acp-project-workflow.cjs');
+const { registerWorkspaceTerminal } = require('./workspace-terminal.cjs');
+const { registerDshImView, registerDshPluginPage } = require('./acp-dsh-im-view.cjs');
+const { registerOwnedDshPages } = require('./acp-dsh-plugin-pages.cjs');
 const { DshPluginMarket } = require('./acp-dsh-market.cjs');
+const { NativeDshChat } = require('./acp-native-dsh-chat.cjs');
+const { draftStore, queueStore } = require('./acp-dsh-recovery.cjs');
+const { createQueueSteering } = require('./acp-dsh-queue-steer.cjs');
+const { createDshPluginSettings } = require('./acp-dsh-plugin-settings.cjs');
+const { createChatAddonInstaller } = require('./acp-chat-addon.cjs');
+const { listDshSkills } = require('./acp-dsh-skills.cjs');
+const { readDshMcpInventory } = require('./acp-dsh-mcp-inventory.cjs');
+const { createExecutionSettings } = require('./acp-execution-settings.cjs');
+const { createOarIntegration } = require('./acp-dsh-oar.cjs');
+const { initializeDesktopMcpDefault } = require('./acp-desktop-mcp-default.cjs');
 const { AGENT_ID: COMPANY_AGENT_ID } = require('./acp-company.cjs');
 
 function eligibleAuthUrl(target, input) {
@@ -16,22 +29,8 @@ function eligibleAuthUrl(target, input) {
   return null;
 }
 
-async function openDeepSeekHarness(app, shell) {
-  const desktopUri = 'dsh://open';
-  if (app.getApplicationNameForProtocol(desktopUri)) {
-    try {
-      await shell.openExternal(desktopUri);
-      return 'desktop';
-    } catch {
-      // The registered app may have been moved or uninstalled.
-    }
-  }
-  await shell.openExternal('https://www.deepseek.com/harness/');
-  return 'website';
-}
-
 function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token, profileDir, version,
-  dshRuntimeDir = profileDir, resourcesPath = process.resourcesPath }) {
+  dshRuntimeDir = profileDir, resourcesPath = process.resourcesPath, WebContentsView, session }) {
   let confirmingAuthUrl = false;
   const openAuthUrl = shell && (async (profile, target, params, isPending) => {
     const url = eligibleAuthUrl(target, params.url);
@@ -52,47 +51,150 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     }
   });
   const projectClient = token ? createProjectClient(origin, token) : undefined;
+  const executionSettings = createExecutionSettings(profileDir);
   const workflow = token && process.platform === 'win32'
-    ? new ProjectWorkflow({ ipcMain, dialog, shell, window, origin, token, profileDir }) : undefined;
-  const dshMarket = new DshPluginMarket(profileDir, resourcesPath, dshRuntimeDir);
+    ? new ProjectWorkflow({ ipcMain, dialog, shell, window, origin, token, profileDir, executionSettings }) : undefined;
+  const dshMarket = new DshPluginMarket(profileDir, resourcesPath, dshRuntimeDir,
+    projectClient?.openCompanyWeb, executionSettings, projectClient?.companyRuntime);
+  dshMarket.oar = createOarIntegration(dshMarket);
+  void initializeDesktopMcpDefault(profileDir, resourcesPath).catch(error => console.warn('Somnus desktop MCP initialization:', error.message));
+  void dshMarket.initializeDefaultIm();
+  const installChatAddon = createChatAddonInstaller(dshMarket, origin, workflow && (async (id, conversationId) => {
+    if (typeof conversationId !== 'string') throw new Error('请选择当前工作区聊天。');
+    return (await workflow.target(id, 'project_git_diff', { source: 'source_1' },
+      AbortSignal.timeout(7000), conversationId)).root;
+  }));
+  if (WebContentsView && session) {
+    const dshView = { ipcMain, window, origin, WebContentsView, session, market: dshMarket, workflow };
+    registerDshImView(dshView);
+    registerDshPluginPage(dshView);
+    registerOwnedDshPages(dshView);
+  }
+  if (workflow) registerWorkspaceTerminal({ ipcMain, window, origin, workflow, resourcesPath,
+    dshStartup: () => dshMarket.terminalStartup() });
   const agents = new AcpAgents(path.join(profileDir, 'external-acp-agents.json'), version, resourcesPath,
-    openAuthUrl, projectClient, workflow, dshMarket);
+    openAuthUrl, projectClient, workflow, dshMarket, executionSettings);
   const handle = (action, use) => ipcMain.handle('vvman-acp:' + action, (event, ...args) => {
     trustWorkbench(event, window, origin);
     return use(event, ...args);
   });
+  if (projectClient && workflow) {
+    const nativeChat = new NativeDshChat(dshMarket, projectClient, workflow);
+    handle('teamwork', (_event, conversationId) => dshMarket.teamwork(conversationId));
+    handle('set-teamwork', (event, conversationId, enabled) =>
+      nativeChat.setTeamwork(conversationId, enabled, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-prompt', (event, input) => nativeChat.prompt(input,
+      () => trustWorkbench(event, window, origin), update => {
+        if (!event.senderFrame?.detached) event.senderFrame?.send('vvman-acp:native-dsh-update', update);
+      }));
+    handle('native-dsh-cancel', (_event, id) => nativeChat.cancel(id));
+    handle('native-dsh-steer', (event, input) =>
+      nativeChat.steer(input, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-list-commands', (event, input) =>
+      nativeChat.listCommands(input, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-task-state', (event, input) =>
+      nativeChat.taskState(input, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-execute-command', (event, input) =>
+      nativeChat.executeCommand(input, () => trustWorkbench(event, window, origin), update => {
+        if (!event.senderFrame?.detached) event.senderFrame?.send('vvman-acp:native-dsh-update', update);
+      }));
+    handle('native-dsh-subagent-detail', (event, input) =>
+      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-subagent-tool', (event, input) =>
+      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, origin), true));
+    handle('native-dsh-respond-permission', (_event, id, requestId, optionId) =>
+      nativeChat.respondPermission(id, requestId, optionId));
+    handle('native-dsh-respond-question', (_event, id, requestId, answers) =>
+      nativeChat.respondQuestion(id, requestId, answers));
+    handle('native-dsh-hold-question', (_event, id, requestId, held) =>
+      nativeChat.holdQuestion(id, requestId, held));
+    handle('native-dsh-recover-questions', (event, id) =>
+      nativeChat.recoverQuestions(id, () => trustWorkbench(event, window, origin)));
+    const drafts = draftStore(profileDir, require('electron').safeStorage);
+    handle('native-dsh-read-draft', (_event, id) => drafts.read(id));
+    handle('native-dsh-save-draft', (_event, id, draft) => drafts.save(id, draft));
+    const queues = createQueueSteering(queueStore(profileDir, require('electron').safeStorage), projectClient, nativeChat);
+    handle('native-dsh-read-queue', (_event, id) => queues.read(id));
+    handle('native-dsh-save-queue', (_event, id, items) => queues.save(id, items));
+    handle('native-dsh-steer-queue', (event, input) => queues.steer(input, () => trustWorkbench(event, window, origin)));
+  }
   handle('list', () => agents.list());
+  handle('agent-execution-settings', () => executionSettings.get());
+  handle('set-agent-execution-settings', (_event, settings) => executionSettings.set(settings));
   handle('company-runtime', async (event, modelId) => {
     if (!projectClient || (modelId != null && (typeof modelId !== 'string' || modelId.length > 120))) return null;
-    const [launch, profile, ready] = await Promise.all([dshMarket.launch(), dshMarket.profile(), projectClient.companyReady(modelId)]);
+    const [launch, profile, config] = await Promise.all([dshMarket.launch(), dshMarket.webProfile(),
+      projectClient.companyRuntime(modelId).catch(() => null)]);
     trustWorkbench(event, window, origin);
-    return launch && profile && ready ? { agentId: COMPANY_AGENT_ID } : null;
+    return launch && profile && config?.ready ? { agentId: COMPANY_AGENT_ID } : null;
   });
-  handle('open-deepseek-harness', () => openDeepSeekHarness(app, shell));
   handle('dsh-plugin-market', () => dshMarket.status());
   handle('dsh-installed-plugins', () => dshMarket.installedPlugins());
-  handle('dsh-community-market', (_event, query, refresh) => dshMarket.communityStatus(query, refresh));
-  const confirmDshCommunityPlugin = async ({ id, version, sourceUrl, installing }) => {
+  handle('dsh-oar-status', () => dshMarket.oar.status());
+  handle('set-dsh-oar-enabled', (event, enabled) => {
+    const validateSender = () => trustWorkbench(event, window, origin);
+    return agents.changeDshPlugins(null, true, validateSender, 'chat', {
+      install: () => dshMarket.oar.setEnabled(enabled, validateSender),
+    });
+  });
+  const pluginSettings = createDshPluginSettings(dshMarket);
+  handle('dsh-plugin-settings', (event, id, source) =>
+    pluginSettings.read(id, source, () => trustWorkbench(event, window, origin)));
+  handle('save-dsh-plugin-settings', (event, id, source, section, revision, edits) =>
+    pluginSettings.save(id, source, section, revision, edits, () => trustWorkbench(event, window, origin)));
+  handle('dsh-skills', () => listDshSkills(dshMarket.home));
+  handle('dsh-mcp-connections', event => readDshMcpInventory(dshMarket, () => trustWorkbench(event, window, origin)));
+  handle('install-chat-addon', (event, input) => {
+    const validateSender = () => trustWorkbench(event, window, origin);
+    const install = () => installChatAddon(input, validateSender, stage => {
+      if (!event.senderFrame?.detached) event.senderFrame.send('vvman-acp:chat-addon-progress', stage);
+    });
+    return input?.kind === 'plugin' ? agents.changeDshPlugins(null, true, validateSender, 'chat', { install }) : install();
+  });
+  handle('dsh-community-market', (_event, query, refresh, sourceId, options) => dshMarket.communityStatus(query, refresh, sourceId, options));
+  handle('set-dsh-community-market-sources', (event, urls) =>
+    dshMarket.community.setSources(urls, () => trustWorkbench(event, window, origin)));
+  const confirmDshCommunityPlugin = async ({ id, version, sourceUrl, installing, build, profile }) => {
     const result = await dialog.showMessageBox(window, {
       type: 'warning',
       title: installing ? '安装 DSH 社区插件' : '启用 DSH 社区插件',
       message: id + '@' + version,
       detail: '来源：' + sourceUrl + (installing
-        ? '\n将下载到 Somnus 的 DSH 插件目录。安装过程跳过包构建脚本。'
+        ? (profile ? '\n配置：' + profile.toUpperCase() : '') + (build
+          ? '\n此提交需要构建。继续将以当前 Windows 用户权限在独立临时目录执行此插件的 build 脚本，再把构建产物安装到 Somnus。'
+          : '\n将下载到 Somnus 的 DSH 插件目录。安装过程跳过包构建脚本。')
         : '\n启用后，插件可在托管 DSH 中以当前 Windows 用户权限运行。'),
       buttons: ['取消', installing ? '安装' : '启用'], defaultId: 0, cancelId: 0, noLink: true,
     });
     return result.response === 1;
   };
-  handle('change-dsh-community-plugin', (event, id, action, query) => {
-    return agents.changeDshPlugins(id, action, () => trustWorkbench(event, window, origin), 'community', { query, confirm: confirmDshCommunityPlugin });
+  handle('install-dsh-plugin-source', (event, reference) => {
+    const validateSender = () => trustWorkbench(event, window, origin);
+    return agents.changeDshPlugins(null, true, validateSender, 'chat', {
+      install: () => dshMarket.community.installSource(reference, validateSender, confirmDshCommunityPlugin),
+    });
   });
+  handle('change-dsh-community-plugin', (event, id, action, query, marketSource) => {
+    return agents.changeDshPlugins(id, action, () => trustWorkbench(event, window, origin), 'community',
+      { query, marketSource, confirm: confirmDshCommunityPlugin });
+  });
+  handle('install-dsh-community-plugin-version', (event, id, requestedVersion, marketSource, query) =>
+    agents.changeDshPlugins(id, 'version', () => trustWorkbench(event, window, origin), 'community',
+      { requestedVersion, marketSource, query, confirm: confirmDshCommunityPlugin }));
   handle('set-dsh-installed-plugin-enabled', (event, id, source, enabled) => {
     return agents.changeDshPlugins(id, enabled, () => trustWorkbench(event, window, origin), 'installed', { source, confirm: confirmDshCommunityPlugin });
   });
+  handle('uninstall-dsh-plugin', (event, id, source) => agents.changeDshPlugins(id, false,
+    () => trustWorkbench(event, window, origin), 'uninstall', { source, confirm: async ({ id, versions }) => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning', title: '卸载插件', message: id + ' · ' + versions.join(', '),
+        detail: '将从当前 Somnus 配置卸载此插件。原始项目文件会保留。',
+        buttons: ['取消', '卸载'], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      return result.response === 1;
+    } }));
   handle('install-dsh-plugin', (event, id) => agents.changeDshPlugins(id, true, () => trustWorkbench(event, window, origin)));
   handle('remove-dsh-plugin', (event, id) => agents.changeDshPlugins(id, false, () => trustWorkbench(event, window, origin)));
-  handle('open-managed-dsh-terminal', event => dshMarket.openTerminal(() => trustWorkbench(event, window, origin)));
   let dshAccountState;
   const observeDshAccount = status => {
     if ((status.state === 'signed-in' || status.state === 'signed-out') && status.state !== dshAccountState) {
@@ -106,8 +208,8 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   handle('sign-in-managed-dsh-account', async event => observeDshAccount(
     await dshMarket.signInAccount(shell, () => trustWorkbench(event, window, origin))));
   handle('detect-adapter', async (event, provider) => {
-    const managed = provider === 'deepseek-harness-native' ? await dshMarket.launch() : null;
-    const profile = managed ?? await detectAdapter(provider, process.env, resourcesPath);
+    const profile = provider === 'deepseek-harness-native'
+      ? await dshMarket.launch() : await detectAdapter(provider, process.env, resourcesPath);
     trustWorkbench(event, window, origin);
     return profile;
   });
@@ -256,4 +358,5 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   return agents;
 }
 
-module.exports = { registerAcpAgents, eligibleAuthUrl, openDeepSeekHarness };
+module.exports = { registerAcpAgents, eligibleAuthUrl };
+

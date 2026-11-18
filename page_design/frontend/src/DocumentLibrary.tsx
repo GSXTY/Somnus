@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Input, Modal, Spin, Tag } from 'antd';
-import { ArrowUpOutlined, FileOutlined, FolderOpenOutlined, FolderOutlined, FolderAddOutlined, ImportOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined, DeleteOutlined, FileAddOutlined, FileOutlined, FolderOpenOutlined, FolderOutlined, FolderAddOutlined, ImportOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
 import { describeError } from './errors.mjs';
 import { documentBridge, personalDocumentsChangedEvent } from './documentLibraryBridge';
 import type { DocumentEntry, DocumentListing, DocumentScope } from './documentLibraryBridge';
 import './document-library.css';
 
 const labels = { private: '个人文档', shared: '共享文档' };
+const dialogTitles = { folder: '新建文件夹', file: '新建文件', delete: '移到回收站' };
+type DocumentDialog = { kind: 'folder' | 'file' } | { kind: 'delete'; entry: DocumentEntry };
 
 function DocumentBrowser({ scope, pickKind, onPick }: {
   scope: DocumentScope;
@@ -19,7 +21,10 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
   const [fetching, setFetching] = useState(true);
   const [mutating, setMutating] = useState(false);
   const [error, setError] = useState('');
-  const [name, setName] = useState<string>();
+  const [dialog, setDialog] = useState<DocumentDialog>();
+  const [name, setName] = useState('');
+  const [content, setContent] = useState('');
+  const [dialogError, setDialogError] = useState('');
   const [revision, setRevision] = useState(0);
   const lock = useRef(false);
   const current = listing?.folder === folder ? listing : undefined;
@@ -46,7 +51,7 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
     return () => { active = false; };
   }, [bridge, scope, folder, revision]);
 
-  async function mutate(run: () => Promise<DocumentListing | void>) {
+  async function mutate(run: () => Promise<DocumentListing | void>, onError = setError) {
     if (lock.current) return false;
     lock.current = true;
     setMutating(true);
@@ -56,12 +61,34 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
       if (next) setListing(next);
       return true;
     } catch (failure) {
-      setError(describeError(failure, '文档操作失败'));
+      onError(describeError(failure, '文档操作失败'));
       return false;
     } finally {
       lock.current = false;
       setMutating(false);
     }
+  }
+
+  function showDialog(next: DocumentDialog) {
+    setDialogError('');
+    setName('');
+    setContent('');
+    setDialog(next);
+  }
+
+  async function confirmDialog() {
+    if (!bridge || !dialog) return;
+    const nextName = name.trim();
+    if (!nextName && dialog.kind !== 'delete') return;
+    setDialogError('');
+    const apply = async () => {
+      switch (dialog.kind) {
+        case 'folder': return bridge.createFolder(folder, nextName);
+        case 'file': return bridge.createFile?.(folder, nextName, content);
+        case 'delete': return bridge.deleteEntry?.(dialog.entry.path);
+      }
+    };
+    if (await mutate(apply, setDialogError)) setDialog(undefined);
   }
 
   const entries = (current?.entries || []).filter(entry => pickKind !== 'folder' || entry.kind === 'folder');
@@ -76,7 +103,10 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
         <Button size="small" type="text" icon={<ReloadOutlined />} aria-label={'刷新' + labels[scope]} disabled={busy}
           onClick={() => setRevision(value => value + 1)} />
         {privateLibrary && <>
-          <Button size="small" icon={<FolderAddOutlined />} disabled={busy || !current} onClick={() => setName('')}>新建文件夹</Button>
+          <Button size="small" icon={<FolderAddOutlined />} disabled={busy || !current}
+            onClick={() => showDialog({ kind: 'folder' })}>新建文件夹</Button>
+          {bridge.createFile && <Button size="small" icon={<FileAddOutlined />} disabled={busy || !current}
+            onClick={() => showDialog({ kind: 'file' })}>新建文件</Button>}
           <Button size="small" type="primary" icon={<ImportOutlined />} disabled={busy || !current}
             onClick={() => void mutate(() => bridge.importFiles(folder))}>导入文件</Button>
         </>}
@@ -92,7 +122,8 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
       {fetching && <div className="document-library-loading"><Spin size="small" /></div>}
       {!fetching && current && (entries.length ? <ul className="document-library-entries">
         {entries.map(entry => <li key={entry.path}>
-          <button type="button" className="document-library-row" disabled={mutating} onClick={() => {
+          <button type="button" className="document-library-row" disabled={mutating}
+            title={!onPick && entry.kind === 'file' ? '打开 ' + entry.name : undefined} onClick={() => {
             if (entry.kind === 'folder') setFolder(entry.path);
             else if (onPick) onPick(scope, entry);
             else void mutate(() => bridge.openFile(scope, entry.path));
@@ -101,6 +132,8 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
             <span>{entry.name}</span>
             {entry.kind === 'folder' ? <RightOutlined aria-hidden="true" /> : !onPick && <FolderOpenOutlined aria-hidden="true" />}
           </button>
+          {privateLibrary && bridge.deleteEntry && <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={busy}
+            aria-label={`移到回收站 ${entry.name}`} title="移到回收站" onClick={() => showDialog({ kind: 'delete', entry })} />}
         </li>)}
       </ul> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
         description={scope === 'shared' && current.configured === false ? '尚未配置共享文档库' :
@@ -111,12 +144,28 @@ function DocumentBrowser({ scope, pickKind, onPick }: {
         })}>选择此文件夹</Button>
       </div>}
     </>}
-    {privateLibrary && bridge && <Modal title="新建文件夹" open={name !== undefined} onCancel={() => setName(undefined)}
-      confirmLoading={mutating} okText="创建" cancelText="取消" okButtonProps={{ disabled: !name?.trim() }}
-      onOk={async () => { if (name?.trim() && await mutate(() => bridge.createFolder(folder, name.trim()))) setName(undefined); }}>
-      {error && <Alert type="error" showIcon message={error} />}
-      <Input value={name || ''} aria-label="文件夹名称" placeholder="输入文件夹名称"
-        onChange={event => { setError(''); setName(event.target.value); }} disabled={mutating} />
+    {privateLibrary && bridge && dialog && <Modal title={dialogTitles[dialog.kind]} open
+      onCancel={() => { if (!mutating) setDialog(undefined); }} confirmLoading={mutating}
+      okText={dialog.kind === 'delete' ? '移到回收站' : '创建'}
+      cancelText="取消" okButtonProps={{ danger: dialog.kind === 'delete', disabled: dialog.kind !== 'delete' && !name.trim() }}
+      onOk={confirmDialog}>
+      <div className="document-library-form">
+        {dialogError && <Alert type="error" showIcon message={dialogError} />}
+        {dialog.kind === 'delete' ? <p>将「{dialog.entry.name}」{dialog.entry.kind === 'folder' ? '及里面的文件' : ''}移到系统回收站？</p> :
+          <label>
+            {dialog.kind === 'folder' ? '文件夹名称' : '名称'}
+            <Input value={name} placeholder={dialog.kind === 'file' ? '例如 notes.md' : undefined}
+              onChange={event => { setDialogError(''); setName(event.target.value); }} disabled={mutating} />
+          </label>}
+        {dialog.kind === 'file' && <>
+          <small>支持 TXT、Markdown、CSV 和 TSV。</small>
+          <label>
+            文件内容（可选）
+            <Input.TextArea value={content} rows={5}
+              onChange={event => { setDialogError(''); setContent(event.target.value); }} disabled={mutating} />
+          </label>
+        </>}
+      </div>
     </Modal>}
   </section>;
 }

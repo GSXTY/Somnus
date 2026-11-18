@@ -29,9 +29,11 @@
 .document-library-path span { min-width: 0; }
 .document-library-loading { min-height: 72px; display: grid; place-items: center; }
 .document-library-entries { margin: 0; padding: 0; list-style: none; }
+.document-library-entries li { display: flex; align-items: center; gap: 6px; }
 .document-library-entries li + li { border-top: 1px solid var(--shell-line); }
 .document-library-row {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 38px;
   display: grid;
   gap: 10px;
@@ -49,3 +51,5 @@
 .document-library-row > span { overflow-wrap: anywhere; }
 .document-library-row:hover, .document-library-row:focus-visible { background: var(--shell-bg); }
 .document-library-row:disabled { cursor: default; opacity: .6; }
+.document-library-form, .document-library-form label { display: grid; gap: 8px; }
+.document-library-form small { color: var(--shell-muted); }

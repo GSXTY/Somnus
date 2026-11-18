@@ -8,7 +8,7 @@ import time
 import unicodedata
 import uuid
 import zlib
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
 
@@ -26,6 +26,10 @@ IDENTIFIER = re.compile(r'[a-f0-9]{32}')
 INVALID_PATH = re.compile(r'[<>:"\\|?*\x00-\x1f\x7f]')
 FIELD = re.compile(r'(name|description):\s*(.*)')
 BLOCK_MARKERS = {'|', '|-', '|+', '>', '>-', '>+'}
+HANDOFF_NAME = 'project-handoff'
+HANDOFF_ID = uuid.uuid5(uuid.NAMESPACE_URL, 'somnus:skill:project-handoff').hex
+HANDOFF_FILE = Path(__file__).resolve().parents[1] / 'skills' / HANDOFF_NAME / 'SKILL.md'
+HIDDEN_SKILL_NAMES = (HANDOFF_NAME, 'ppt-master')
 
 
 class SkillError(Exception):
@@ -171,6 +175,9 @@ def parse_upload(filename, raw):
 class SkillLibrary:
     def __init__(self, database):
         self.database = database
+        handoff = parse_upload('SKILL.md', HANDOFF_FILE.read_bytes())
+        self.handoff = dict(handoff, id=HANDOFF_ID, enabled=True, created_at=0,
+                            reference_count=0, references_json='[]')
         with self.database() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS personal_skills(
                 id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
@@ -181,12 +188,32 @@ class SkillLibrary:
     @staticmethod
     def _public(row):
         item = {key: row[key] for key in ('id', 'name', 'description', 'created_at', 'reference_count', 'ignored_count')}
-        return dict(item, enabled=bool(row['enabled']))
+        return dict(item, enabled=bool(row['enabled']), **({'builtin': True} if row['id'] == HANDOFF_ID else {}))
 
     def list(self):
         with self.database() as db:
-            return [self._public(row) for row in db.execute('''SELECT id,name,description,enabled,created_at,
-                reference_count,ignored_count FROM personal_skills ORDER BY created_at DESC,id''')]
+            rows = db.execute('''SELECT id,name,description,enabled,created_at,reference_count,ignored_count
+                FROM personal_skills WHERE name NOT IN (?,?) ORDER BY created_at DESC,id''', HIDDEN_SKILL_NAMES)
+            return [self._public(self.handoff), *(self._public(row) for row in rows)]
+
+    def states(self):
+        with self.database() as db:
+            return {HANDOFF_ID: True, **{row['id']: row['name'] == HANDOFF_NAME or bool(row['enabled'])
+                    for row in db.execute("SELECT id,name,enabled FROM personal_skills WHERE name <> 'ppt-master'")}}
+
+    def get(self, db, skill_id):
+        if skill_id == HANDOFF_ID:
+            return self.handoff
+        row = db.execute('SELECT * FROM personal_skills WHERE id=?', (skill_id,)).fetchone()
+        if row and row['name'] == HANDOFF_NAME:
+            return self.handoff
+        return None if row and row['name'] == 'ppt-master' else row
+
+    @staticmethod
+    def assert_editable(db, skill_id):
+        row = db.execute('SELECT name FROM personal_skills WHERE id=?', (skill_id,)).fetchone()
+        if skill_id == HANDOFF_ID or row and row['name'] == HANDOFF_NAME:
+            raise SkillError('builtin_skill', '内置 Skill 无法修改或删除。', 409)
 
     def add(self, filename, raw):
         parsed = parse_upload(filename, raw)
@@ -197,6 +224,8 @@ class SkillLibrary:
 
     @staticmethod
     def insert(db, parsed):
+        if parsed['name'] in HIDDEN_SKILL_NAMES:
+            raise SkillError('reserved_skill_name', '此 Skill 名称由 Somnus 保留。', 409)
         references = parsed['references']
         item = dict(parsed, id=uuid.uuid4().hex, enabled=True, created_at=time.time(), reference_count=len(references))
         if db.execute('SELECT COUNT(*) FROM personal_skills').fetchone()[0] >= MAX_SKILLS:
@@ -220,6 +249,8 @@ class SkillLibrary:
         if not isinstance(enabled, bool):
             raise SkillError('invalid_skill_status', '请选择启用或停用技能。')
         with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.assert_editable(db, skill_id)
             updated = db.execute('''UPDATE personal_skills SET enabled=? WHERE id=? RETURNING
                 id,name,description,enabled,created_at,reference_count,ignored_count''', (enabled, skill_id)).fetchone()
             if updated is None:
@@ -229,6 +260,8 @@ class SkillLibrary:
     def remove(self, skill_id):
         self._validate_id(skill_id)
         with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.assert_editable(db, skill_id)
             deleted = db.execute('DELETE FROM personal_skills WHERE id=?', (skill_id,))
             if not deleted.rowcount:
                 raise SkillError('skill_not_found', '技能已移除或不存在。', 404)
@@ -238,7 +271,7 @@ class SkillLibrary:
         if not isinstance(skill_ids, list) or len(skill_ids) > MAX_SELECTED:
             raise SkillError('invalid_skill_selection', f'每轮最多可选择 {MAX_SELECTED} 个技能。')
         result, instruction_chars, remaining_excerpts = [], 0, MAX_REFERENCE_EXCERPTS
-        seen = set()
+        seen, appended = set(), set()
         with self.database() as db:
             db.execute('BEGIN')
             for skill_id, optional in [(value, False) for value in skill_ids] + [(value, True) for value in supplemental]:
@@ -250,16 +283,19 @@ class SkillLibrary:
                         continue
                     raise SkillError('invalid_skill_selection', '请勿重复选择同一技能。')
                 seen.add(skill_id)
-                row = db.execute('SELECT * FROM personal_skills WHERE id=?', (skill_id,)).fetchone()
+                row = self.get(db, skill_id)
                 if not row or not row['enabled']:
                     if optional:
                         continue
                     raise SkillError('skill_unavailable', '所选技能已经停用或移除，请重新选择。', 409)
+                if row['id'] in appended:
+                    continue
                 if instruction_chars + len(row['instructions']) > MAX_INSTRUCTIONS:
                     if optional:
                         continue
                     raise SkillError('skill_selection_too_large', '所选技能的指令总量过大，请减少本轮技能数量。', 413)
                 instruction_chars += len(row['instructions'])
+                appended.add(row['id'])
                 references = json.loads(row['references_json'])
                 excerpts = [dict(path=ref['path'], excerpt=ref['text'][:REFERENCE_EXCERPT],
                                  truncated=len(ref['text']) > REFERENCE_EXCERPT) for ref in references[:remaining_excerpts]]

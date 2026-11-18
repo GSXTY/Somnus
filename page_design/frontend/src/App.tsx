@@ -1,17 +1,22 @@
 import { SidebarResizeHandle, useSidebarLayout } from './SidebarResize';
 import { SomnusMark } from './SomnusMark';
 import { ConfigurationCenter, configurationSections } from './ConfigurationCenter';
+import { PluginConfiguration, isPluginConfigurationView } from './PluginConfiguration';
+import type { DshPluginRequest } from './PluginConfiguration';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Badge, Button, Card, ConfigProvider, Empty, Layout, Modal, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, BellOutlined, MenuFoldOutlined, MenuUnfoldOutlined, HomeOutlined, MessageOutlined, FileTextOutlined, SearchOutlined, RobotOutlined, ReloadOutlined, SettingOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
+import { ApiOutlined, AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, BellOutlined, EditOutlined, FileTextOutlined, HomeOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ReloadOutlined, RobotOutlined, SearchOutlined, SettingOutlined, ToolOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import { HomeDashboard } from './HomeDashboard';
+import { HomeDashboard, HomeUpdate } from './HomeDashboard';
 import { filterUsers, formatNumber } from './logic.mjs';
 import { useWorkbench } from './useWorkbench';
 import { UserDrawer } from './UserDrawer';
 import { KeyboardShortcuts, Settings, startupPageKey } from './Settings';
-import type { StartupPage } from './Settings';
+import type { SettingsCategory, StartupPage } from './Settings';
+import { DesktopAppMenu } from './DesktopAppMenu';
+import { DSH_IM_PLUGIN, OwnedDshPluginPage } from './DshPluginPage';
+import type { OwnedPluginPage } from './DshPluginPage';
 import { AIAssistant } from './AIAssistant';
 import { DocumentLibrary } from './DocumentLibrary';
 import { AnalysisView } from './AnalysisView';
@@ -25,14 +30,20 @@ import { CommandPanel } from './GlassExperience';
 import './glass.css';
 import './codex.css';
 import './workspace-layout.css';
+import './desktopTypography.css';
 import { readProjectLaunch, readWorkspaceView, isStandardView, workspacePath, recordWorkspaceVisit } from './workspaceNavigation.mjs';
-import { activeRailView, labelOf, workspaceRail } from './navigation.mjs';
-import type { Source, UserRow } from './types';
+import { activeRailView, labelOf } from './navigation.mjs';
+import { describeError } from './errors.mjs';
+import type { Dashboard, Source, UserRow } from './types';
 
 const { Header, Sider, Content } = Layout;
 const stateLabels = { therapy: '治疗中', online: '在线', offline: '离线' };
 const priorityLabels = { high: '高', medium: '中', low: '低' };
 const autoRefreshKey = 'vvman.dashboard-auto-refresh';
+const expandActivityKey = 'somnus.expand-running-activity';
+const workspaceLinksKey = 'somnus.workspace-links';
+const busySendModeKey = 'somnus.busy-send-mode';
+const isSettingsView = (view: string) => view === 'settings';
 const dataViews = [
   { key: 'dashboard', label: '主页' },
   { key: 'users', label: '用户目录' },
@@ -69,7 +80,9 @@ export default function App() {
 
   const dataConnection = useDataConnection();
   const source: Source = 'live';
-  const [model, setModel] = useState('all'), [auto, setAuto] = useState(() => {
+  const [model, setModel] = useState('all');
+  const [homeModel, setHomeModel] = useState('all');
+  const [auto, setAuto] = useState(() => {
     try { return localStorage.getItem(autoRefreshKey) !== 'false'; } catch { return true; }
   });
   function changeAutoRefresh(value: boolean) {
@@ -88,23 +101,77 @@ export default function App() {
     desktopPlatform && !window.location.hash && !new URLSearchParams(window.location.search).has('view') && startup === 'chat'
       ? 'assistant' : readWorkspaceView(window.location)
   )), [selected, setSelected] = useState<UserRow | null>(null);
-  const navIcons: Record<string, JSX.Element> = {
-    chat: <MessageOutlined />, dashboard: <HomeOutlined />, robot: <RobotOutlined />,
-    documents: <FileTextOutlined />, plugin: <AppstoreOutlined />,
-  };
-  const activeSection = activeRailView(view);
+  const [lastContentView, setLastContentView] = useState(() => isSettingsView(view) ? 'assistant' : view);
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('general');
+  const [pluginPages, setPluginPages] = useState<OwnedPluginPage[]>([]);
+  const [activePluginPage, setActivePluginPage] = useState<OwnedPluginPage>();
+  const [imPageError, setImPageError] = useState('');
+  useEffect(() => {
+    const nativePages = window.somnusDshPluginPage;
+    if (!nativePages?.list || !nativePages.showOwned || isSettingsView(view)) return;
+    let current = true, request = 0;
+    const refresh = () => {
+      const version = ++request;
+      void nativePages.list!().then(items => {
+        if (current && version === request) setPluginPages(items.filter(item => item.sidebar));
+      }).catch(() => { if (current && version === request) setPluginPages([]); });
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => { current = false; window.removeEventListener('focus', refresh); };
+  }, [view]);
+  async function openImPage() {
+    const bridge = window.somnusDshPluginPage;
+    try {
+      if (!bridge?.list || !bridge.showOwned) throw new Error('IM 机器人配置需要 Somnus Windows 桌面版。');
+      const pages = (await bridge.list()).filter(page => page.sidebar);
+      setPluginPages(pages);
+      const imPage = pages.find(page => page.pluginId === DSH_IM_PLUGIN);
+      if (!imPage) throw new Error('IM 机器人还在准备中，请稍后重试。');
+      setActivePluginPage(imPage);
+    } catch (failure) { setImPageError(describeError(failure, '无法打开 IM 机器人配置。')); }
+  }
+  const [expandRunningActivity, setExpandRunningActivity] = useState(() => {
+    try { return localStorage.getItem(expandActivityKey) === 'true'; } catch { return false; }
+  });
+  const [workspaceLinks, setWorkspaceLinks] = useState(() => {
+    try { return localStorage.getItem(workspaceLinksKey) === 'true'; } catch { return false; }
+  });
+  const [busySendMode, setBusySendMode] = useState<'queue' | 'steer'>(() => {
+    try { return localStorage.getItem(busySendModeKey) === 'steer' ? 'steer' : 'queue'; } catch { return 'queue'; }
+  });
+  function changeBusySendMode(value: 'queue' | 'steer') {
+    setBusySendMode(value);
+    try { localStorage.setItem(busySendModeKey, value); } catch { /* session preference */ }
+  }
+  function changeExpandActivity(value: boolean) {
+    setExpandRunningActivity(value);
+    try { localStorage.setItem(expandActivityKey, String(value)); } catch { /* session preference */ }
+  }
+  function changeWorkspaceLinks(value: boolean) {
+    setWorkspaceLinks(value);
+    try { localStorage.setItem(workspaceLinksKey, String(value)); } catch { /* session preference */ }
+  }
+  const settingsOverlay = Boolean(desktopPlatform) && isSettingsView(view);
+  const contentView = settingsOverlay ? lastContentView : view;
+  const activeSection = activeRailView(contentView);
   const workspacePlugins = useWorkspacePlugins();
   const [appVersion, setAppVersion] = useState('—'), [helpOpen, setHelpOpen] = useState(false);
   const [newChatSignal, setNewChatSignal] = useState(0);
   const [sidebarSessions, setSidebarSessions] = useState<HTMLDivElement | null>(null);
+  const [projectChooserOpen, setProjectChooserOpen] = useState(false);
+  const [chatAttention, setChatAttention] = useState<HTMLDivElement | null>(null);
   const [chatLocked, setChatLocked] = useState(false);
   const sidebar = useSidebarLayout();
   const compactNav = sidebar.compact;
-  const chatView = view === 'assistant';
-  const configurationView = configurationSections.some(section => section.key === view);
+  const configurationView = configurationSections.some(section => section.key === contentView);
+  const pluginView = isPluginConfigurationView(contentView) ? contentView : undefined;
+  const configurationPanel = useRef<HTMLElement>(null);
+  useEffect(() => { if (configurationPanel.current) configurationPanel.current.scrollTop = 0; }, [contentView]);
   const expandedSidebar = !compactNav;
   function startChat() {
     if (chatLocked) return;
+    setProjectChooserOpen(false);
     changeView('assistant');
     setNewChatSignal(value => value + 1);
   }
@@ -127,8 +194,24 @@ export default function App() {
   useEffect(() => { const onHelp = (event: KeyboardEvent) => { const target = event.target as HTMLElement | null; const typing = target ? ['INPUT', 'TEXTAREA'].includes(target.tagName) : false; if (event.key === '?' && !typing) { event.preventDefault(); setHelpOpen(value => !value); } else if (event.key === 'Escape') setHelpOpen(false); }; window.addEventListener('keydown', onHelp); return () => window.removeEventListener('keydown', onHelp); }, []);
   const [standardView, setStandardView] = useState(() => isStandardView(view) ? view : 'dashboard');
   const [analysisMounted, setAnalysisMounted] = useState(() => readWorkspaceView(window.location) === 'analysis');
-  function activate(next: string) { if (next !== 'plugin-config') setSuggestedPlugin(undefined); setView(next); if (isStandardView(next)) setStandardView(next); if (next === 'analysis') setAnalysisMounted(true); }
+  function activate(next: string) {
+    if (next !== 'plugin-config' && !isSettingsView(next)) { setSuggestedPlugin(undefined); setInstalledPluginRequest(undefined); }
+    setView(next);
+    if (!isSettingsView(next)) setLastContentView(next);
+    if (isStandardView(next)) setStandardView(next);
+    if (next === 'analysis') setAnalysisMounted(true);
+  }
   const [suggestedPlugin, setSuggestedPlugin] = useState<string>();
+  const [installedPluginRequest, setInstalledPluginRequest] = useState<DshPluginRequest>();
+  const [pluginOverviewRequest, setPluginOverviewRequest] = useState(0);
+  const pluginRequestSequence = useRef(0);
+  function openPluginOverview() {
+    setSuggestedPlugin(undefined);
+    setInstalledPluginRequest(undefined);
+    setPluginOverviewRequest(value => value + 1);
+    if (configurationPanel.current) configurationPanel.current.scrollTop = 0;
+    changeView('plugin-config');
+  }
   const [routeHistory, setRouteHistory] = useState({ entries: [view], index: 0 });
   const routeHistoryRef = useRef(routeHistory);
   function applyHistory(history: typeof routeHistory) {
@@ -145,6 +228,17 @@ export default function App() {
     const current = routeHistoryRef.current;
     const history = recordWorkspaceVisit(current, next);
     if (history !== current) showRoute(history);
+  }
+  function openSettings(category: SettingsCategory = 'general') {
+    setSettingsCategory(category);
+    changeView('settings');
+  }
+  function closeSettings() {
+    const current = routeHistoryRef.current;
+    let index = current.index - 1;
+    while (index >= 0 && isSettingsView(current.entries[index])) index -= 1;
+    if (index >= 0) showRoute({ ...current, index });
+    else changeView(lastContentView);
   }
   function openTool(tool: WorkspaceTool) {
     if (tool.href) window.location.assign(tool.href);
@@ -178,21 +272,60 @@ export default function App() {
     window.addEventListener('workbench:open-command', openCommand);
     return () => window.removeEventListener('workbench:open-command', openCommand);
   }, []);
-  // useWorkbench keys each response to its requested source and device.
-  const { data, error, loading, visible, reload } = useWorkbench(source, model, auto);
+  const isHome = standardView === 'dashboard';
+  const requestedModel = isHome ? homeModel : model;
+  const { data, error, loading, visible, reload } = useWorkbench(source, requestedModel, auto);
   const demo = Boolean(data?.source.mode === 'demo');
-  const [deviceOptions, setDeviceOptions] = useState<{ value: string; label: string }[]>([]);
+  const [deviceOptions, setDeviceOptions] = useState<NonNullable<Dashboard['model_options']>>([]);
   useEffect(() => {
     if (data?.model_options?.length) setDeviceOptions(data.model_options);
   }, [data?.model_options]);
-  useEffect(() => { setSelected(null); }, [source, model]);
+  useEffect(() => { setSelected(null); }, [source, requestedModel]);
   const titles: Record<string, string> = { dashboard: '主页', devices: '设备目录', users: '用户目录', alerts: '告警中心' };
-  const modelOptions = [{ value: 'all', label: '全部设备型号' }, ...deviceOptions];
+  const modelOptions: NonNullable<Dashboard['model_options']> = [{ value: 'all', label: '全部 YA70' }, ...deviceOptions];
+  const homeModelOptions = [
+    { value: 'all', label: '全部 YA70' },
+    ...deviceOptions
+      .filter(option => !option.home_only && /^70[0-9]{3}$/.test(option.value))
+      .map(option => ({ ...option, label: `YA70 · ${option.value}` })),
+    ...['YA50', 'YA43', 'YA46'].flatMap(family => {
+      const option = deviceOptions.find(item => item.value === family);
+      return option ? [{ ...option, label: family }] : [];
+    }),
+  ];
+  function searchConversations() {
+    setProjectChooserOpen(false);
+    window.dispatchEvent(new Event('workbench:search-conversations'));
+  }
+  const sidebarActions = [
+    { key: 'dashboard', label: '主页', icon: <HomeOutlined />, onClick: () => changeView('dashboard') },
+    { key: 'documents', label: '文档', icon: <FileTextOutlined />, onClick: () => changeView('documents') },
+    { key: 'plugins', label: '工具', icon: <ToolOutlined aria-hidden="true" />, onClick: () => changeView('plugins') },
+    { key: 'config', label: '配置中心', icon: <SettingOutlined />, onClick: () => changeView('config') },
+    ...pluginPages.map(page => ({ key: 'owned:' + page.id, label: page.label,
+      icon: page.pluginId === DSH_IM_PLUGIN ? <RobotOutlined aria-hidden="true" /> : <AppstoreOutlined aria-hidden="true" />,
+      onClick: () => setActivePluginPage(page) })),
+  ];
+  const primarySidebar = (wide: boolean) => <nav className={wide ? 'workspace-sidebar-links workspace-desktop-navigation' : 'workspace-desktop-navigation'}
+    aria-label="主导航">
+    <button type="button" className={wide ? 'workspace-sidebar-feature' : 'nav-rail-primary'} onClick={startChat} disabled={chatLocked}
+      title={wide ? undefined : '新建会话'} aria-label="新建会话" aria-keyshortcuts={mac ? 'Meta+N' : 'Control+N'}>
+      <EditOutlined aria-hidden="true" /><span>新建会话</span>{wide && <kbd>{mac ? '⌘ N' : 'Ctrl+N'}</kbd>}
+    </button>
+    {sidebarActions.map(action => <button key={action.key} type="button" className={wide ? '' : 'nav-rail-primary'}
+      title={wide ? undefined : action.label} aria-label={action.label}
+      aria-current={action.key === activeSection || activePluginPage && action.key === 'owned:' + activePluginPage.id ? 'page' : undefined}
+      onClick={action.onClick}>{action.icon}<span>{action.label}</span></button>)}
+    <button type="button" className={wide ? '' : 'nav-rail-primary'} aria-current={pluginView ? 'page' : undefined}
+      title={wide ? undefined : '插件'} aria-label="插件" onClick={openPluginOverview}><ApiOutlined aria-hidden="true" /><span>插件</span></button>
+  </nav>;
   const deviceColumns = [{ title: '设备标识', dataIndex: 'device_id' }, { title: '型号', dataIndex: 'model' }, { title: '固件', dataIndex: 'firmware', render: (value: string) => value || '—' }, { title: demo ? '示例用户' : '用户', dataIndex: 'name' }, { title: '状态', dataIndex: 'state', render: (value: UserRow['state']) => stateLabels[value] || '—' }];
-  return <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#176D61', colorSuccess: '#00a887', borderRadius: 8, fontSize: 13, colorBgLayout: '#F5F8F7', colorText: '#202A28', colorTextSecondary: '#526762', fontFamily: 'Inter, Microsoft YaHei, PingFang SC, sans-serif' }, components: { Card: { headerHeight: 49 }, Table: { headerBg: '#f8fafc' }, Menu: { itemHeight: 44 } } }}>
+  return <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#176D61', colorSuccess: '#00a887', borderRadius: 8, fontSize: 14, colorBgLayout: '#F5F8F7', colorText: '#202A28', colorTextSecondary: '#526762', fontFamily: 'var(--shell-font-ui)' }, components: { Card: { headerHeight: 49 }, Table: { headerBg: '#f8fafc' }, Menu: { itemHeight: 44 } } }}>
     <Layout className="workbench codex-theme" data-desktop-platform={desktopPlatform}>
       <Header className="global-header">
         <nav className="topbar-navigation" aria-label="工作台导航">
+          {desktopPlatform && <DesktopAppMenu onSettings={() => openSettings()} onAbout={() => openSettings('about')}
+            onShortcuts={() => openSettings('shortcuts')} />}
           <Button type="text" aria-label={sidebarHidden ? '显示侧栏' : '隐藏侧栏'} title={sidebarHidden ? '显示侧栏' : '隐藏侧栏'}
             aria-controls="workbench-sidebar" aria-expanded={!sidebarHidden}
             icon={sidebarHidden ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setSidebarHidden(value => !value)} />
@@ -201,7 +334,8 @@ export default function App() {
           <Button type="text" aria-label="前进" title="前进" icon={<ArrowRightOutlined />}
             disabled={routeHistory.index >= routeHistory.entries.length - 1} onClick={() => moveHistory(1)} />
         </nav>
-        <div className="titlebar-drag-region"><span className="topbar-brand"><SomnusMark /><span>Somnus</span><small>{labelOf(view)}</small></span></div>
+        <div className="titlebar-drag-region"><span className="topbar-brand"><SomnusMark /><span>Somnus</span>
+          <small>{labelOf(view)}</small></span></div>
         <Button className="command-trigger" type="text" aria-label="打开命令面板" title="打开命令面板"
           icon={<SearchOutlined />} onClick={() => setCommandOpen(true)}>
           <span className="command-label">搜索功能</span><kbd>{mac ? '⌘ K' : 'Ctrl K'}</kbd>
@@ -211,49 +345,33 @@ export default function App() {
             icon={<Badge count={data?.alerts.length || 0} size="small"><BellOutlined /></Badge>}
             onClick={() => changeView('alerts')} />
         </Tooltip>
+        <div className="chat-attention-slot" ref={setChatAttention} />
       </Header>
       <Layout className="workspace-shell-body"><Sider id="workbench-sidebar" width={sidebar.width}
         className={expandedSidebar ? 'navigation workspace-view-sidebar ' +
-          (chatView ? 'workspace-chat-sidebar' : configurationView ? 'workspace-config-sidebar' : 'workspace-context-sidebar') : 'navigation nav-with-rail'}
+          'workspace-chat-sidebar' : 'navigation nav-with-rail'}
         hidden={sidebarHidden} collapsedWidth={58}
         collapsed={!expandedSidebar} trigger={null}>
-        {!expandedSidebar && <nav className="nav-rail" aria-label="主导航">
-          {workspaceRail.map(item => <button type="button" key={item.key} className="nav-rail-primary"
-            title={item.label} aria-current={activeSection === item.key ? 'page' : undefined}
-            onClick={() => changeView(item.key)}>
-            <span className="nav-rail-icon" aria-hidden="true">{navIcons[item.icon]}</span><span>{item.label}</span>
-          </button>)}
-          {chatView && compactNav && <div className="nav-rail-compact-actions">
-            <button type="button" title="新建会话" aria-label="新建会话" onClick={startChat} disabled={chatLocked}><PlusOutlined /></button>
-            <WorkspaceSwitch value={workspace} onChange={setWorkspace} disabled={chatLocked} compact>
+        {!expandedSidebar && <div className="nav-rail">
+          {primarySidebar(false)}
+          <div className="nav-rail-compact-actions">
+            <WorkspaceSwitch value={workspace} onChange={setWorkspace} disabled={chatLocked} onSearch={searchConversations}
+              onSettings={() => openSettings('chat')} chooser={{ open: projectChooserOpen, onOpenChange: setProjectChooserOpen }}>
               <div className="nav-session-slot nav-session-slot-compact" ref={setSidebarSessions} />
             </WorkspaceSwitch>
-          </div>}
+          </div>
           <button type="button" className="nav-rail-primary nav-rail-settings" title="设置" aria-label="设置"
             aria-current={view === 'settings' ? 'page' : undefined} onClick={() => changeView('settings')}>
             <span className="nav-rail-icon" aria-hidden="true"><SettingOutlined /></span><span>设置</span>
           </button>
-        </nav>}
+        </div>}
         {expandedSidebar && <div className="workspace-sidebar-content">
-          {chatView ? <button type="button" className="workspace-sidebar-feature" onClick={startChat} disabled={chatLocked}>
-            <PlusOutlined aria-hidden="true" /><span>新建会话</span><kbd>{mac ? '⌘ N' : 'Ctrl N'}</kbd>
-          </button> : <button type="button" className="workspace-sidebar-feature" onClick={() => changeView('assistant')}>
-            <MessageOutlined aria-hidden="true" /><span>返回会话</span><RightOutlined aria-hidden="true" />
-          </button>}
-          <nav className="workspace-sidebar-links" aria-label="主导航">
-            {chatView ? <button type="button" onClick={() => window.dispatchEvent(new Event('workbench:search-conversations'))}>
-              <SearchOutlined aria-hidden="true" />搜索会话
-            </button> : <h2>工作台</h2>}
-            <button type="button" aria-current={activeSection === 'dashboard' ? 'page' : undefined} onClick={() => changeView('dashboard')}><HomeOutlined aria-hidden="true" />主页</button>
-            <button type="button" aria-current={view === 'documents' ? 'page' : undefined} onClick={() => changeView('documents')}><FileTextOutlined aria-hidden="true" />文档</button>
-            <button type="button" aria-current={activeSection === 'plugins' ? 'page' : undefined} onClick={() => changeView('plugins')}><AppstoreOutlined aria-hidden="true" />工具</button>
-            <button type="button" aria-current={configurationView ? 'page' : undefined} onClick={() => changeView('config')}>
-              <SettingOutlined aria-hidden="true" />配置中心
-            </button>
-          </nav>
-          {chatView ? <WorkspaceSwitch value={workspace} onChange={setWorkspace} disabled={chatLocked} compact={false}>
+          {primarySidebar(true)}
+          <WorkspaceSwitch value={workspace} onChange={setWorkspace} disabled={chatLocked} onSearch={searchConversations}
+            onSettings={() => openSettings('chat')}>
             <div className="nav-session-slot" ref={setSidebarSessions} />
-          </WorkspaceSwitch> : (activeSection === 'dashboard' || activeSection === 'plugins') &&
+          </WorkspaceSwitch>
+          {(activeSection === 'dashboard' || activeSection === 'plugins') &&
             <nav className="workspace-sidebar-links workspace-sidebar-configuration" aria-label={activeSection === 'dashboard' ? '主页分类' : '工具分类'}>
               <h2>{activeSection === 'dashboard' ? '数据目录' : '工具'}</h2>
               {activeSection === 'dashboard' ? dataViews.slice(1).map(({ key, label }) =>
@@ -270,53 +388,99 @@ export default function App() {
           onPreview={sidebar.preview} onCommit={sidebar.commit} onCancel={sidebar.cancel} />}
       </Sider>
       <Content className="workspace-content">
-      <div className={`workspace-panel standard-workspace-panel ${standardView === 'dashboard' ? 'home-workspace-panel' : ''}`} hidden={!isStandardView(view)}>
+      <div className={`workspace-panel standard-workspace-panel ${isHome ? 'home-workspace-panel' : ''}`} hidden={!isStandardView(contentView)}>
         <nav className="data-page-nav" aria-label="数据视图" hidden={expandedSidebar && !sidebarHidden && activeSection === 'dashboard'}>
           {dataViews.map(item => <button key={item.key} type="button" aria-current={standardView === item.key ? 'page' : undefined}
             onClick={() => changeView(item.key)}>{item.label}</button>)}
         </nav>
         <div className="page-toolbar">
           <Typography.Title level={3}>{titles[standardView]}</Typography.Title>
-          <div className="toolbar-controls">
-            <Select aria-label="筛选设备型号" value={model} onChange={setModel} options={modelOptions} />
+          {!isHome && <div className="toolbar-controls">
+            <Select aria-label="筛选设备型号" value={model} onChange={setModel}
+              options={modelOptions.filter(option => !option.home_only && option.value !== 'YA50')} />
             <Button icon={<ReloadOutlined spin={loading} />} onClick={() => void reload()}>刷新</Button>
-          </div>
+          </div>}
         </div>
-        <div className="source-banner">
-          <div><Tag color={dataConnection.mode === 'invalid' ? 'error' : 'default'}>{dataConnectionLabel(dataConnection)}</Tag>
-            {standardView === 'dashboard' && <span>AHI 来源：设备上报</span>}</div>
+        {!isHome && <div className="source-banner">
+          <div><Tag color={dataConnection.mode === 'invalid' ? 'error' : 'default'}>{dataConnectionLabel(dataConnection)}</Tag></div>
           <Space><span className="refresh-state">{!visible ? '页面隐藏 · 已暂停刷新' : auto ? '每小时自动刷新' : '自动刷新已暂停'}</span>
             <Switch size="small" checked={auto} onChange={changeAutoRefresh} aria-label="主页自动刷新" /></Space>
-        </div>
-        <div className="snapshot-line">
+        </div>}
+        {isHome ? <HomeUpdate data={data} loading={loading} error={error} auto={auto}
+          model={homeModel} modelOptions={homeModelOptions} onModelChange={setHomeModel}
+          onAutoChange={changeAutoRefresh} onReload={() => void reload()} /> : <div className="snapshot-line">
           {data ? <><span>昨日统计 {data.period.kpi_date} · 更新于 {data.generated_at.slice(11, 16)}</span>
             <span>{data.period.start_date} — {data.period.end_date} · {data.period.time_zone}</span></> : <span>{loading ? '正在读取数据…' : '暂无数据快照'}</span>}
-        </div>
+        </div>}
         {error && <Alert className="data-error" type="error" showIcon message="工作台数据读取失败" description={error}
-          action={<Button onClick={() => void reload()}>重试</Button>} />}
+          action={isHome ? undefined : <Button onClick={() => void reload()}>重试</Button>} />}
         {source === 'live' && !loading && !error && !data?.source?.connected && <Alert className="data-error" type="info" showIcon
-          message="数据源尚未连接" action={<Button onClick={() => changeView('settings')}>打开设置</Button>} />}
+          message="数据源尚未连接" description={data?.source.label}
+          action={<Button onClick={() => changeView('settings')}>打开设置</Button>} />}
       <div className="content-with-insights without-insights"><main className="dashboard-main" aria-busy={loading}>
-        {standardView === 'dashboard' || !titles[standardView] ? <HomeDashboard data={data} loading={loading} /> : standardView === 'users' ? <Card className="panel-card" title={demo ? "示例用户" : "用户列表"}><UserTable users={data?.users || []} connected={demo} onUser={setSelected} full /></Card> : standardView === 'devices' ? <Card className="panel-card" title={demo ? "示例设备" : "设备列表"}><Table rowKey="device_id" columns={deviceColumns} dataSource={data?.users || []} size="middle" pagination={{ pageSize: 10 }} scroll={{ x: 650 }} locale={{ emptyText: '未取得设备数据' }} /></Card> : standardView === 'alerts' ? <Card className="panel-card" title={demo ? "演示告警" : "工程告警"}><Table rowKey="id" size="small" dataSource={data?.alerts || []} pagination={{ pageSize: 8 }} columns={[{ title: '级别', dataIndex: 'severity', render: (value: string) => <Tag color={value === 'critical' ? 'error' : value === 'warning' ? 'warning' : 'default'}>{value === 'critical' ? '严重工程告警' : value === 'warning' ? '工程提示' : '信息'}</Tag> }, { title: '设备', dataIndex: 'device_id' }, { title: '事项', dataIndex: 'title' }, { title: '说明', dataIndex: 'description' }, { title: '时间', dataIndex: 'at' }]} scroll={{ x: 750 }} /></Card> : null}
+        {standardView === 'dashboard' || !titles[standardView] ? <HomeDashboard data={data} loading={loading} modelLabel={homeModelOptions.find(option => option.value === homeModel)?.label || homeModel}
+          modelSpecific={homeModel !== 'YA50' && deviceOptions.some(option => option.value === homeModel && option.home_only)} /> : standardView === 'users' ? <Card className="panel-card" title={demo ? "示例用户" : "用户列表"}><UserTable users={data?.users || []} connected={demo} onUser={setSelected} full /></Card> : standardView === 'devices' ? <Card className="panel-card" title={demo ? "示例设备" : "设备列表"}><Table rowKey="device_id" columns={deviceColumns} dataSource={data?.users || []} size="middle" pagination={{ pageSize: 10 }} scroll={{ x: 650 }} locale={{ emptyText: '未取得设备数据' }} /></Card> : standardView === 'alerts' ? <Card className="panel-card" title={demo ? "演示告警" : "工程告警"}><Table rowKey="id" size="small" dataSource={data?.alerts || []} pagination={{ pageSize: 8 }} columns={[{ title: '级别', dataIndex: 'severity', render: (value: string) => <Tag color={value === 'critical' ? 'error' : value === 'warning' ? 'warning' : 'default'}>{value === 'critical' ? '严重工程告警' : value === 'warning' ? '工程提示' : '信息'}</Tag> }, { title: '设备', dataIndex: 'device_id' }, { title: '事项', dataIndex: 'title' }, { title: '说明', dataIndex: 'description' }, { title: '时间', dataIndex: 'at' }]} scroll={{ x: 750 }} /></Card> : null}
         {loading && !data && <div className="initial-loading"><Spin size="small" /> 正在读取数据…</div>}
       </main></div>
-      </div><div className="workspace-panel assistant-workspace-panel" hidden={view !== 'assistant'}>
-        <AIAssistant windowsDesktop={desktopPlatform === 'windows'} allowLocalAnalysisUpload={dataConnection.mode === 'local'} onModelConfig={() => changeView('models')} workspace={workspace} visible={view === 'assistant'} sidebar={sidebarSessions}
-          newChatSignal={newChatSignal} onLockedChange={setChatLocked} onOpenChat={() => changeView('assistant')}
-          onOpenDshPlugin={id => { setSuggestedPlugin(id); changeView('plugin-config'); }} />
-      </div>{view === 'documents' && <div className="workspace-panel"><DocumentLibrary /></div>}{view === 'settings' && <div className="workspace-panel settings-workspace-panel"><Settings workspace={workspace} startup={startup} onStartupChange={changeStartup} autoRefresh={auto} onAutoRefresh={changeAutoRefresh} dataConnection={dataConnection} appVersion={appVersion} mac={mac} onOpen={changeView} /></div>}{view === 'sql' && <div className="workspace-panel assistant-workspace-panel"><SqlQuery dataConnection={dataConnection} /></div>}{configurationView && <div className="workspace-panel configuration-workspace-panel"><ConfigurationCenter view={view} suggestedPlugin={suggestedPlugin} onOpen={changeView} windowsDesktop={desktopPlatform === 'windows'} /></div>}
-      {view === 'plugins' && <div className="workspace-panel plugins-workspace-panel">
+      </div><div className="workspace-panel assistant-workspace-panel" hidden={contentView !== 'assistant'}>
+        <AIAssistant windowsDesktop={desktopPlatform === 'windows'} expandRunningActivity={expandRunningActivity} workspaceLinks={workspaceLinks} busySendMode={busySendMode}
+          allowLocalAnalysisUpload={dataConnection.mode === 'local'} onModelConfig={() => changeView('models')} workspace={workspace} visible={view === 'assistant'} sidebar={sidebarSessions} attentionTarget={chatAttention}
+          newChatSignal={newChatSignal} onLockedChange={setChatLocked} onOpenChat={project => {
+            setProjectChooserOpen(false);
+            if (project) {
+              setWorkspace(project);
+              try { localStorage.setItem('ya70.workspace', project); } catch { /* optional preference */ }
+            }
+            changeView('assistant');
+          }}
+          onOpenDshPlugin={id => { setSuggestedPlugin(id); changeView('plugin-config'); }}
+          onOpenExtensionConfig={changeView}
+          onOpenAddonSettings={(settings, name) => {
+            if (settings === 'skills' || settings === 'mcp') { changeView(settings); return; }
+            if (settings === 'dsh-im') { void openImPage(); return; }
+            setInstalledPluginRequest({ id: name, sequence: ++pluginRequestSequence.current });
+            changeView('plugin-config');
+          }} />
+      </div>
+      {contentView === 'documents' && <div className="workspace-panel"><DocumentLibrary /></div>}
+      {!settingsOverlay && view === 'settings' && <div className="workspace-panel settings-workspace-panel">
+        <Settings workspace={workspace} startup={startup} onStartupChange={changeStartup} autoRefresh={auto} onAutoRefresh={changeAutoRefresh}
+          dataConnection={dataConnection} appVersion={appVersion} mac={mac} onOpen={changeView} />
+      </div>}
+      {contentView === 'sql' && <div className="workspace-panel assistant-workspace-panel"><SqlQuery dataConnection={dataConnection} /></div>}
+      {configurationView && <section ref={configurationPanel} className="workspace-panel configuration-workspace-panel" aria-label="配置中心" data-view={contentView}>
+        <ConfigurationCenter view={contentView} onOpen={changeView} windowsDesktop={desktopPlatform === 'windows'} />
+      </section>}
+      {pluginView && <section ref={configurationPanel} className="workspace-panel plugin-workspace-panel" aria-label="插件" data-view={pluginView}>
+        <PluginConfiguration view={pluginView} onOpen={changeView} active={pluginView === 'plugin-config'}
+          suggestedPlugin={suggestedPlugin} installedPluginRequest={installedPluginRequest} overviewRequest={pluginOverviewRequest}
+          windowsDesktop={desktopPlatform === 'windows'} onOpenIm={desktopPlatform === 'windows' ? () => void openImPage() : undefined} />
+      </section>}
+      {contentView === 'plugins' && <div className="workspace-panel plugins-workspace-panel">
         {workspacePlugins.status === 'error' && <Alert type="warning" message="插件入口读取失败" action={<Button size="small" onClick={workspacePlugins.retry}>重试</Button>} />}
         <Plugins tools={workspacePlugins.tools} onOpen={openTool} />
       </div>}
-      {view === 'deep-analysis' && <div className="workspace-panel deep-analysis-workspace-panel"><DeepAnalysis dataConnection={dataConnection} /></div>}
-      {analysisMounted && <div className="workspace-panel analysis-workspace-panel" hidden={view !== 'analysis'}>
+      {contentView === 'deep-analysis' && <div className="workspace-panel deep-analysis-workspace-panel"><DeepAnalysis dataConnection={dataConnection} /></div>}
+      {analysisMounted && <div className="workspace-panel analysis-workspace-panel" hidden={contentView !== 'analysis'}>
         {workspacePlugins.analysisPath ? <AnalysisView active={view === 'analysis'} path={workspacePlugins.analysisPath} /> :
           workspacePlugins.status === 'loading' ? <Spin aria-label="读取波形分析入口" /> :
             <Alert type="warning" message={workspacePlugins.status === 'error' ? '插件入口读取失败' : '波形分析入口暂不可用'}
               action={<Button size="small" onClick={workspacePlugins.retry}>重试</Button>} />}
       </div>}
       </Content></Layout>
+      {activePluginPage && <OwnedDshPluginPage key={activePluginPage.id} page={activePluginPage} onClose={() => setActivePluginPage(undefined)} />}
+      {imPageError && <Modal open title="IM 机器人" footer={null} onCancel={() => setImPageError('')}>
+        <Alert type="error" showIcon message={imPageError} />
+      </Modal>}
+      {settingsOverlay && <Modal open title="设置" width="min(1100px, calc(100vw - 40px))" className="desktop-settings-dialog"
+        footer={null} maskClosable={false} onCancel={closeSettings}>
+        <Settings workspace={workspace} startup={startup} onStartupChange={changeStartup} autoRefresh={auto}
+          onAutoRefresh={changeAutoRefresh} dataConnection={dataConnection} appVersion={appVersion} mac={mac}
+          expandRunningActivity={expandRunningActivity} onExpandRunningActivity={changeExpandActivity}
+          workspaceLinks={workspaceLinks} onWorkspaceLinks={window.somnusWorkspaceWeb ? changeWorkspaceLinks : undefined}
+          busySendMode={busySendMode} onBusySendMode={window.somnusNativeDshChat?.steer ? changeBusySendMode : undefined}
+          onOpen={changeView} initialCategory={settingsCategory} embedded />
+      </Modal>}
       <CommandPanel open={commandOpen} onClose={()=>setCommandOpen(false)} onNavigate={changeView}/>
       <Modal title="快捷键与说明" open={helpOpen} onCancel={() => setHelpOpen(false)} footer={null} width={460}>
         <KeyboardShortcuts mac={mac} />

@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseBlocks, parseInline } from '../src/markdown.mjs';
+import { highlightCode } from '../src/codeHighlight.mjs';
+
+test('local code highlighting preserves exact text and separates strings from comments', () => {
+  const code = 'const url = "https://example.com"; // note\nreturn 42;';
+  const tokens = highlightCode(code, 'ts');
+  assert.equal(tokens.map(token => token.text).join(''), code);
+  assert.deepEqual(tokens.filter(token => token.type).map(token => [token.type, token.text]), [
+    ['keyword', 'const'], ['string', '"https://example.com"'], ['comment', '// note'], ['keyword', 'return'], ['number', '42'],
+  ]);
+  assert.deepEqual(highlightCode(code, 'unknown-language'), [{ text: code }]);
+});
 
 test('inline tokens cover bold, code and https links', () => {
   assert.deepEqual(parseInline('**粗** 和 `code` 和 [链接](https://example.com)'), [

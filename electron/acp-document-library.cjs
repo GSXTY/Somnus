@@ -12,7 +12,12 @@ const fileTypes = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
 };
 const textTypes = '.txt .md .markdown .log .json .yaml .yml .csv .tsv .py .js .mjs .ts .tsx .jsx .java .c .cpp .h .go .rs .sql .sh .bat .ps1 .ini .toml .conf .html .htm .xml'.split(' ');
-const nativeExtensions = new Set(['.pdf', '.docx', '.xlsx', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.txt', '.md', '.markdown', '.csv', '.tsv']);
+const newFileExtensions = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv']);
+const nativeExtensions = new Set([
+  '.pdf', '.docx', '.xlsx', '.png', '.jpg', '.jpeg', '.gif', '.webp',
+  ...newFileExtensions, '.log', '.json', '.yaml', '.yml', '.ts', '.tsx',
+  '.jsx', '.java', '.c', '.cpp', '.h', '.go', '.rs', '.sql', '.ini', '.toml', '.conf',
+]);
 const extensions = [...Object.keys(fileTypes), ...textTypes];
 const maxFolderEntries = 2000;
 
@@ -20,7 +25,7 @@ function validName(name) {
   return typeof name === 'string' && name.length >= 1 && name.length <= 180 &&
     name.trim() === name && !name.startsWith('.') && !name.endsWith('.') &&
     !/[<>:"/\\|?*\u0000-\u001f]/.test(name) &&
-    !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\s*\.|$)/i.test(name);
+    !/^(?:con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\s*\.|$)/i.test(name);
 }
 
 function pathParts(relativePath) {
@@ -128,6 +133,40 @@ function createDocumentLibrary({ profileDir, sharedDir }) {
     return list('private', folder);
   }
 
+  async function createFile(folder, name, content = '') {
+    if (!validName(name) || !newFileExtensions.has(path.extname(name).toLowerCase())) {
+      throw new Error('请输入有效的文件名，格式支持 TXT、Markdown、CSV 和 TSV。');
+    }
+    const { target } = await locate('private', folder, 'folder');
+    const relativePath = folder ? folder + '/' + name : name;
+    pathParts(relativePath);
+    if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > fileType(name).limit) {
+      throw new Error('请输入有效的文本内容，文件大小不得超过 10 MiB。');
+    }
+    const destination = path.join(target, name);
+    const handle = await fs.open(destination, 'wx', 0o600).catch(error => {
+      if (error.code === 'EEXIST') throw new Error('当前目录已有同名文件或文件夹。');
+      throw error;
+    });
+    try {
+      try { await handle.writeFile(content, 'utf8'); }
+      finally { await handle.close(); }
+    } catch (error) {
+      await fs.unlink(destination).catch(() => {});
+      throw error;
+    }
+    return list('private', folder);
+  }
+
+  async function privateEntry(entryPath) {
+    if (!pathParts(entryPath).length) throw new Error('请选择要删除的文件或文件夹。');
+    const { target, info } = await locate('private', entryPath);
+    if (!info.isDirectory() && (!info.isFile() || info.nlink !== 1n || !fileType(path.basename(target)))) {
+      throw new Error('请选择文档区中的有效文件或文件夹。');
+    }
+    return target;
+  }
+
   async function importPaths(folder, paths) {
     const { target } = await locate('private', folder, 'folder');
     if (paths.length > 16) throw new Error('每次最多导入 16 个文档。');
@@ -189,7 +228,9 @@ function createDocumentLibrary({ profileDir, sharedDir }) {
 
   async function localFile(scope, file) {
     const { target } = await locate(scope, file, 'file');
-    if (!nativeExtensions.has(path.extname(target).toLowerCase())) throw new Error('此文件类型可作为附件读取。');
+    if (!nativeExtensions.has(path.extname(target).toLowerCase())) {
+      throw new Error('此文件类型只能在文档库中作为附件读取，无法调用系统应用打开。');
+    }
     return target;
   }
 
@@ -198,7 +239,7 @@ function createDocumentLibrary({ profileDir, sharedDir }) {
     return target;
   }
 
-  return { list, createFolder, importPaths, readFile, localFile, privateFolder };
+  return { list, createFolder, createFile, importPaths, readFile, localFile, privateFolder, privateEntry };
 }
 
 function registerDocumentLibrary({ ipcMain, dialog, shell, window, origin, token, profileDir, defaultSharedDir,
@@ -210,6 +251,14 @@ function registerDocumentLibrary({ ipcMain, dialog, shell, window, origin, token
   const actions = {
     'somnus-documents:list': (_event, scope, folder) => library.list(scope, folder),
     'somnus-documents:create-folder': (_event, folder, name) => library.createFolder(folder, name),
+    'somnus-documents:create-file': (_event, folder, name, content) => library.createFile(folder, name, content),
+    'somnus-documents:delete-entry': async (event, entryPath) => {
+      const target = await library.privateEntry(entryPath);
+      trustWorkbench(event, window, origin);
+      try { await shell.trashItem(target); }
+      catch { throw new Error('无法将所选项目移到回收站。'); }
+      return library.list('private', pathParts(entryPath).slice(0, -1).join('/'));
+    },
     'somnus-documents:import-files': async (event, folder) => {
       await library.privateFolder(folder);
       const selected = await dialog.showOpenDialog(window, {

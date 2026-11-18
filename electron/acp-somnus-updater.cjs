@@ -18,6 +18,7 @@ const publicFeed = {
   protocol: 'https',
 };
 const releasePage = 'https://github.com/GSXTY/Somnus-Releases/releases';
+const releaseApi = 'https://api.github.com/repos/GSXTY/Somnus-Releases/releases?per_page=30';
 const versionPattern = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})(?:-beta\.(0|[1-9]\d{0,8}))?$/;
 
 function releaseVersion(value) {
@@ -33,28 +34,72 @@ function compareVersions(a, b) {
   return 0;
 }
 
-async function findPublicRelease(currentVersion, request = fetch) {
-  const current = releaseVersion(currentVersion);
-  if (!current) return undefined;
-  const response = await request('https://api.github.com/repos/GSXTY/Somnus-Releases/releases?per_page=30', {
-    headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(8000),
+function newerRelease(tag, current, prerelease = false) {
+  if (typeof tag !== 'string' || !tag.startsWith('v')) return null;
+  const version = tag.slice(1);
+  const parsed = releaseVersion(version);
+  if (!parsed || (current[3] === Infinity && (prerelease || parsed[3] !== Infinity)) ||
+      compareVersions(parsed, current) <= 0) return null;
+  return { tag, version, parsed, installer: `Somnus-Setup-${version}-windows-x64.exe` };
+}
+
+function manualRelease(release) {
+  return release && { version: release.version, url: `${releasePage}/tag/${release.tag}` };
+}
+
+async function publicReleaseFromApi(current, request) {
+  const response = await request(releaseApi, {
+    headers: { Accept: 'application/vnd.github+json' }, credentials: 'omit', signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) throw new Error(errors.check);
   const releases = await response.json();
   if (!Array.isArray(releases)) throw new Error(errors.check);
   let best;
   for (const release of releases) {
-    const tag = release?.tag_name;
-    if (release?.draft !== false || typeof tag !== 'string' || !tag.startsWith('v')) continue;
-    const version = tag.slice(1);
-    const parsed = releaseVersion(version);
-    if (!parsed || (current[3] === Infinity && (release.prerelease || parsed[3] !== Infinity))) continue;
-    if (compareVersions(parsed, current) <= 0 || (best && compareVersions(parsed, best.parsed) <= 0)) continue;
-    const expected = `Somnus-Setup-${version}-windows-x64.exe`;
-    if (!Array.isArray(release.assets) || !release.assets.some(asset => asset?.name === expected && asset.state === 'uploaded')) continue;
-    best = { version, parsed, url: `${releasePage}/tag/${tag}` };
+    if (release?.draft !== false) continue;
+    const candidate = newerRelease(release.tag_name, current, release.prerelease);
+    if (!candidate || (best && compareVersions(candidate.parsed, best.parsed) <= 0)) continue;
+    if (!Array.isArray(release.assets) ||
+        !release.assets.some(asset => asset?.name === candidate.installer && asset.state === 'uploaded')) continue;
+    best = candidate;
   }
-  return best && { version: best.version, url: best.url };
+  return manualRelease(best);
+}
+
+async function publicReleaseFromAtom(current, request) {
+  // Public GitHub API requests can hit a shared rate limit. The repository's
+  // Atom feed lists published tags independently, but does not list assets.
+  const signal = AbortSignal.timeout(12000);
+  const response = await request(`${releasePage}.atom`, {
+    headers: { Accept: 'application/atom+xml' }, credentials: 'omit', signal,
+  });
+  if (!response.ok) throw new Error(errors.check);
+  const atom = await response.text();
+  const feedId = `<id>tag:github.com,2008:${releasePage}</id>`;
+  if (atom.length > 1024 * 1024 || !atom.includes(feedId) || !/<\/feed>\s*$/.test(atom)) throw new Error(errors.check);
+  const candidates = new Map();
+  for (const match of atom.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/g)) {
+    const tag = /<id>tag:github\.com,2008:Repository\/\d+\/(v[\d.a-z-]+)<\/id>/.exec(match[1])?.[1];
+    const release = newerRelease(tag, current);
+    if (release) candidates.set(tag, release);
+  }
+  for (const release of [...candidates.values()].sort((a, b) => compareVersions(b.parsed, a.parsed))) {
+    const asset = await request(`${releasePage}/download/${release.tag}/${release.installer}`, {
+      method: 'HEAD', credentials: 'omit', signal,
+    });
+    if (asset.ok) return manualRelease(release);
+    if (asset.status !== 404) throw new Error(errors.check);
+  }
+}
+
+async function findPublicRelease(currentVersion, request = fetch) {
+  const current = releaseVersion(currentVersion);
+  if (!current) return undefined;
+  try {
+    return await publicReleaseFromApi(current, request);
+  } catch {
+    return publicReleaseFromAtom(current, request);
+  }
 }
 
 function updateUrl(value, allowLoopback = false) {
@@ -138,13 +183,13 @@ function createUpdaterState({ currentVersion, supported, resolveUpdater, publish
         await updater.checkForUpdates();
         if (state.phase === 'checking') set('current');
       } catch (error) {
-        if (publicRelease && error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') {
+        if (publicRelease && ['ERR_UPDATER_CHANNEL_FILE_NOT_FOUND', 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND',
+          'ERR_UPDATER_INVALID_RELEASE_FEED', 'ERR_UPDATER_NO_PUBLISHED_VERSIONS'].includes(error.code)) {
           try {
             const release = await publicRelease();
-            if (release) {
-              set('manual', release);
-              return state;
-            }
+            if (release) set('manual', release);
+            else if (error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') set('current');
+            if (state.phase !== 'checking') return state;
           } catch {
             // Keep the standard update-check error when the release list is inaccessible.
           }

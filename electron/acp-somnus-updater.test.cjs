@@ -123,6 +123,32 @@ test('manual release listing validates version, channel, and asset without trust
   assert.equal((await findPublicRelease('0.3.0', request)).version, '0.3.1');
 });
 
+test('rate-limited public API falls back to published Atom tags and verifies the Windows installer', async () => {
+  const requests = [];
+  const releasePage = 'https://github.com/GSXTY/Somnus-Releases/releases';
+  const tags = ['v0.3.0-beta.10', 'v0.3.0-beta.3', 'v0.3.0-beta.9', 'v0.3.0-beta.8'];
+  const request = async (url, options) => {
+    requests.push(url);
+    assert.equal(options.credentials, 'omit');
+    if (url.startsWith('https://api.github.com/')) return { ok: false, status: 403 };
+    if (url === releasePage + '.atom') return {
+      ok: true,
+      text: async () => `<feed><id>tag:github.com,2008:${releasePage}</id>${tags.map(tag =>
+        `<entry><id>tag:github.com,2008:Repository/1458474107/${tag}</id></entry>`).join('')}</feed>`,
+    };
+    assert.equal(options.method, 'HEAD');
+    return url.includes('/v0.3.0-beta.9/') ? { ok: true } : { ok: false, status: 404 };
+  };
+  assert.deepEqual(await findPublicRelease('0.3.0-beta.7', request), {
+    version: '0.3.0-beta.9', url: releasePage + '/tag/v0.3.0-beta.9',
+  });
+  assert.deepEqual(requests.slice(2), [
+    releasePage + '/download/v0.3.0-beta.10/Somnus-Setup-0.3.0-beta.10-windows-x64.exe',
+    releasePage + '/download/v0.3.0-beta.9/Somnus-Setup-0.3.0-beta.9-windows-x64.exe',
+  ]);
+  assert.equal(await findPublicRelease('0.3.0', request), undefined);
+});
+
 test('signed clients missing an update manifest use the manual-release route', async t => {
   const fixture = await resolveFixture(t, { version: '0.3.0-beta.4', release: {
     provider: 'github', owner: 'GSXTY', repo: 'Somnus-Releases', publisherName: ['Publisher'],

@@ -7,7 +7,8 @@ const { detectManagedCodex, detectManagedCodeBuddy, matchesLaunch } = require('.
 const { modelSummary, reasoningCatalog, sessionModels, setSessionModel, setSessionReasoning, updateSessionConfig,
   validEffort, validId } = require('./acp-models.cjs');
 const { AcpProjectTurn, mayPropose, promptBlocks, projectFileTools, FILE_TOOLS, READ_FILE, PROPOSE_FILE, CREATE_FILE } = require('./acp-project.cjs');
-const { SessionMcp, toolCatalog, catalogSignature, MAX_CALLS } = require('./acp-mcp.cjs');
+const { SessionMcp, toolCatalog, catalogSignature } = require('./acp-mcp.cjs');
+const { DEFAULT_EXECUTION_SETTINGS } = require('./acp-execution-settings.cjs');
 const { AcpLive, permissionOptions, priorTranscript, APPROVAL_QUEUE_LIMIT } = require('./acp-live.cjs');
 const { AcpDeadline } = require('./acp-deadline.cjs');
 const { TEST_TOOL, DIFF_TOOL, POWERSHELL_TOOL } = require('./acp-project-workflow.cjs');
@@ -95,7 +96,8 @@ function offeredLoginMethods(methods, provider, codeBuddy) {
 }
 
 class AcpAgents {
-  constructor(profileFile, version, resourcesPath = process.resourcesPath, openAuthUrl, projectClient, workflow, dshMarket) {
+  constructor(profileFile, version, resourcesPath = process.resourcesPath, openAuthUrl, projectClient, workflow, dshMarket,
+    executionSettings) {
     this.file = profileFile;
     this.version = version;
     this.resourcesPath = resourcesPath;
@@ -103,6 +105,7 @@ class AcpAgents {
     this.projectClient = projectClient;
     this.workflow = workflow;
     this.dshMarket = dshMarket;
+    this.executionSettings = executionSettings;
     this.queue = Promise.resolve();
     this.active = null;
     this.conversations = new Map();
@@ -193,9 +196,7 @@ class AcpAgents {
 
   async profile(id) {
     if (id === COMPANY_AGENT_ID) {
-      const profile = await this.dshMarket?.launch();
-      if (!profile) throw new AcpError('公司 Agent 运行时未就绪。');
-      return { ...profile, id, name: '公司默认' };
+      throw new AcpError('公司默认模型使用 Somnus 的 DSH 原生会话。');
     }
     const profile = (await this.list()).find(item => item.id === id);
     if (!profile) throw new AcpError('找不到外部 Agent。');
@@ -237,7 +238,8 @@ class AcpAgents {
     if (isCompany) {
       try {
         company = await companyProfile(cwd, dshProfile, owner.project?.prepared.company_model,
-          this.projectClient.companyEndpoint(owner.conversationId, owner.turnId));
+          this.projectClient.companyEndpoint(owner.conversationId, owner.turnId), this.dshMarket?.home,
+          owner.executionSettings?.loop.maxConcurrent);
       } catch (error) {
         await removeCompanyProfile(cwd).catch(() => {});
         await rmdir(cwd).catch(() => {});
@@ -448,13 +450,27 @@ class AcpAgents {
       }
       return;
     }
+    if (update?.sessionUpdate === 'agent_thought_chunk') {
+      // The ACP thought event carries private reasoning text in some adapters.
+      // Only the presence of the event is shown to the user.
+      if (update.content?.type === 'text' && typeof update.content.text === 'string' && update.content.text) {
+        turn.live?.setStage('thinking');
+      }
+      return;
+    }
     if (update?.sessionUpdate !== 'agent_message_chunk') {
       turn.recommendation?.observe(update);
       this.trackProjectPreflight(current, turn, update);
       const prefix = current.managedDsh && current.mcpName ? 'mcp__' + current.mcpName + '__' : '';
-      const name = prefix && typeof update?.title === 'string' && update.title.startsWith(prefix)
+      const dshName = prefix && typeof update?.title === 'string' && update.title.startsWith(prefix)
         ? update.title.slice(prefix.length) : '';
-      turn.live?.update(update, undefined, current.mcp?.catalog.has(name) ? name : undefined);
+      const input = update?.rawInput;
+      const codexName = current.managedCodex && current.mcpName && update?._meta?.is_mcp_tool_call === true &&
+        input?.server === current.mcpName && typeof input.tool === 'string' &&
+        update.title === `mcp.${current.mcpName}.${input.tool}` ? input.tool : '';
+      const name = dshName || codexName;
+      const activity = codexName ? { ...update, rawInput: input.arguments } : update;
+      turn.live?.update(activity, undefined, current.mcp?.catalog.has(name) ? name : undefined);
       return;
     }
     if (params.update.content?.type !== 'text') return;
@@ -465,7 +481,10 @@ class AcpAgents {
       return;
     }
     turn.text += text;
-    if (text.trim()) turn.deadline?.progress();
+    if (text.trim()) {
+      turn.deadline?.progress();
+      turn.live?.setStage('responding');
+    }
     turn.onUpdate({ agentId: turn.agentId, text,
       ...(turn.conversationId ? { conversationId: turn.conversationId } : {}) });
   }
@@ -479,7 +498,8 @@ class AcpAgents {
       if (update.status === 'completed' || update.status === 'failed') calls.set(id, false);
       return;
     }
-    if (calls.size >= MAX_CALLS || update.sessionUpdate !== 'tool_call' || update.kind !== 'execute' ||
+    if (calls.size >= (turn.executionSettings ?? DEFAULT_EXECUTION_SETTINGS).loop.maxCalls ||
+        update.sessionUpdate !== 'tool_call' || update.kind !== 'execute' ||
         !['pending', 'in_progress'].includes(update.status) || update._meta?.is_mcp_tool_call !== true ||
         update._meta.terminal_info != null) return;
     const input = update.rawInput;
@@ -659,7 +679,9 @@ class AcpAgents {
       for (const session of sessions) session.connection.stop();
       await Promise.all(sessions.map(session => session.connection.exited));
       validateSender();
+      if (market === 'chat') return await communityOptions.install();
       if (market === 'community') return await this.dshMarket.communitySetEnabled(id, enabled, validateSender, communityOptions);
+      if (market === 'uninstall') return await this.dshMarket.uninstallInstalledPlugin(id, communityOptions.source, validateSender, communityOptions);
       if (market === 'installed') {
         return await this.dshMarket.setInstalledEnabled(id, communityOptions.source, enabled, validateSender, communityOptions);
       }
@@ -705,7 +727,8 @@ class AcpAgents {
     if (this.turns.size >= MAX_CONCURRENT_TURNS) throw new AcpError('最多同时运行 4 条外部 Agent 聊天。');
     const abort = new AbortController();
     const turn = { agentId: id, conversationId, turnId, text: '', onUpdate, cancelled: false, current: null, abort, signal: abort.signal };
-    if (conversationId && turnId) turn.live = new AcpLive(turn, MAX_CALLS);
+    turn.executionSettings = this.executionSettings?.get() ?? DEFAULT_EXECUTION_SETTINGS;
+    if (conversationId && turnId) turn.live = new AcpLive(turn, turn.executionSettings.loop.maxCalls);
     let promptUsage;
     const resultWith = (stopReason, model = { modelId: null, modelName: null }) => ({
       text: turn.text, stopReason, ...(conversationId ? model : {}),
@@ -721,6 +744,7 @@ class AcpAgents {
     let ready = Boolean(current);
     let sent = false;
     try {
+      turn.live?.setStage('preparing');
       if (turnId) {
         if (!this.projectClient) throw new AcpError('本机服务无法验证此外部 Agent 请求。');
         const prepared = await this.projectClient.prepare(turn, turn.signal);
@@ -748,6 +772,7 @@ class AcpAgents {
         ready = false;
       }
       if (!current || current.agentId !== id) {
+        turn.live?.setStage('connecting');
         current?.connection.stop();
         current = null;
         turn.current = null;
@@ -780,7 +805,7 @@ class AcpAgents {
         prompt[0].text += `\n\n需要运行项目测试或检查时，使用 ${current.mcpName} 的 run_project_tests 选择已配置的运行器。每次调用由用户在当前聊天中确认。测试读取实际项目目录，待审批的修改候选尚未应用。`;
       }
       if (turn.tools.some(tool => tool.name === POWERSHELL_TOOL)) {
-        prompt[0].text += `\n\n此会话已启用完全访问。使用 ${current.mcpName} 的 run_powershell 提出需要执行的 Windows PowerShell 命令。每条命令由用户确认后，以当前 Windows 用户权限在绑定项目中运行。使用工具返回的输出与退出码报告结果。`;
+        prompt[0].text += `\n\n此会话已启用完全访问。使用 ${current.mcpName} 的 run_powershell 在绑定项目中执行 Windows PowerShell 命令。该工具以当前 Windows 用户权限直接运行。使用工具返回的输出与退出码报告结果。`;
       }
       if (turn.tools.some(tool => tool.name === DIFF_TOOL)) {
         prompt[0].text += `\n\n使用 ${current.mcpName} 的 project_git_diff 查看授权项目内已暂存和未暂存的 Git 差异。仅查看指定文件时，请传入精确的仓库相对路径 path。`;
@@ -792,6 +817,7 @@ class AcpAgents {
         prompt[0].text += `\n\n使用 ${current.mcpName} 的 read_project_file 读取项目文件。指定来源（如 source_1）和相对文件路径。不要尝试通过终端读取。`;
       }
       if (turn.tools.some(tool => tool.name === PROPOSE_FILE)) {
+        if (!mayPropose(prepared)) prompt[0].text += '\n\n当前会话为只读。需要写入真实项目时，请通过下列文件候选工具请求用户逐项批准，无需切换会话权限。';
         prompt[0].text += `\n\n修改现有文件时，使用 ${current.mcpName} 的 propose_project_file_edit，传入读取返回的 sha256 和新文件全文。候选创建后请告知用户在 Somnus 审核应用。用户应用前，原文件、Git 差异和测试仍反映磁盘旧内容。`;
       }
       if (turn.tools.some(tool => tool.name === CREATE_FILE)) {
@@ -815,6 +841,7 @@ class AcpAgents {
           ? '外部 Agent 已达到本轮最长处理时间。'
           : '外部 Agent 长时间没有有效进度，已结束本轮。'));
       });
+      turn.live?.setStage('working');
       const response = await current.connection.request('session/prompt', {
         sessionId: current.sessionId,
         prompt,
