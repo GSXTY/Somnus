@@ -1,4 +1,17 @@
-# Somnus v0.3.0-beta.8
+# Somnus v0.3.0-beta.9
+
+Windows x64 桌面试用版。请在[发布页](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.9)下载 `Somnus-Setup-0.3.0-beta.9-windows-x64.exe`；同名 `.sha256` 文件用于校验下载内容。
+
+- 桌面宿主切换到 DSH Next 架构，保留 Somnus 工作台、项目会话与多 Agent 协作。
+- 公司数据库和 Text-to-SQL 通过默认 MCP 接入，继续使用已配置的数据来源和访问权限。
+- 更新插件、Skill、MCP 管理和会话执行过程展示。
+- 保留呼吸波形查看、工程候选标记、人工复核和历史批次入口。
+
+安装前，请先从系统托盘退出正在运行的 Somnus。升级保留用户配置和历史数据；首次使用的数据连接、账号和访问令牌需由使用者自行配置。安装包不包含开发者的账号凭据、真实记录或本机数据库。
+
+本版本为未签名的 Windows x64 预览版，提供手动下载安装。[对应构建源码](https://github.com/GSXTY/Somnus/commit/f0d128ca2b3ec35af9bea0fc642cb66a11644929)
+
+## v0.3.0-beta.8
 
 Windows x64 桌面试用版。下载安装程序，退出托盘中正在运行的 Somnus 后安装。
 
