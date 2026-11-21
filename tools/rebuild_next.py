@@ -74,7 +74,6 @@ def main():
         for script, arguments in (
             (frontend / 'node_modules/typescript/bin/tsc', ['--noEmit']),
             (frontend / 'node_modules/vite/bin/vite.js', ['build']),
-            (frontend / 'scripts/make-embed.mjs', []),
         ):
             subprocess.run([node, str(script), *arguments], cwd=frontend, env=env, check=True)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')

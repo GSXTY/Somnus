@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { makeEmbed } from './scripts/make-embed.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function files(folder, prefix = '') {
  const rows = [];
@@ -18,7 +19,8 @@ export function frontendBuildManifest() {
  return { name: 'somnus-verified-build-manifest', apply: 'build',
   configResolved(config) { root = config.root; output = path.resolve(root, config.build.outDir); },
   async closeBundle() {
-   const sources = ['package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts', 'build-manifest.mjs'];
+   await makeEmbed(output);
+   const sources = ['package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts', 'build-manifest.mjs', 'index.html', 'scripts/make-embed.mjs'];
    for (const directory of ['src', 'public']) {
     const location = path.join(root, directory);
     const info = await lstat(location).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
