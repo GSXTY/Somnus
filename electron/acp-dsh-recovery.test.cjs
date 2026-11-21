@@ -58,6 +58,13 @@ test('draft storage encrypts text and retains the latest requested write', async
     assert.equal(restoredQueue[0].draft.text, row.draft.text);
     assert.equal(restoredQueue[0].draft.attachments[0].data_url, draftImage.data_url);
     assert.deepEqual(restoredQueue[0].route, row.route);
+    const member = { ...row, route: { nativeDsh: false, memberOnly: true,
+      agent: { agentId: '12345678-1234-1234-1234-123456789abc', agentName: 'Fixture Codex' } } };
+    await queue.save(cid, [member]);
+    assert.deepEqual((await queueStore(home, storage).read(cid))[0].route, member.route);
+    await assert.rejects(queue.save(cid, [{ ...member, route: { ...member.route, memberOnly: 'true' } }]), /目标无效/);
+    await assert.rejects(queue.save(cid, [{ ...member, route: { ...member.route, nativeDsh: true } }]), /目标无效/);
+    await assert.rejects(queue.save(cid, [{ ...member, route: { nativeDsh: false, memberOnly: true } }]), /目标无效/);
     assert.equal(await queue.read('f'.repeat(32)), null);
     assert.equal((await readFile(path.join(home, 'somnus-queues', cid + '.bin'))).includes(Buffer.from(row.draft.text)), false);
     await assert.rejects(queue.save(cid, [row, row]), /排队消息格式无效/);

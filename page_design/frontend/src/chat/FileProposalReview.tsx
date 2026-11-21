@@ -1,0 +1,197 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Button, Modal, Segmented, Space } from 'antd';
+import { FolderOpenOutlined } from '@ant-design/icons';
+import { decideFileProposal, listFileProposals } from './assistantApi';
+import { lineCounts, unifiedFileDiff } from './fileProposalDiff';
+import { personalDocumentsChangedEvent } from '../documents/documentLibraryBridge';
+import type { ChatMessage, FileProposal } from './assistantApi';
+import { describeError } from '../shared/errors.mjs';
+
+export function useFileProposals(conversationId?: string, latest?: FileProposal[]) {
+  const [stored, setStored] = useState<{ id: string; items: FileProposal[] }>();
+  useEffect(() => {
+    if (!conversationId) return;
+    let alive = true;
+    listFileProposals(conversationId).then(items => {
+      if (alive) setStored(current => {
+        if (current?.id !== conversationId) return { id: conversationId, items };
+        const merged = new Map(items.map(item => [item.id, item]));
+        for (const item of current.items) if (!merged.has(item.id) || item.status !== 'pending') merged.set(item.id, item);
+        return { id: conversationId, items: [...merged.values()] };
+      });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [conversationId]);
+  const items = new Map((latest || []).map(item => [item.id, item]));
+  if (stored && stored.id === conversationId) for (const item of stored.items) {
+    items.set(item.id, { ...items.get(item.id), ...item });
+  }
+  function record(result: FileProposal) {
+    if (!conversationId) return;
+    const updated = { ...items.get(result.id), ...result };
+    setStored(current => ({
+      id: conversationId,
+      items: [...(current?.id === conversationId ? current.items : []).filter(item => item.id !== result.id), updated],
+    }));
+  }
+  return { items: [...items.values()], record };
+}
+
+export function associateFileProposals(items: FileProposal[], messages: ChatMessage[]) {
+  const byReply = new Map<string, FileProposal[]>();
+  const legacy: FileProposal[] = [];
+  const replies = new Set(messages.filter(message => message.role === 'assistant').map(message => message.id));
+  for (const item of items) {
+    let replyId = item.assistant_message_id;
+    if (!replyId && Number.isFinite(item.created_at)) {
+      // A proposal is created within its turn, after its assistant row and before the next message.
+      for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (message.created_at > item.created_at) continue;
+        if (message.created_at < item.created_at && message.role === 'assistant') replyId = message.id;
+        break;
+      }
+    }
+    if (replyId && replies.has(replyId)) byReply.set(replyId, [...(byReply.get(replyId) || []), item]);
+    else legacy.push(item);
+  }
+  return { byReply, legacy };
+}
+
+const proposalLabels = { pending: '审阅写入申请', applied: '已应用', rejected: '已拒绝' };
+
+function proposalPath(item: FileProposal) {
+  if (!item.source_folder) return item.path;
+  const separator = /^[A-Za-z]:|^\\\\/.test(item.source_folder) ? '\\' : '/';
+  return item.source_folder.replace(/[\\/]+$/, '') + separator + item.path.replace(/[\\/]/g, separator);
+}
+
+function FileProposalLocation({ reveal }: { reveal: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function locate() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try { await reveal(); }
+    catch (failure) { setError(describeError(failure, '无法在文件资源管理器中定位文件')); }
+    finally { setBusy(false); }
+  }
+  const label = '在文件资源管理器中定位';
+  return <>
+    <Button className="assistant-file-reveal" type="text" size="small" icon={<FolderOpenOutlined />}
+      aria-label={label} title={label} loading={busy} onClick={() => void locate()} />
+    {error && <small className="assistant-file-reveal-error" role="alert">{error}</small>}
+  </>;
+}
+
+export function FileChangeCards({ conversationId, items, onPreview }: {
+  conversationId?: string; items: FileProposal[]; onPreview: (item: FileProposal) => void;
+}) {
+  if (!items.length) return null;
+  const reveal = window.vvmanProjects?.revealProposal;
+  const paths = new Map<string, FileProposal[]>();
+  for (const item of items) {
+    const key = JSON.stringify([item.source_folder, item.path]);
+    paths.set(key, [...(paths.get(key) || []), item]);
+  }
+  return <div className="assistant-file-changes" aria-label="文件修改">
+    {[...paths.entries()].map(([key, proposals]) => {
+      const ordered = proposals.sort((a, b) => b.created_at - a.created_at);
+      const item = ordered.find(proposal => proposal.status === 'pending') || ordered[0];
+      const counts = lineCounts(item.old_content, item.new_content);
+      const path = proposalPath(item);
+      return <div className="assistant-file-change" key={key}>
+        <button className="assistant-file-diff" type="button" onClick={() => onPreview(item)} title={path}>
+          <span>{item.path}{item.source_folder && <small className="assistant-file-source">{item.source_folder}</small>}</span>
+          {counts && <><span className="file-change-added" aria-label={'新增 ' + counts.added + ' 行'}>+{counts.added}</span><span className="file-change-removed" aria-label={'删除 ' + counts.removed + ' 行'}>−{counts.removed}</span></>}
+          <small>{proposalLabels[item.status]}</small>
+        </button>
+        {conversationId && reveal && item.status === 'applied' &&
+          <FileProposalLocation key={item.id} reveal={() => reveal(conversationId, item.id)} />}
+        {ordered.length > 1 && <details><summary>此文件的其他修改</summary>{ordered.filter(proposal => proposal !== item).map(proposal =>
+          <Button key={proposal.id} type="text" size="small" onClick={() => onPreview(proposal)}>{proposalLabels[proposal.status]}</Button>)}</details>}
+      </div>;
+    })}
+  </div>;
+}
+
+export function FileProposalReview({ conversationId, preview, onClose, onDecision, inline = false }: {
+  conversationId: string;
+  preview?: FileProposal;
+  onClose: () => void;
+  onDecision: (item: FileProposal) => void;
+  inline?: boolean;
+}) {
+  const [view, setView] = useState<'diff' | 'full'>('diff');
+  const [approved, setApproved] = useState<FileProposal>();
+  const item = approved?.id === preview?.id ? approved || preview : preview;
+  const diff = useMemo(() => item ? unifiedFileDiff(item.old_content, item.new_content) : null, [item]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const open = window.vvmanProjects?.openApprovedFile;
+  async function decide(action: 'approve' | 'reject') {
+    if (!preview || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await decideFileProposal(conversationId, preview.id, action);
+      if (action === 'approve' && result.status === 'applied') {
+        window.dispatchEvent(new Event(personalDocumentsChangedEvent));
+        setApproved(result);
+      }
+      onDecision(result);
+      if (action !== 'approve' || result.status !== 'applied') onClose();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '文件修改操作失败');
+    } finally { setBusy(false); }
+  }
+  async function openFile() {
+    if (!open || item?.status !== 'applied' || busy) return;
+    setBusy(true);
+    setError('');
+    try { await open(conversationId, item.id); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : '无法打开已保存的文件'); }
+    finally { setBusy(false); }
+  }
+  const creating = item?.operation === 'create';
+  const applied = item?.status === 'applied';
+  const title = applied ? '文件已保存' : creating ? '审阅新建文件' : '审阅文件修改';
+  const footer = item?.status === 'pending' ? <Space wrap>
+        <Button disabled={busy} onClick={() => void decide('reject')}>{creating ? '拒绝创建' : '拒绝修改'}</Button>
+        <Button type="primary" loading={busy} onClick={() => void decide('approve')}>{creating ? '批准并创建' : '批准并写入'}</Button>
+      </Space> : <Space><Button disabled={busy} onClick={onClose}>关闭</Button>
+        {applied && open && <Button type="primary" loading={busy} onClick={() => void openFile()}>打开文件</Button>}
+      </Space>;
+  const content = <>
+      {item && <p className="assistant-proposal-path"><strong>{applied ? item.source_folder ? '实际保存路径' : '项目相对路径' : '目标路径'}</strong><code>{proposalPath(item)}</code></p>}
+      <Segmented<'diff' | 'full'> aria-label="文件比较视图" value={view} onChange={setView}
+        options={[{ label: '变更差异', value: 'diff' }, { label: '完整内容', value: 'full' }]} />
+      {view === 'full' ? <div className="proposal-comparison">
+        <section><h3>原内容</h3><pre tabIndex={0}>{creating ? '创建前没有文件' : item?.old_content ?? '新文件'}</pre></section>
+        <section><h3>{applied ? '保存内容' : '建议内容'}</h3><pre tabIndex={0}>{item?.new_content}</pre></section>
+      </div> : !diff ? <p>差异较大，请切换到「完整内容」查看。</p> : !diff.length ? <p>
+        {creating ? (applied ? '已创建空文件。' : '将创建一个空文件。') :
+          item?.old_content === item?.new_content ? '没有内容变更。' : '没有逐行差异。文件换行格式或文件状态可能已变化。'}
+      </p> : <div className="proposal-unified-diff" role="region" aria-label="文件逐行差异" tabIndex={0}>
+        {diff.map((hunk, index) => <section key={index}>
+          {hunk.omittedBefore > 0 && <div className="proposal-diff-omitted">已折叠 {hunk.omittedBefore} 行未修改内容</div>}
+          <div className="proposal-diff-header"><code>{hunk.header}</code></div>
+          {hunk.rows.map((line, rowIndex) => <div className="proposal-diff-line" data-change={line.kind} key={rowIndex}>
+            <span>{line.oldNumber}</span><span>{line.newNumber}</span>
+            <code>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}</code><code>{line.text}</code>
+          </div>)}
+          {hunk.omittedAfter > 0 && <div className="proposal-diff-omitted">已折叠 {hunk.omittedAfter} 行未修改内容</div>}
+        </section>)}
+      </div>}
+      {error && <Alert type="error" showIcon message={error} />}
+    </>;
+  if (inline) return item ? <section className="workspace-inline-review" aria-label={title}>
+    <h3>{title}</h3>
+    {content}
+    <div className="workspace-inline-actions">{footer}</div>
+  </section> : null;
+  return <Modal title={title} width={850} open={Boolean(item)}
+    onCancel={() => { if (!busy) onClose(); }} closable={!busy} keyboard={!busy} maskClosable={!busy}
+    footer={footer}>{content}</Modal>;
+}

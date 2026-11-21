@@ -43,15 +43,17 @@ async function write(file, data, limit = MAX_BYTES) {
   }
 }
 
-function validQuestion(record, cid, rid) {
+function validQuestion(record, cid, rid, verifiedSessionId) {
   return record?.conversationId === cid && record.requestId === rid && ID.test(record.turnId ?? '') &&
-    new RegExp('^somnus-' + cid + '-[a-f0-9]{12}$').test(record.sessionId ?? '') &&
+    (new RegExp('^somnus-' + cid + '-[a-f0-9]{12}$').test(record.sessionId ?? '') ||
+      typeof verifiedSessionId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$/.test(verifiedSessionId) && record.sessionId === verifiedSessionId) &&
     typeof record.callId === 'string' && record.callId.length > 0 && record.callId.length <= 256;
 }
 
-async function rememberQuestion(home, record) {
+async function rememberQuestion(home, record, verifySession) {
+  const verified = verifySession && await verifySession(record) === true ? record.sessionId : undefined;
   if (!ID.test(record.conversationId) || !ID.test(record.requestId) ||
-      !validQuestion(record, record.conversationId, record.requestId)) return;
+      !validQuestion(record, record.conversationId, record.requestId, verified)) return;
   const root = await folder(home, ['somnus-questions', record.conversationId], true);
   await write(path.join(root, record.requestId + '.json'), JSON.stringify(record));
 }
@@ -66,7 +68,7 @@ async function forgetQuestion(home, cid, rid) {
   }
 }
 
-async function savedQuestions(home, cid) {
+async function savedQuestions(home, cid, verifySession) {
   if (!ID.test(cid)) return [];
   try {
     const root = await folder(home, ['somnus-questions', cid], false);
@@ -76,7 +78,8 @@ async function savedQuestions(home, cid) {
       try {
         const buffer = await read(path.join(root, file));
         const entry = buffer && JSON.parse(buffer.toString('utf8'));
-        if (validQuestion(entry, cid, file.slice(0, -5))) output.push(entry);
+        const verified = entry && verifySession && await verifySession(entry) === true ? entry.sessionId : undefined;
+        if (validQuestion(entry, cid, file.slice(0, -5), verified)) output.push(entry);
       } catch { /* Ignore an incomplete or unreadable record. */ }
     }
     return output;
@@ -243,6 +246,12 @@ function queueShape(values) {
     if (item.route.agent != null) {
       route.agent = queueOptions(item.route.agent, ['agentId', 'agentName', 'modelId', 'modelName']);
       if (!ID.test(route.agent.agentId ?? '') || !route.agent.agentName) throw new Error('排队消息的 Agent 无效。');
+    }
+    if (item.route.memberOnly !== undefined) {
+      if (typeof item.route.memberOnly !== 'boolean' || (item.route.memberOnly && (!route.agent || route.nativeDsh))) {
+        throw new Error('排队消息的会话 Agent 目标无效。');
+      }
+      route.memberOnly = item.route.memberOnly;
     }
     if (item.route.companyOptions != null) {
       route.companyOptions = queueOptions(item.route.companyOptions, ['model', 'effort']);

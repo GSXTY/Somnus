@@ -9,12 +9,13 @@ import subprocess
 import sys
 
 from app_version import APP_VERSION
+from storage_paths import artifact_path
 from build_macos import copy_notices
 
 
 ROOT = Path(__file__).resolve().parent
 ELECTRON = ROOT / 'electron'
-BUILD = ROOT / 'build' / 'electron'
+BUILD = artifact_path('build', 'electron')
 
 
 def build_backend():
@@ -41,7 +42,7 @@ def build_shell(directory_only, runtime):
     notices = BUILD / 'THIRD_PARTY_LICENSES'
     notices.mkdir(parents=True, exist_ok=True)
     copy_notices(notices)
-    command = [pnpm, 'exec', 'electron-builder', '--publish', 'never',
+    command = [pnpm, 'exec', 'electron-builder', '--publish', 'never', '--config', str(ELECTRON / 'electron-builder.config.cjs'),
                '--arm64' if platform.machine() == 'arm64' else '--x64']
     if directory_only:
         command.append('--dir')
@@ -76,6 +77,8 @@ def main():
         parser.error('--next-extracted 和 --next-installer 需要一起提供')
     if args.next_extracted and (sys.platform != 'win32' or args.backend_only or args.runtime):
         parser.error('DSH Next 构建需要 Windows，且不能同时使用 --backend-only 或 --runtime')
+    subprocess.run([sys.executable, str(ROOT / 'tools/platform_gate.py'), 'check',
+                    '--report', str(BUILD / 'platform-gate.json')], cwd=ROOT, check=True)
     if not args.shell_only:
         build_backend()
     if args.next_extracted:

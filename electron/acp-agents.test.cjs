@@ -11,7 +11,7 @@ const { eligibleAuthUrl } = require('./acp-ipc.cjs');
 test('delegation uses a fresh tool-free ACP session for the confirmed managed target', { skip: process.platform !== 'win32' }, async t => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'vvman-delegation-test-'));
   const fixture = path.join(__dirname, 'test-fixtures', 'acp-test-agent.cjs');
-  const launch = { executable: await realpath(process.execPath), args: [fixture] };
+  const launch = { executable: await realpath(process.execPath), args: [fixture, '--dsh-account'] };
   const dsh = { launch: async () => launch, profile: async () => ({ bundles: [] }), home: workspace };
   const agents = new AcpAgents(path.join(workspace, 'agents.json'), '1.0.0', workspace, undefined, undefined, undefined, dsh);
   t.after(async () => {
@@ -30,7 +30,7 @@ test('delegation uses a fresh tool-free ACP session for the confirmed managed ta
   assert.match(first.text, /复核统计口径/);
   assert.match(first.text, /仅有汇总数据/);
   assert.equal(first.text, second.text);
-  assert.match(second.text, /\(1\)$/);
+  assert.match(second.text, /\(1\)/);
   assert.equal(agents.conversations.size, 0);
 });
 
@@ -213,6 +213,8 @@ test('parallel managed ACP chats isolate startup, tools, approvals, cancellation
   t.after(async () => {
     agents.close();
     await Promise.all([...children].map(connection => connection.exited));
+    const fixtureErrors = await readFile(path.join(path.dirname(script), 'fixture-errors.log'), 'utf8').catch(() => '');
+    if (fixtureErrors) console.error('Synthetic concurrent ACP fixture:', fixtureErrors);
     await rm(workspace, { recursive: true, force: true, maxRetries: 5 });
   });
   await mkdir(path.dirname(script), { recursive: true });
@@ -399,4 +401,61 @@ test('ACP supports advertised account choices without persisting credentials', {
   assert.ok((await agents.list()).some(profile => profile.id === existingOpenma.id));
   assert.ok(!(await readFile(registry, 'utf8')).includes('mock-key-value'));
   assert.equal((await agents.probe(dsh.id)).authentication, 'unverified');
+});
+
+test('managed DSH verification, discovery and group prompts select account routes, not the API-key default', { skip: process.platform !== 'win32' }, async t => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'somnus-dsh-route-test-'));
+  const fixture = path.join(__dirname, 'test-fixtures', 'acp-test-agent.cjs');
+  const launch = { executable: await realpath(process.execPath), args: [fixture, '--dsh-account'] };
+  const dsh = { launch: async () => launch, profile: async () => ({ bundles: [] }), home: workspace };
+  const agents = new AcpAgents(path.join(workspace, 'agents.json'), 'test', workspace, undefined, undefined, undefined, dsh);
+  t.after(async () => { agents.close(); await rm(workspace, { recursive: true, force: true, maxRetries: 5 }); });
+  const profile = await agents.save({ ...launch, name: 'DSH Account Fixture' });
+  assert.equal((await agents.probe(profile.id)).authentication, 'ready');
+  const flash = JSON.stringify(['deepseek-account', 'deepseek-flash']);
+  const pro = JSON.stringify(['deepseek-account', 'deepseek-pro']);
+  const catalog = await agents.discoverModels(profile.id);
+  assert.equal(catalog.modelId, flash);
+  assert.deepEqual(catalog.models.map(m => m.id), [flash, pro]);
+  const oldSelection = JSON.stringify(['deepseek-official', 'deepseek-flash']);
+  const reply = await agents.runPrompt(profile.id, 'synthetic', () => {}, 'group-one', oldSelection, undefined, undefined, true);
+  assert.equal(reply.stopReason, 'end_turn');
+  assert.equal(reply.modelId, flash);
+  const selectedPro = await agents.runPrompt(profile.id, 'synthetic', () => {}, 'group-one', pro, undefined, undefined, true);
+  assert.equal(selectedPro.modelId, pro);
+  await assert.rejects(agents.discoverModels(profile.id, 'stale-model'), /账户提供的列表/);
+  // A Somnus Provider / arbitrary ACP session must retain its own API route.
+  const apiSession = { cwd: workspace, dshAccount: false, connection: { request: async method => {
+    assert.equal(method, 'session/new');
+    return { sessionId: 'provider', models: { currentModelId: 'api', availableModels: [{ modelId: 'api', name: 'API' }] } };
+  } } };
+  await agents.startSession(apiSession);
+  assert.equal(apiSession.modelSelection.modelId, 'api');
+});
+
+
+test('ACP runtime task policy keeps silent requests alive, honors explicit cap and never resubmits on process exit', {skip:process.platform!=='win32',timeout:15_000}, async t=>{
+ const home=await mkdtemp(path.join(os.tmpdir(),'somnus-acp-policy-'));
+ let cap=0;
+ const market={launch:async()=>null,ownsLaunch:async()=>false,runtimePolicy:{get:()=>({tasks:{maxDurationMinutes:cap,idleWarningSeconds:30,disconnectTimeoutSeconds:15}})}};
+ const agents=new AcpAgents(path.join(home,'agents.json'),'1.0.0',home,undefined,undefined,undefined,market);
+ t.after(async()=>{agents.close();await rm(home,{recursive:true,force:true,maxRetries:5});});
+ const profile=await agents.save({name:'Synthetic policy ACP',executable:process.execPath,args:[path.join(__dirname,'test-fixtures/acp-test-agent.cjs')]});
+ const active=async()=>{for(let tries=0;tries<100;tries++){const turn=[...agents.turns.values()].find(item=>item.promptActive&&item.deadline);if(turn)return turn;await delay(20);}throw Error('Synthetic prompt did not become active');};
+ const updates=[];
+ const pending=agents.prompt(profile.id,'cancel me',value=>updates.push(value));
+ const turn=await active();
+ const start=turn.deadline.lastTick;turn.deadline.clock=()=>start+13*60_000;turn.deadline.schedule();
+ assert.equal(turn.deadline.hardAt,Infinity);assert.equal(turn.cancelled,false);assert.equal(turn.current.connection.failure,undefined);
+ assert(updates.some(value=>value.acpDiagnostic?.code==='idle'));
+ agents.cancel();assert.equal((await pending).stopReason,'cancelled');
+ cap=1;
+ const limited=agents.prompt(profile.id,'cancel me',()=>{});const limitedRejected=assert.rejects(limited,/最长处理时间/);
+ const capped=await active();const at=capped.deadline.lastTick;capped.deadline.clock=()=>at+60_001;capped.deadline.schedule();
+ await limitedRejected;
+ cap=0;
+ const broken=agents.prompt(profile.id,'cancel me',()=>{});const brokenRejected=assert.rejects(broken,/退出|断开|连接/);
+ const disconnected=await active();const child=disconnected.current.connection.child;
+ child.kill();await brokenRejected;assert.equal(agents.turns.size,0);
+ await delay(60);assert.equal(agents.turns.size,0);
 });

@@ -1,3 +1,6 @@
+const {slotAdapter,summarize}=require('./runtime/plugin-slot-adapters.cjs');
+const { ownedDocument: declarativeDocument } = require('./runtime/declarative-ui.cjs');
+const { pluginContract } = require('./runtime/plugin-contract.cjs');
 const { randomUUID } = require('node:crypto');
 const { lstat, open, realpath } = require('node:fs/promises');
 const path = require('node:path');
@@ -47,6 +50,7 @@ async function ownedPages(market, pluginId) {
   for (const name of profile.bundles) {
     if (typeof name !== 'string' || name.startsWith('@deepseek-ai/')) continue;
     const installed = await market.community.installed(profile, name);
+    try { pluginContract(installed, market.appVersion); } catch { continue; }
     const declared = installed?.dsh?.somnus?.pages;
     if (!Array.isArray(declared) && !installed?.dsh?.client) continue;
     const root = await market.community.packageRoot(profile, name);
@@ -74,6 +78,68 @@ async function ownedPages(market, pluginId) {
   return pages.filter(page => (!pluginId || page.pluginId === pluginId) && (!page.legacy || !pages.some(other =>
     other.pluginId !== page.pluginId && other.legacy &&
     (other.legacy.key === page.legacy.key || labels(other).some(label => labels(page).includes(label))))));
+}
+
+const RECOMMENDATION_PLUGIN = '@deepseek-ai/dsh-personalized-recommendations';
+function extensionLabel(value, fallback) {
+  return typeof value === 'string' && value.trim() && value.length <= 100 && !/[\x00-\x1f\x7f]/.test(value) ? value.trim() : fallback;
+}
+
+async function pluginExtensions(market, pluginId) {
+  if (pluginId != null && (typeof pluginId !== 'string' || pluginId.length > 200)) return [];
+  const profile = await market.webProfile();
+  if (!profile) return [];
+  const pages = await ownedPages(market, pluginId);
+  const result = new Map();
+  const put = row => { if (result.size < 256) result.set(row.id, row); };
+  for (const page of pages) {
+    for (const slot of ['settings', ...(page.sidebar ? ['sidebar'] : [])]) put({
+      id: page.id + ':' + slot, pluginId: page.pluginId, label: page.label, slot,
+      renderer: 'page', pageId: page.id, compatibility: 'ready',
+    });
+  }
+  for (const name of profile.bundles.slice(0, 128)) {
+    if (typeof name !== 'string' || pluginId && pluginId !== name) continue;
+    if (name === RECOMMENDATION_PLUGIN) {
+      put({ id: name + '#recommendation:chat-card', pluginId: name, label: '个性化推荐', slot: 'chat-card',
+        renderer: 'recommendation', compatibility: 'ready', description: '使用 Somnus 已适配的推荐卡片格式显示在回复下方。' });
+      continue;
+    }
+    if (name.startsWith('@deepseek-ai/')) continue;
+    const installed = await market.community.installed(profile, name);
+    if (!installed) continue;
+    const declarations = installed.dsh?.somnus?.extensions;
+    const seen = new Set();
+    for (const entry of (Array.isArray(declarations) ? declarations : []).slice(0, 16)) {
+      if (!ID.test(entry?.id ?? '') || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      let slot = ['settings', 'sidebar', 'chat-card'].includes(entry.slot) ? entry.slot : 'settings';
+      const renderer = entry.renderer === 'declarative' ? 'declarative' : entry.renderer === 'recommendation' ? 'recommendation' : 'page';
+      const adapter=slotAdapter(entry.slot,renderer);if(adapter)slot=adapter.slot;
+      let document;
+      if (renderer === 'declarative') { try { document = declarativeDocument(entry.document, name); } catch { /* Invalid declarations remain unsupported without executing code. */ } }
+      const relative = entry.pageId ?? entry.page;
+      const pageId = typeof relative === 'string' && relative.includes('#') ? relative : name + '#' + relative;
+      const page = pages.find(candidate => candidate.pluginId === name && candidate.id === pageId);
+      const ready = Boolean(adapter && (renderer==='declarative'&&document || renderer==='page'&&page));
+      const row = { id: name + '#extension-' + entry.id, pluginId: name,
+        label: extensionLabel(entry.label ?? entry.title, entry.id), slot, renderer,sourceSlot:entry.slot,...(adapter?.upstreamLine?{adapter:{upstream:'f2483c6',line:adapter.upstreamLine}}:{}),
+        ...(ready && page && renderer === 'page' ? { pageId: page.id } : {}), ...(document ? { document } : {}), compatibility: ready ? 'ready' : 'adapter-required',
+        ...(!ready ? { reason: entry.slot === 'chat-card' ? '此插件的聊天卡片尚未适配；不会执行插件提供的任意界面代码。'
+          : '扩展未绑定已验证的插件页面，或使用了尚未适配的 DSH 界面位置。' } : {}),
+        ...(typeof entry.description === 'string' && entry.description.length <= 320 && !/[\x00-\x1f\x7f]/.test(entry.description)
+          ? { description: entry.description } : {}) };
+      if (ready && page) result.delete(page.id + ':' + slot);
+      put(row);
+    }
+    if (installed.dsh?.client && !pages.some(page => page.pluginId === name) && !seen.size) {
+      put({ id: name + '#native-client', pluginId: name, label: extensionLabel(installed.displayName ?? installed.name, name),
+        slot: 'settings', renderer: 'page', compatibility: 'adapter-required',
+        reason: '此插件使用 DSH 原生界面组件，尚未声明可在 Somnus 打开的安全页面。' });
+    }
+  }
+  const rows=[...result.values()];
+  return rows.map(row=>({...row,compatibilitySummary:summarize(rows.filter(entry=>entry.pluginId===row.pluginId))}));
 }
 
 function publicPage({ directory, legacy, ...page }) { return page; }
@@ -148,6 +214,11 @@ function registerOwnedDshPages({ ipcMain, window, origin, WebContentsView, sessi
     const pages = await ownedPages(market, pluginId);
     validate();
     return pages.map(publicPage);
+  });
+  handle('extensions', async (validate, pluginId) => {
+    const rows = await pluginExtensions(market, pluginId);
+    validate();
+    return rows;
   });
   handle('show', async (validate, id, rect) => {
     close();
@@ -231,4 +302,4 @@ function registerOwnedDshPages({ ipcMain, window, origin, WebContentsView, sessi
   });
 }
 
-module.exports = { registerOwnedDshPages, ownedPages, servePage };
+module.exports = { registerOwnedDshPages, ownedPages, pluginExtensions, servePage };

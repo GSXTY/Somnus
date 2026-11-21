@@ -38,7 +38,8 @@ export function apply(ctx) {
     async handler({ agent, rawInput, signal }) {
       const pending = rawInput.trim();
       const decline = { kind: 'error', text: 'Teamwork update not authorized' };
-      if (!agent?.session.id.startsWith('somnus-') || !/^[a-f0-9-]{36}$/.test(pending) ||
+      // The host's exact single-use pending claim is authoritative, including random fork Session IDs.
+      if (typeof agent?.session.id !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(pending) ||
           rootOf(agent) !== agent || agent.status !== 'idle') return decline;
       const response = await fetch(process.env.${endpointVariable}, {
         method: 'POST', redirect: 'error', signal,

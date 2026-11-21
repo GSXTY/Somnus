@@ -4,10 +4,11 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { agentReadinessLabel } from '../src/configuration/agentReadiness.ts';
 
 const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/ConfigurationCenter.tsx', import.meta.url), 'utf8'), {
+const source = ts.transpileModule(readFileSync(new URL('../src/configuration/ConfigurationCenter.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const codex = { id: 'codex', name: 'Codex', args: [] };
@@ -51,25 +52,30 @@ test('Agent catalog only offers account login; previously saved ACP adapters sta
       if (name === 'react') return react;
       if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
       if (name === 'antd' || name === '@ant-design/icons') return names;
-      if (name === './SomnusMark') return { SomnusMark: 'SomnusMark' };
-      if (name === './assistantApi') return { assistantStatus: async () => ({ configured: true }) };
-      if (name === './ManagedDshAccount') return { ManagedDshAccount: 'ManagedDshAccount' };
+      if (name.split('/').at(-1) === 'SomnusMark') return { SomnusMark: 'SomnusMark' };
+      if (name.split('/').at(-1) === 'assistantApi') return { assistantStatus: async () => ({ configured: true }) };
+      if (name.split('/').at(-1) === 'ManagedDshAccount') return { ManagedDshAccount: 'ManagedDshAccount' };
+      if (name === './agentReadiness') return { agentReadinessLabel };
       return {};
     },
-    window: { vvmanAcp: {
-      list: async () => [codex, oldDsh], onUpdate: () => () => {}, connectManagedDsh: () => {},
-      detectAdapter: () => assert.fail('the managed preset must not search for an external runtime'),
-      dshPluginMarket: async () => ({ runtime: { installed: true } }),
-      async probe(id) {
-        return id === codex.id ? { provider: 'codex', loginMethods: [...keyMethods, { id: 'chatgpt', name: 'ChatGPT', kind: 'browser' }] } :
-          { provider: 'deepseek-harness', loginMethods: [{ id: 'browser', name: 'OpenMA 配置凭据', kind: 'browser' }] };
+    window: {
+      setInterval: () => 1, clearInterval() {},
+      addEventListener() {}, removeEventListener() {},
+      vvmanAcp: {
+        list: async () => [codex, oldDsh], onUpdate: () => () => {}, connectManagedDsh: () => {},
+        detectAdapter: () => assert.fail('the managed preset must not search for an external runtime'),
+        dshPluginMarket: async () => ({ runtime: { installed: true } }),
+        async probe(id) {
+          return id === codex.id ? { provider: 'codex', loginMethods: [...keyMethods, { id: 'chatgpt', name: 'ChatGPT', kind: 'browser' }] } :
+            { provider: 'deepseek-harness', loginMethods: [{ id: 'browser', name: 'OpenMA 配置凭据', kind: 'browser' }] };
+        },
+        async authenticate(...args) { auth.push(args); return { authentication: 'ready' }; },
       },
-      async authenticate(...args) { auth.push(args); return { authentication: 'ready' }; },
-    } },
+    },
     AbortController,
   });
   const tab = elements(exports.ConfigurationCenter({ view: 'config', onOpen() {} })).find(node => node.type === 'Tabs');
-  assert.deepEqual(Array.from(tab.props.items, item => item.key), ['config', 'models']);
+  assert.deepEqual(Array.from(tab.props.items, item => item.key), ['config']);
   const component = tab.props.items[0].children.type;
   const render = () => { hook = 0; return elements(component({ onOpen() {} })); };
   const findButton = (tree, name) => tree.find(node => node.type === 'Button' && node.props.children === name);

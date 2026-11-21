@@ -11,6 +11,7 @@ import sys
 import tempfile
 
 from app_version import APP_VERSION
+from storage_paths import artifact_path
 
 
 ROOT = Path(__file__).resolve().parent
@@ -63,8 +64,8 @@ def main():
     if any(importlib.util.find_spec(module) is None for module in ('webview', 'AppKit', 'WebKit')):
         raise SystemExit('缺少 macOS 桌面依赖。请安装 requirements-macos.txt。')
 
-    work = ROOT / 'build' / f'macos-{arch}'
-    dist = ROOT / 'dist' / f'macos-{arch}'
+    work = artifact_path('build', f'macos-{arch}')
+    dist = artifact_path('dist', f'macos-{arch}')
     env = {**os.environ, 'PYINSTALLER_CONFIG_DIR': str(work / 'cache')}
     subprocess.run([
         sys.executable, '-m', 'PyInstaller', '--noconfirm',
@@ -73,8 +74,8 @@ def main():
 
     bundle = dist / 'Somnus.app'
     subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(bundle)], check=True)
-    output = ROOT / 'release'
-    output.mkdir(exist_ok=True)
+    output = artifact_path('release')
+    output.mkdir(parents=True, exist_ok=True)
     archive = output / f'Somnus-{APP_VERSION}-macos-{arch}.zip'
     with tempfile.TemporaryDirectory(dir=output, prefix='.macos-build-') as temp:
         staging = Path(temp) / 'package'

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readAssistantEvents } from '../src/assistantProtocol.mjs';
-import { assistantStatus, conversations, conversation, createConversation, renameConversation, deleteConversation, sendMessage, cancelConversation } from '../src/assistantApi.ts';
+import { readAssistantEvents } from '../src/chat/assistantProtocol.mjs';
+import { assistantStatus, conversations, conversation, createConversation, renameConversation, deleteConversation, sendMessage, cancelConversation } from '../src/chat/assistantApi.ts';
 
 const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 function stream(text, tiny = false) {

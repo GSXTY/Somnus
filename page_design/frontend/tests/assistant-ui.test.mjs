@@ -1,3 +1,4 @@
+import * as composerShortcuts from '../src/chat/composerShortcuts.mjs';
 // Run the real component's event handlers with deterministic hooks and mock services.
 // This exercises state transitions without a browser or external model request.
 import test from 'node:test';
@@ -5,14 +6,14 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { prepareImages, isLocalImage } from '../src/assistantImages.mjs';
-import * as format from '../src/format.mjs';
-import * as errors from '../src/errors.mjs';
-import { addonInstallIntent } from '../src/chatAddonInstall.ts';
+import { prepareImages, isLocalImage } from '../src/chat/assistantImages.mjs';
+import * as format from '../src/shared/format.mjs';
+import * as errors from '../src/shared/errors.mjs';
+import { addonInstallIntent } from '../src/plugins/chatAddonInstall.ts';
 
 const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/AIAssistant.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
+const source = ts.transpileModule(readFileSync(new URL('../src/chat/AIAssistant.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
 const first = { id: 'target', title: '专属测试会话', created_at: 1, updated_at: 3, message_count: 1 };
 const next = { id: 'next', title: '其他最近会话', created_at: 1, updated_at: 2, message_count: 1 };
 const message = id => ({ id: id + '-message', role: 'user', content: '原有内容-' + id, status: 'complete', created_at: 1 });
@@ -22,7 +23,7 @@ function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   return [tree, ...nodes(tree.props?.children)];
 }
-function harness({ list = [first, next], vision = false, modelConfigured = true, windowsDesktop = false, remove = async () => ({ deleted: true }), send, bridge, externalApi, projectBridge, workspaceLists, documentLibrary, fetchFile, historyFor = id => [message(id)], clipboard, addonInstaller, nativeDshBridge, desktopBridge, workspaceLinks = false } = {}) {
+function harness({ preferences = {}, list = [first, next], vision = false, modelConfigured = true, windowsDesktop = false, remove = async () => ({ deleted: true }), send, bridge, externalApi, projectBridge, workspaceLists, documentLibrary, fetchFile, historyFor = id => [message(id)], clipboard, addonInstaller, nativeDshBridge, desktopBridge, workspaceLinks = false } = {}) {
   let cursor = 0, workspace = 'default', visible = true; const state = [], effects = [], effectDeps = [], storage = new Map([['ya70-assistant-last-conversation', 'target']]);
   const eventListeners = new Map();
   const documentListeners = new Map();
@@ -62,7 +63,7 @@ function harness({ list = [first, next], vision = false, modelConfigured = true,
   const images = { isLocalImage, prepareImages: async (files, existing) => { calls.images.push(...files); return prepareImages(files, existing, async file => ({ name: file.name, data_url: 'data:image/png;base64,AA==', mime: file.type, size: file.size, width: 1, height: 1 })); } };
   const antd = Object.fromEntries(['Alert', 'Button', 'Collapse', 'Dropdown', 'Modal', 'Select', 'Skeleton', 'Space', 'Spin', 'Tag'].map(name => [name, name])); antd.Input = Object.assign(function Input() {}, { TextArea: 'TextArea' });
   const exports = {};
-  const context = { exports, require: name => name === 'react' ? react : name === 'react-dom' ? { createPortal: value => value } : name === './DocumentLibrary' ? { DocumentPicker: 'DocumentPicker' } : name === './documentLibraryBridge' ? { documentBridge: () => documentLibrary, readDocumentFile: (...args) => documentLibrary.readFile(...args) } : name === './DshRecommendationCards' ? { DshRecommendationCards: 'DshRecommendationCards' } : name === './ExecutionDetails' ? { ExecutionDetails: 'ExecutionDetails', ActionApproval: 'ActionApproval', AgentQuestions: 'AgentQuestions' } : name === './DelegationReview' ? { DelegationReview: 'DelegationReview', DelegationOutcome: 'DelegationOutcome' } : name === './SomnusMark' ? { SomnusMark: 'SomnusMark' } : name === './assistantAcp' ? { mainChatBridge: () => bridge } : name === './ChatTaskControls' ? { ChatTaskControls: 'ChatTaskControls' } : name === './ComposerCommands' ? { ComposerCommands: 'ComposerCommands', composerCommandListId: 'composer-commands', composerCommandRowId: index => 'command-' + index } : name === './ComposerEditor' ? { ComposerEditor: 'ComposerEditor' } : name === './ComposerTeamwork' ? { ComposerTeamwork: 'ComposerTeamwork' } : name === './ComposerExtensions' ? { ComposerExtensions: 'ComposerExtensions' } : name === './ModelSwitch' ? { ModelSwitch: 'ModelSwitch' } : name === './SkillPicker' ? {} : name === './PluginPicker' ? { PluginPicker: 'PluginPicker', PluginChips: 'PluginChips' } : name === './PermissionSwitch' ? { PermissionSwitch: 'PermissionSwitch' } : name === './ConversationTrace' ? { ConversationTrajectory: 'ConversationTrajectory' } : name === './ConversationSessionChrome' ? { ConversationReplyRating: 'ConversationReplyRating', ConversationTurnRail: 'ConversationTurnRail' } : name === './ChatWorkspacePanel' ? { ChatWorkspacePanel: 'ChatWorkspacePanel' } : name === './ChatProjectContext' ? { ChatProjectContext: 'ChatProjectContext' } : name === './ProjectTools' ? { ProjectTools: 'ProjectTools', ChatWorktree: 'ChatWorktree' } : name === './FileProposalReview' ? { FileProposalReview: 'FileProposalReview', FileChangeCards: 'FileChangeCards', useFileProposals: () => ({ items: [] }), associateFileProposals: () => ({ byReply: new Map(), legacy: [] }) } : name === './RecentSessions' ? { RecentSessions: 'RecentSessions' } : name === 'react/jsx-runtime' ? { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) } : name === 'antd' ? antd : name === '@ant-design/icons' ? new Proxy({}, { get: (_, key) => String(key) }) : name === './chatAddonInstall' ? { addonInstallIntent } : name === './assistantApi' ? api : name === './taskAttention' ? { linkedConversation: () => undefined, reportConversationFinished: () => {}, watchAnalysisTask: () => {} } : name === './MarkdownView' ? { Markdown: props => ({ type: 'Markdown', props }) } : name === './format.mjs' ? format : name === './errors.mjs' ? errors : name === './assistantImages.mjs' ? images : (() => { throw Error(name); })(), localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }, window: { vvmanProjects: projectBridge, somnusAddonInstaller: addonInstaller, somnusNativeDshChat: nativeDshBridge, somnusDesktop: desktopBridge, somnusWorkspaceWeb: workspaceLinks ? {} : undefined, addEventListener(type, callback) { eventListeners.set(type, callback); }, removeEventListener(type) { eventListeners.delete(type); } }, AbortController, performance, Date, Error, atob, File, crypto, fetch: fetchFile, console };
+  const context = { exports, require: name => name === 'react' ? react : name === 'react-dom' ? { createPortal: value => value } : name.split('/').at(-1) === 'nativeFork' ? {confirmedNativeFork:request=>nativeDshBridge.fork({...request,worktreePolicy:'share-current'})} : name.split('/').at(-1) === 'InheritedHistory' ? {InheritedHistory:'InheritedHistory'} : name.split('/').at(-1) === 'EditMessageBranch' ? {EditMessageBranch:'EditMessageBranch'} : name.split('/').at(-1) === 'composerShortcuts.mjs' ? composerShortcuts : name.split('/').at(-1) === 'uiPreferences' ? {useUiPreferences: () => [{theme:'light',chatFontSize:15,defaultPermission:'read_only',sendKey:'enter',detail:'full',collapse:'never',collapsedReply:'full',...preferences},()=>{}]} : name.split('/').at(-1) === 'DeclarativePlugin' ? {DeclarativePluginCards:'DeclarativePluginCards'} : name.split('/').at(-1) === 'DocumentLibrary' ? { DocumentPicker: 'DocumentPicker' } : name.split('/').at(-1) === 'documentLibraryBridge' ? { documentBridge: () => documentLibrary, readDocumentFile: (...args) => documentLibrary.readFile(...args) } : name.split('/').at(-1) === 'DshRecommendationCards' ? { DshRecommendationCards: 'DshRecommendationCards' } : name.split('/').at(-1) === 'ExecutionDetails' ? { ExecutionDetails: 'ExecutionDetails', ActionApproval: 'ActionApproval', AgentQuestions: 'AgentQuestions' } : name.split('/').at(-1) === 'DelegationReview' ? { DelegationReview: 'DelegationReview', DelegationOutcome: 'DelegationOutcome' } : name.split('/').at(-1) === 'SomnusMark' ? { SomnusMark: 'SomnusMark' } : name.split('/').at(-1) === 'assistantAcp' ? { mainChatBridge: () => bridge } : name.split('/').at(-1) === 'ChatTaskControls' ? { ChatTaskControls: 'ChatTaskControls' } : name.split('/').at(-1) === 'ComposerCommands' ? { ComposerCommands: 'ComposerCommands', composerCommandListId: 'composer-commands', composerCommandRowId: index => 'command-' + index } : name.split('/').at(-1) === 'ComposerEditor' ? { ComposerEditor: 'ComposerEditor' } : name.split('/').at(-1) === 'ComposerTeamwork' ? { ComposerTeamwork: 'ComposerTeamwork' } : name.split('/').at(-1) === 'ComposerExtensions' ? { ComposerExtensions: 'ComposerExtensions' } : name.split('/').at(-1) === 'ModelSwitch' ? { ModelSwitch: 'ModelSwitch' } : name.split('/').at(-1) === 'SkillPicker' ? {} : name.split('/').at(-1) === 'PluginPicker' ? { PluginPicker: 'PluginPicker', PluginChips: 'PluginChips' } : name.split('/').at(-1) === 'PermissionSwitch' ? { PermissionSwitch: 'PermissionSwitch' } : name.split('/').at(-1) === 'AgentWorkMode' ? { AgentWorkMode: 'AgentWorkMode' } : name.split('/').at(-1) === 'runtimeTasks' ? { useRuntimeTasks: () => ({tasks:[],cursor:0,epoch:'',availability:'legacy'}), useFocusedRuntimeTasks: value => value, runtimeConversation: () => ({active_count:0,attention_count:0}) } : name.split('/').at(-1) === 'runtimeTaskModel.mjs' ? {taskIsActive: () => false, taskLabel: () => '', taskMessageStatus: () => 'complete'} : name.split('/').at(-1) === 'AgentActivityPanel' ? { AgentActivityPanel: 'AgentActivityPanel', useAgentConnections: () => [] } : name.split('/').at(-1) === 'ConversationTrace' ? { ConversationTrajectory: 'ConversationTrajectory' } : name.split('/').at(-1) === 'ConversationSessionChrome' ? { ConversationReplyRating: 'ConversationReplyRating', ConversationTurnRail: 'ConversationTurnRail' } : name.split('/').at(-1) === 'ChatWorkspacePanel' ? { ChatWorkspacePanel: 'ChatWorkspacePanel' } : name.split('/').at(-1) === 'ChatProjectContext' ? { ChatProjectContext: 'ChatProjectContext' } : name.split('/').at(-1) === 'ProjectTools' ? { ProjectTools: 'ProjectTools', ChatWorktree: 'ChatWorktree' } : name.split('/').at(-1) === 'FileProposalReview' ? { FileProposalReview: 'FileProposalReview', FileChangeCards: 'FileChangeCards', useFileProposals: () => ({ items: [] }), associateFileProposals: () => ({ byReply: new Map(), legacy: [] }) } : name.split('/').at(-1) === 'ConversationAgents' ? { ConversationAgents: 'ConversationAgents', ConversationRecipient: 'ConversationRecipient', AgentAvatar: 'AgentAvatar' } : name.split('/').at(-1) === 'SessionFinder' ? { SessionFinder: 'SessionFinder' } : name.split('/').at(-1) === 'SidebarSessionList' ? { SidebarSessionList: 'RecentSessions' } : name === 'react/jsx-runtime' ? { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) } : name === 'antd' ? antd : name === '@ant-design/icons' ? new Proxy({}, { get: (_, key) => String(key) }) : name.split('/').at(-1) === 'chatAddonInstall' ? { addonInstallIntent } : name.split('/').at(-1) === 'assistantApi' ? api : name.split('/').at(-1) === 'taskAttention' ? { linkedConversation: () => undefined, reportConversationFinished: () => {}, watchAnalysisTask: () => {} } : name.split('/').at(-1) === 'clipboard' ? { copyText: text => clipboard.writeText(text) } : name.split('/').at(-1) === 'MarkdownView' ? { Markdown: props => ({ type: 'Markdown', props }) } : name.split('/').at(-1) === 'format.mjs' ? format : name.split('/').at(-1) === 'errors.mjs' ? errors : name.split('/').at(-1) === 'assistantImages.mjs' ? images : (() => { throw Error(name); })(), localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }, window: { vvmanProjects: projectBridge, somnusAddonInstaller: addonInstaller, somnusNativeDshChat: nativeDshBridge, somnusDesktop: desktopBridge, somnusWorkspaceWeb: workspaceLinks ? {} : undefined, addEventListener(type, callback) { eventListeners.set(type, callback); }, removeEventListener(type) { eventListeners.delete(type); } }, AbortController, performance, Date, Error, atob, File, crypto, fetch: fetchFile, console };
   context.navigator = { clipboard };
   context.Node = MockNode;
   context.document = {
@@ -70,7 +71,7 @@ function harness({ list = [first, next], vision = false, modelConfigured = true,
     removeEventListener(type) { documentListeners.delete(type); },
   };
   vm.runInNewContext(source, context);
-  const render = () => { cursor = 0; const tree = exports.AIAssistant({ visible, workspace, windowsDesktop, workspaceLinks, sidebar: {}, attentionTarget: {}, onLockedChange() {}, onModelConfig: bridge ? () => {} : undefined, onOpenAddonSettings(settings, name) { calls.addonSettings.push([settings, name]); }, onOpenChat() { calls.opened++; } }); return tree; };
+  const render = () => { cursor = 0; const tree = exports.AIAssistant({ visible, workspace, windowsDesktop, workspaceLinks, sidebar: {}, attentionTarget: {}, onLockedChange() {}, onModelConfig: bridge ? () => {} : undefined, onOpenAddonSettings(settings, name) { calls.addonSettings.push([settings, name]); }, onOpenChat(project) { calls.opened++; calls.openedProject = project; } }); return tree; };
   function flushEffects() { for (const effect of effects.splice(0)) effect(); }
   render(); flushEffects();
   return { flushEffects, activateSearch() { eventListeners.get('workbench:search-conversations')?.(); }, dispatchDocument(type, target = new MockNode()) { documentListeners.get(type)?.({ target }); }, node: () => new MockNode(), render, calls, storage, setWorkspace(id) { workspace = id; render(); flushEffects(); }, setVisible(value) { visible = value; render(); flushEffects(); }, find: (type, predicate = () => true) => nodes(render()).find(value => value.type === type && predicate(value.props)), all: () => nodes(render()) };
@@ -86,6 +87,105 @@ function pressEnter(h) {
 }
 const containsText = (h, text) => h.all().some(value => value.props?.children === text || (Array.isArray(value.props?.children) && value.props.children.includes(text)));
 const chatMenu = h => h.find('Dropdown', props => props.children?.props?.className === 'assistant-chat-title-button').props.menu;
+
+test('group members work concurrently and route approvals, cancellation and responses to their own turns', async () => {
+  const codex = { id: 'agent-codex', name: 'Codex' };
+  const dsh = { id: 'agent-dsh', name: 'DSH' };
+  const starts = [], routes = [], cancellations = [], approvals = [];
+  const finish = new Map(), replies = new Map(), listeners = new Set();
+  let agentMembers = [];
+  const current = () => ({ ...first, agent_members: agentMembers });
+  const h = harness({
+    bridge: {
+      list: async () => [codex, dsh],
+      onUpdate(next) { listeners.add(next); return () => listeners.delete(next); },
+      async cancelConversation(id, turnId) { cancellations.push([id, turnId]); finish.get(turnId)(); },
+      async respondPermission(...args) { approvals.push(args); },
+      async promptConversation(route) {
+        routes.push(route);
+        const name = route.agentId === codex.id ? codex.name : dsh.name;
+        const event = { agentId: route.agentId, conversationId: route.conversationId, turnId: route.turnId };
+        for (const listen of listeners) {
+          listen({ ...event, acpTool: { id: 'shared-tool-id', title: name + ' 正在检查', kind: 'tool', status: 'in_progress' } });
+          listen({ ...event, acpPermission: { requestId: 'shared-approval-id', title: '确认 ' + name,
+            kind: 'mcp', options: [{ id: 'ok', name: '继续', kind: 'allow_once' }] } });
+          listen({ ...event, turnId: 'stale-turn', text: 'ignored stale text' });
+        }
+        await new Promise(resolve => finish.set(route.turnId, resolve));
+        return { text: name + ' 的回复', stopReason: 'end_turn' };
+      },
+    },
+    externalApi: {
+      changeConversationAgent: async (id, agentId, added) => {
+        assert.equal(id, first.id);
+        assert.equal(added, true);
+        agentMembers = [...agentMembers, agentId];
+        return agentMembers;
+      },
+      async beginExternalTurn(id, input) {
+        starts.push({ id, ...input });
+        const reply = { ...message('multi-' + starts.length), created_at: 2 * starts.length,
+          role: 'assistant', status: 'streaming', content: '',
+          reply_meta: { provider_name: input.agent_name, provider_id: input.agent_id } };
+        replies.set(reply.id, reply);
+        return { turn_id: reply.id, user_message: { ...message('asked-' + starts.length), created_at: 2 * starts.length - 1 },
+          assistant_message: reply, conversation: current() };
+      },
+      async finishExternalTurn(id, turnId, result) {
+        assert.equal(id, first.id);
+        const reply = replies.get(turnId);
+        return { message: { ...reply, content: result.content, status: result.status,
+          reply_meta: { ...reply.reply_meta, execution: result.execution } }, conversation: current() };
+      },
+    },
+  });
+  await flush();
+  const roster = () => h.find('ConversationAgents').props;
+  const recipient = () => h.find('ConversationRecipient').props;
+  await roster().onMembership(codex.id, true);
+  await roster().onMembership(dsh.id, true);
+  assert.deepEqual(roster().members, [codex.id, dsh.id]);
+
+  recipient().onTarget(codex);
+  textarea(h).props.onChange({ target: { value: '由 Codex 检查' } });
+  button(h, '发送给 Codex').props.onClick();
+  await flush();
+  assert.equal(roster().active.get(codex.id), '待确认');
+
+  recipient().onTarget(dsh);
+  textarea(h).props.onChange({ target: { value: '由 DSH 检查' } });
+  button(h, '发送给 DSH').props.onClick();
+  await flush();
+
+  assert.equal(finish.size, 2, 'both tasks start before either task is resolved');
+  assert.equal(roster().active.get(codex.id), '待确认');
+  assert.equal(roster().active.get(dsh.id), '待确认');
+  assert.deepEqual(starts.map(({ id, agent_id, content, member_only, group_parallel }) => [id, agent_id, content, member_only, group_parallel]), [
+    [first.id, codex.id, '由 Codex 检查', true, true], [first.id, dsh.id, '由 DSH 检查', true, true],
+  ]);
+  assert.deepEqual(routes.map(route => [route.conversationId, route.agentId, route.groupMember]),
+    [[first.id, codex.id, true], [first.id, dsh.id, true]]);
+  for (const name of [codex.name, dsh.name]) {
+    assert(h.all().some(node => node.type === 'ExecutionDetails' &&
+      node.props.execution?.steps.some(step => step.title === name + ' 正在检查')));
+  }
+  assert(!containsText(h, 'ignored stale text'));
+
+  await h.find('ActionApproval', props => props.request.title === '确认 DSH').props.onRespond('ok');
+  assert.deepEqual(approvals, [[first.id, 'shared-approval-id', 'ok', routes[1].turnId]]);
+  h.find('Button', props => Array.isArray(props.children) && props.children.join('') === '停止 Codex').props.onClick();
+  await flush();
+  assert.deepEqual(cancellations, [[first.id, routes[0].turnId]]);
+  assert.equal(roster().active.has(codex.id), false);
+  assert.equal(roster().active.get(dsh.id), '处理中');
+  finish.get(routes[1].turnId)();
+  await flush();
+  assert.deepEqual(h.all().filter(node => node.props?.className === 'assistant-reply-agent').map(node => node.props.children),
+    [codex.name, dsh.name]);
+  h.find('RecentSessions').props.onOpen(next.id);
+  await flush();
+  assert.equal(h.find('ModelSwitch').props.external, undefined);
+});
 
 test('session tabs show the current conversation trajectory and retain unsent input when returning', async () => {
   const history = [message('question-one'), { ...message('answer-one'), role: 'assistant' }, message('question-two')];
@@ -175,6 +275,19 @@ test('completed reply actions copy the answer and open a branch at that reply', 
   assert.equal(h.storage.get('ya70-assistant-last-conversation'), branch.id);
 });
 
+test('copying a reply reports clipboard errors beside the reply without offering to reload history', async () => {
+  const reply = { ...message('answer'), role: 'assistant', content: '测试内容' };
+  const h = harness({
+    historyFor: () => [reply],
+    clipboard: { async writeText() { throw Error('Permission denied'); } },
+  });
+  await flush();
+  button(h, '复制回答').props.onClick();
+  await flush();
+  assert.ok(containsText(h, '无法复制回答，请选中文字手动复制。'));
+  assert.ok(!containsText(h, '重新加载历史'));
+});
+
 test('personal document attachment uses the existing upload and rejects a shared selection', async () => {
   const reads = [];
   const uploads = [];
@@ -204,7 +317,7 @@ test('personal document attachment uses the existing upload and rejects a shared
 
 test('chat retains historical text and uses the normal Agent composer without starting removed tasks', async () => {
   const historical = 'Historical task text';
-  const h = harness({ windowsDesktop: true, historyFor: () => [{ ...message('past'), content: historical }],
+  const h = harness({ historyFor: () => [{ ...message('past'), content: historical }],
     externalApi: {
       dotTaskStatus() { assert.fail('chat must not query removed task status'); },
       listDotTasks() { assert.fail('chat must not query removed task records'); },
@@ -765,7 +878,7 @@ test('blank chat permissions are reserved before sending and changes while worki
   let finishFirst;
   let sendCount = 0;
   const bridge = { list: async () => [], onUpdate: () => () => {} };
-  const h = harness({ list: [], bridge, windowsDesktop: true, externalApi: {
+  const h = harness({ list: [], bridge, externalApi: {
     async createConversation(workspace, mode) {
       permissionCalls.push(['create', workspace, mode]);
       return { ...first, permission_mode: mode };
@@ -804,6 +917,7 @@ test('blank chat permissions are reserved before sending and changes while worki
 test('preselected Teamwork applies only to the newly materialized chat before its first native prompt', async () => {
   const agentId = 'fbbce833-544a-42a1-8579-cba2a817383e';
   const calls = [];
+  const providerId = 'provider-teamwork';
   const reply = { id: 'teamwork-turn', role: 'assistant', content: '', status: 'streaming', created_at: 1 };
   const h = harness({
     list: [], windowsDesktop: true,
@@ -811,7 +925,7 @@ test('preselected Teamwork applies only to the newly materialized chat before it
       calls.push(['set', id, enabled]);
       return { available: true, enabled };
     } },
-    bridge: { companyRuntime: async () => ({ agentId }), onUpdate: () => () => {} },
+    bridge: { companyRuntime: async modelId => modelId === providerId ? { agentId } : null, onUpdate: () => () => {} },
     nativeDshBridge: {
       onUpdate: () => () => {},
       async promptConversation({ conversationId }) {
@@ -821,13 +935,25 @@ test('preselected Teamwork applies only to the newly materialized chat before it
     },
     externalApi: {
       async createConversation() { calls.push(['create']); return first; },
-      async beginExternalTurn(id) {
+      async beginExternalTurn(id, input) {
+        assert.equal(input.provider_model_id, providerId);
+        assert.equal(input.reasoning_effort, 'medium');
+        assert.equal(input.company_model, undefined);
         calls.push(['reserve', id]);
         return { turn_id: reply.id, user_message: message('question'), assistant_message: reply, conversation: first };
       },
       async finishExternalTurn() { return { message: { ...reply, status: 'complete' }, conversation: first }; },
     },
   });
+  await flush();
+  textarea(h).props.onChange({ target: { value: '没有选择 Provider' } });
+  pressEnter(h);
+  await flush();
+  assert.deepEqual(h.calls.sent, [], 'Windows never falls back to Python without an explicit provider');
+  assert.deepEqual(calls, []);
+  h.find('ModelSwitch').props.onChange(providerId, 'medium');
+  h.render();
+  h.flushEffects();
   await flush();
   const additional = h.find('Dropdown', props => props.menu?.items.some(item => item?.key === 'settings:extensions'));
   additional.props.menu.onClick({ key: 'settings:extensions' });
@@ -1335,21 +1461,59 @@ test('composer forwards the real ACP reasoning value and retains actual context 
   assert(ring.props['aria-label'].includes('已用 24.2% · 剩余 75.8%，115,000 / 475,000 tokens'));
 });
 
-test('workspace sidebar search filters the current project and opens the selected chat', async () => {
-  const h = harness();
+test('workspace sidebar search opens the exact target in another project without interrupting a running chat', async () => {
+  const older = { ...next, id: 'older', title: '较旧的目标会话', updated_at: 1 };
+  const h = harness({
+    workspaceLists: { default: [first], other: [next, older] },
+    send: (onEvent, _images, id, signal) => new Promise(resolve => {
+      onEvent({ type: 'start', data: { user_message: message('request'), assistant_message: {
+        ...message('response'), role: 'assistant', status: 'streaming', content: '',
+      } } });
+      signal.addEventListener('abort', resolve, { once: true });
+    }),
+  });
+  await flush();
+  textarea(h).props.onChange({ target: { value: 'Working in the original project' } });
+  button(h, '发送').props.onClick();
   await flush();
   h.activateSearch();
-  const search = () => h.all().find(node => node.props['aria-label'] === '按标题搜索会话');
-  const resultList = () => nodes(h.find('Modal', props => props.title === '搜索会话'))
-    .find(node => node.type === 'RecentSessions');
-  assert.equal(resultList().props.items.length, 2);
-  search().props.onChange({ target: { value: '其他' } });
-  assert.equal(resultList().props.items.length, 1);
-  assert.equal(resultList().props.items[0].id, 'next');
-  resultList().props.onOpen('next');
+  const finder = h.find('SessionFinder');
+  assert(finder.props.activeTurns.has(first.id));
+  finder.props.onOpen('other', older.id);
+  assert.equal(h.calls.openedProject, 'other');
+  h.setWorkspace('other');
   await flush();
-  assert.equal(h.storage.get('ya70-assistant-last-conversation'), 'next');
-  assert.equal(h.find('Modal', props => props.title === '搜索会话').props.open, false);
+  assert.equal(h.find('RecentSessions').props.activeId, older.id);
+  assert(h.find('RecentSessions').props.runningIds.has(first.id));
+  assert.equal(h.find('Modal', props => props.title === '会话管理').props.open, false);
+  h.setWorkspace('default');
+  await flush();
+  assert(button(h, '停止生成'));
+  button(h, '停止生成').props.onClick();
+  await flush();
+});
+test('organizing a conversation preserves its draft, and restoring returns it to the project sidebar', async () => {
+  const organization = [];
+  const current = { ...first, workspace_id: 'default' };
+  const h = harness({ list: [current, next], externalApi: {
+    async organizeConversation(id, changes) {
+      organization.push({ id, changes });
+      return { ...current, ...changes };
+    },
+  } });
+  await flush();
+  textarea(h).props.onChange({ target: { value: 'Draft to recover after archiving' } });
+  h.activateSearch();
+  const finder = h.find('SessionFinder');
+  await finder.props.onOrganize(current, { archived: true });
+  assert.equal(h.find('RecentSessions').props.activeId, undefined);
+  assert.equal(h.find('RecentSessions').props.items.some(item => item.id === current.id), false);
+  await finder.props.onOrganize({ ...current, archived: true }, { archived: false });
+  assert.equal(h.find('RecentSessions').props.items.some(item => item.id === current.id), true);
+  h.find('SessionFinder').props.onOpen('default', current.id);
+  await flush();
+  assert.equal(textarea(h).props.value, 'Draft to recover after archiving');
+  assert.deepEqual(organization.map(item => item.changes.archived), [true, false]);
 });
 test('built-in delegation waits for approval, forwards the selected agent and shows the returned result', async () => {
   const requests = [], answers = [];
@@ -1395,4 +1559,150 @@ test('built-in delegation waits for approval, forwards the selected agent and sh
   complete();
   await flush();
   assert.equal(h.find('DelegationOutcome').props.result.agent_name, 'DSH');
+});
+
+
+test('a running conversation can be reopened from management while another workbench page is visible', async () => {
+  let end;
+  const h = harness({ send: (onEvent, _images, id, signal) => new Promise(resolve => {
+    end = resolve;
+    onEvent({ type: 'start', data: { user_message: message('nav-user'), assistant_message: {
+      ...message('nav-reply'), role: 'assistant', content: '', status: 'streaming',
+      reply_meta: { provider_id: 'personal', provider_name: 'DeepSeek', transport: 'dsh-native' },
+    } } });
+    signal.addEventListener('abort', resolve, { once: true });
+  }) });
+  await flush();
+  textarea(h).props.onChange({ target: { value: 'Continue working' } });
+  button(h, '发送').props.onClick();
+  await flush();
+  h.setVisible(false);
+  h.activateSearch();
+  const finder = h.find('SessionFinder');
+  assert.equal(finder.props.locked, false);
+  finder.props.onOpen('default', first.id);
+  assert.equal(h.calls.openedProject, 'default');
+  h.setVisible(true);
+  assert(button(h, '停止生成'));
+  assert.deepEqual(h.all().filter(node => node.props?.className === 'assistant-reply-agent').map(node => node.props.children), ['Somnus']);
+  end();
+  await flush();
+});
+
+
+test('addressed group member routes to real ACP and multiple names require dispatch preview', async () => {
+  const codex = { id: 'agent-codex', name: 'Codex' };
+  const dsh = { id: 'agent-dsh', name: 'DeepSeek Harness 官方 ACP' };
+  const current = { ...first, agent_members: [codex.id, dsh.id] };
+  const starts = [], routes = [];
+  let resolveTurn;
+  const h = harness({ list: [current], bridge: {
+    list: async () => [codex, dsh], onUpdate: () => () => {},
+    promptConversation: async route => { routes.push(route); await new Promise(resolve => { resolveTurn = resolve; }); return {text:'真实 Codex',stopReason:'end_turn'}; },
+  }, externalApi: {
+    beginExternalTurn: async (id, input) => { starts.push(input); return {
+      turn_id: 'addressed-reply', conversation: current,
+      user_message: { ...message('addressed-user'), content: input.content },
+      assistant_message: { ...message('addressed-reply'), id:'addressed-reply', role:'assistant', status:'streaming', content:'', reply_meta:{provider_name:input.agent_name} },
+    }; },
+    finishExternalTurn: async (_id, _turn, result) => ({ conversation:current, message:{...message('answer'),role:'assistant',content:result.content,status:'complete'} }),
+  }});
+  await flush();
+  textarea(h).props.onChange({target:{value:'我想让deepseek写一个helloworld，codex来验收'}});
+  button(h, '发送').props.onClick();
+  await flush();
+  assert.equal(starts.length, 0);
+  assert(h.find('Modal', props => props.title === '确认任务分工').props.open);
+  h.find('Modal', props => props.title === '确认任务分工').props.onCancel();
+  textarea(h).props.onChange({target:{value:'codex你在吗'}});
+  assert.equal(h.find('ConversationRecipient').props.targetId, codex.id);
+  button(h, '发送给 Codex').props.onClick();
+  await flush();
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].agent_id, codex.id);
+  assert.equal(starts[0].member_only, true);
+  assert.equal(starts[0].group_parallel, true);
+  assert.equal(routes[0].groupMember, true);
+  assert.equal(routes[0].conversationId, first.id);
+  resolveTurn();
+  await flush();
+});
+
+
+test('native branching uses its runtime fork and message copying remains an explicit separate action', async () => {
+ const reply={...message('native'),role:'assistant',reply_meta:{transport:'dsh-native',provider_name:'Somnus'}},branch={...first,id:'native-branch'},calls=[];
+ const h=harness({historyFor:()=>[reply],nativeDshBridge:{async fork(input){calls.push(['native',input]);return{conversationId:branch.id};}},externalApi:{async branchConversation(id,replyId){calls.push(['messages',id,replyId]);return branch;},async conversation(id){return{conversation:id===branch.id?branch:first,messages:[reply]};}}});
+ await flush();button(h,'从此处新建分支').props.onClick();await flush();assert.equal(calls[0][0],'native');assert.equal(calls[0][1].turnId,reply.id);assert.equal(calls.some(call=>call[0]==='messages'),false);
+ const menu=h.find('Dropdown',props=>props.children?.props['aria-label']==='更多分支方式');assert(menu);menu.props.menu.onClick({key:'copy'});await flush();assert.equal(calls.filter(call=>call[0]==='messages').length,1);
+});
+test('a failed native fork never silently falls back to message-only copying',async()=>{
+ const reply={...message('native-fail'),role:'assistant',reply_meta:{transport:'dsh-native'}},calls=[];
+ const h=harness({historyFor:()=>[reply],nativeDshBridge:{async fork(){throw Error('no native binding');}},externalApi:{async branchConversation(){calls.push('copied');return first;}}});await flush();button(h,'从此处新建分支').props.onClick();await flush();assert.equal(calls.length,0);assert(h.find('Alert',props=>typeof props.message==='string'&&props.message.includes('no native binding')));assert(button(h,'更多分支方式'));
+});
+
+
+test('idle and reconnect diagnostics update the live reply without inventing a tool operation', async () => {
+ let listener,release;
+ const reply={...message('diagnostic'),role:'assistant',status:'streaming',content:''};
+ const bridge={onUpdate(callback){listener=callback;return()=>{};},promptConversation(){return new Promise(resolve=>{release=resolve;});}};
+ const h=harness({bridge,externalApi:{beginExternalTurn:async()=>({turn_id:'diagnostic-turn',conversation:first,user_message:message('request'),assistant_message:reply}),finishExternalTurn:async(_id,_turn,result)=>({conversation:first,message:{...reply,content:result.content,status:result.status}})}});
+ await flush();h.find('ModelSwitch').props.onExternal({agentId:'agent',agentName:'Codex'});textarea(h).props.onChange({target:{value:'Synthetic task'}});button(h,'发送').props.onClick();await flush();
+ listener({agentId:'agent',conversationId:first.id,turnId:'diagnostic-turn',text:'',acpDiagnostic:{code:'idle',message:'Still connected; no new events yet.'}});await flush();assert(h.find('Alert',props=>props.className==='assistant-runtime-notice'&&props.message==='Still connected; no new events yet.'));assert.equal(h.find('ExecutionDetails').props.execution?.steps.length||0,0);
+ listener({agentId:'agent',conversationId:first.id,turnId:'diagnostic-turn',text:'',acpDiagnostic:{code:'reconnected',message:'Connected again'}});await flush();assert(!h.find('Alert',props=>props.className==='assistant-runtime-notice'));release({text:'Done',stopReason:'end_turn'});await flush();
+});
+
+test('modifier-enter preference uses modifier-shift-enter for real native alternate guidance', async () => {
+  const agentId = 'fbbce833-544a-42a1-8579-cba2a817383e';
+  const reply = { id: 'native-turn', role: 'assistant', content: '', status: 'streaming', created_at: 1 };
+  const received = [];
+  let complete;
+  const h = harness({preferences:{sendKey:'mod-enter'},
+    bridge: { companyRuntime: async () => ({ agentId }) },
+    nativeDshBridge: { onUpdate: () => () => {}, async promptConversation() {
+      await new Promise(resolve => { complete = resolve; });
+      return { text: '完成', stopReason: 'end_turn' };
+    }, async steer(payload) {
+      received.push(payload);
+      return { accepted: true, message: { ...message('steer'), content: '修改方向' } };
+    } },
+    externalApi: {
+      async beginExternalTurn() {
+        return { turn_id: reply.id, user_message: message('start'), assistant_message: reply, conversation: first };
+      },
+      async reserveExternalSteer(id, turnId, content) {
+        received.push([id, turnId, content]);
+        return { steer_id: 'steer-id' };
+      },
+      async finishExternalTurn(_id, _turn, result) {
+        return { message: { ...reply, content: result.content, status: result.status }, conversation: first };
+      },
+    },
+  });
+  await flush();
+  textarea(h).props.onChange({ target: { value: '当前任务' } });
+  button(h, '发送').props.onClick();
+  await flush();
+  textarea(h).props.onChange({ target: { value: '修改方向' } });
+  textarea(h).props.onKeyDown({ key: 'Enter', ctrlKey: true, shiftKey: true, nativeEvent: {}, preventDefault() {} });
+  await flush();
+  assert.deepEqual(received[0], [first.id, reply.id, '修改方向']);
+  assert.deepEqual({ ...received[1] }, { conversationId: first.id, turnId: reply.id, steerId: 'steer-id' });
+  assert.equal(textarea(h).props.value, '');
+  complete();
+  await flush();
+});
+
+
+
+test('editing input creates a new native branch draft without changing or executing the source messages',async()=>{
+ const original=[{...message('first')},{...message('native'),role:'assistant',reply_meta:{transport:'dsh-native'},content:'Original native response'},{...message('edit'),content:'Original input'}];
+ const snapshot=JSON.stringify(original),forks=[],branch={...first,id:'edited-branch'};
+ const h=harness({historyFor:()=>original,nativeDshBridge:{fork:async input=>{forks.push(input);return{conversationId:branch.id};}},externalApi:{conversation:async id=>({conversation:id===branch.id?branch:first,messages:id===branch.id?original.slice(0,2):original})}});
+ await flush();h.all().filter(node=>node.type==='Button'&&node.props['aria-label']==='编辑输入并分支').at(-1).props.onClick();
+ const editor=h.find('EditMessageBranch');assert.equal(editor.props.message.checkpoint,original[1].id);await editor.props.onCreate('Edited draft');await flush();
+ assert.equal(forks.length,1);assert.equal(forks[0].turnId,original[1].id);assert.equal(textarea(h).props.value,'Edited draft');assert.equal(h.calls.sent.length,0);assert.equal(JSON.stringify(original),snapshot);
+});
+test('editing a group input never skips the nearest ACP member to inherit an older native turn',async()=>{
+ const original=[{...message('native'),role:'assistant',reply_meta:{transport:'dsh-native'}},{...message('codex'),role:'assistant',reply_meta:{transport:'acp'}},message('edit')];
+ const h=harness({historyFor:()=>original});await flush();h.all().filter(node=>node.type==='Button'&&node.props['aria-label']==='编辑输入并分支').at(-1).props.onClick();assert.equal(h.find('EditMessageBranch').props.message.checkpoint,undefined);assert.equal(h.calls.sent.length,0);
 });

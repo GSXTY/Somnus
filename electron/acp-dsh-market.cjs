@@ -474,9 +474,11 @@ class DshPluginMarket {
       }
       const overlay = lease && await (async () => {
         const project = await this.openNativeProjectTools?.();
-        const questionPresets = project && await timedQuestionPresets(launch, {
+        const managedProviders = lease.api === 'openai-completions';
+        const presetPatch = () => timedQuestionPresets(launch, {
           ...processEnvironment(), DSH_HOME: this.home, DSH_TELEMETRY_DISABLED: '1',
-        }, this.home).catch(() => '');
+        }, this.home, { managedProviders, models: lease.models ?? [] });
+        const questionPresets = managedProviders ? await presetPatch() : project && await presetPatch().catch(() => '');
         return companyWebOverlay(lease, this.executionSettings?.get().loop.maxConcurrent, project, questionPresets,
           await this.teamToolModule(), this.oar)
           .catch(error => { project?.dispose(); throw error; });

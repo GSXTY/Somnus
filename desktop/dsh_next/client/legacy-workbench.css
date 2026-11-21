@@ -1,0 +1,85 @@
+.somnus-legacy-home {
+  container-type: inline-size;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+
+  --shell-font-ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  --shell-type-body: 14px;
+  --shell-type-support: 12px;
+  --desktop-type-secondary: 13px;
+  --desktop-line-secondary: 1.5;
+  --shell-bg: var(--dsw-alias-bg-base);
+  --shell-surface: var(--dsw-alias-bg-layer-1);
+  --shell-line: var(--dsw-alias-border-l1);
+  --shell-hover: var(--dsw-alias-bg-layer-2);
+  --shell-selected: var(--dsw-alias-bg-layer-2);
+  --shell-ink: var(--dsw-alias-label-primary);
+  --shell-muted: var(--dsw-alias-label-secondary);
+  --shell-accent: var(--dsw-alias-brand-primary);
+  --shell-accent-hover: var(--dsw-alias-brand-primary);
+}
+
+.somnus-legacy-home .home-update,
+.somnus-legacy-home .home-metric,
+.somnus-legacy-home .home-trend { min-width: 0; }
+
+.somnus-legacy-home .home-dashboard { min-width: 0; }
+
+@container (max-width: 670px) {
+  .somnus-legacy-home .home-trends { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container (max-width: 510px) {
+  .somnus-legacy-home .home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "active active"
+      "hours hours"
+      "events ahi";
+  }
+}
+
+.somnus-native-home {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  padding-inline-start: max(24px, var(--dsh-frame-leading-clearance, 0px));
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+.somnus-legacy-home {
+  --desktop-line-body: 1.5;
+  --desktop-line-support: 1.5;
+  --shell-font-ui: inherit;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.somnus-native-home button, .somnus-native-home select {
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.somnus-native-home select { max-width: 100%; }
+.somnus-native-home button:hover, .somnus-native-home button[aria-pressed=true] {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+.somnus-native-home button:disabled { opacity: .6; cursor: default; }
+.somnus-native-home input { accent-color: var(--dsw-alias-brand-primary); }
+.somnus-native-home :focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.somnus-home-segments { display: flex; flex-wrap: wrap; gap: 4px; }
+.somnus-home-empty { padding: 48px 12px; text-align: center; color: var(--dsw-alias-label-secondary); }
+.somnus-home-notice { padding: 12px 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; }
+.somnus-native-home .home-update-status[data-state=error] {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-state-error-primary);
+}

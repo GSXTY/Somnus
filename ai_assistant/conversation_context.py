@@ -133,7 +133,7 @@ def _clip(text, byte_limit, estimate_limit):
     return head.rstrip() + CLIPPED + tail.lstrip()
 
 
-def _sample(db, cid, before, *, text_only, last_rows=LAST_ROWS):
+def _sample(db, cid, before, *, text_only, last_rows=LAST_ROWS, excluded_replies=()):
     # Index-backed scans from both ends keep early decisions available without loading
     # the whole transcript or any encoded attachments. Pair only adjacent messages.
     boundary = db.execute('SELECT rowid FROM messages WHERE id=? AND conversation_id=?', (before, cid)).fetchone()
@@ -165,6 +165,7 @@ def _sample(db, cid, before, *, text_only, last_rows=LAST_ROWS):
                 continue
             if (pending is not None and row['role'] == 'assistant'
                     and pending['status'] == row['status'] == 'complete'
+                    and row['id'] not in excluded_replies
                     and pending['transport'] == row['transport']):
                 question, answer = pending['excerpt'], row['excerpt']
                 if not (text_only or row['transport'] is not None) or (
@@ -228,16 +229,17 @@ def _summary(turns):
     return ''.join(line for _, _, line in sorted(accepted)).rstrip()
 
 
-def previous_completed_reply(db, cid, before):
-    row = db.execute('''SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
+def previous_completed_reply(db, cid, before, *, excluded_replies=()):
+    rows = db.execute('''SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
         AND status='complete' AND rowid < (SELECT rowid FROM messages WHERE id=? AND conversation_id=?)
-        ORDER BY rowid DESC LIMIT 1''', (cid, before, cid)).fetchone()
-    return row['id'] if row else None
+        ORDER BY rowid DESC LIMIT ?''', (cid, before, cid, len(excluded_replies) + 1))
+    return next((row['id'] for row in rows if row['id'] not in excluded_replies), None)
 
 
-def build(db, cid, before, *, text_only=False, current_images=None, image_limit=0, window=None):
+def build(db, cid, before, *, text_only=False, current_images=None, image_limit=0, window=None,
+          excluded_replies=(), include_ids=False):
     last_rows = LONG_HISTORY_ROWS if window is not None else LAST_ROWS
-    turns = _sample(db, cid, before, text_only=text_only, last_rows=last_rows)
+    turns = _sample(db, cid, before, text_only=text_only, last_rows=last_rows, excluded_replies=excluded_replies)
     if window is None:
         recent, prior = turns[-RECENT_TURNS:], turns[:-RECENT_TURNS]
         remaining_bytes, remaining_tokens = RECENT_BYTES, RECENT_ESTIMATE
@@ -295,6 +297,9 @@ def build(db, cid, before, *, text_only=False, current_images=None, image_limit=
             if body != original_body and STAKE.search(turn.question):
                 prior.append(Turn(turn.user_id, turn.reply_id, turn.question, ''))
         batch = [dict(role='user', content=body), dict(role='assistant', content=answer)]
+        if include_ids:
+            batch[0]['message_id'] = turn.user_id
+            batch[1]['message_id'] = turn.reply_id
         if current_images is not None:
             batch[0]['attachments'] = images
             batch[1]['attachments'] = []

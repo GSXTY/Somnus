@@ -2,7 +2,10 @@
 from pathlib import Path
 import sys
 import site
-dependencies = str(Path(__file__).resolve().parents[1] / '.mcp-deps')
+project_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(project_root))
+from storage_paths import cache_path
+dependencies = str(cache_path('mcp-deps', project_root=project_root))
 sys.path.insert(0, dependencies)
 site.addsitedir(dependencies)
 import json

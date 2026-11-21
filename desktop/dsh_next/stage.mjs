@@ -1,3 +1,4 @@
+import { cachePath } from '../storage-paths.mjs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { cpSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -114,7 +115,7 @@ async function stage(installation, adapter) {
     changes.set('lib/somnus-host-adapter.mjs', readFileSync(resolve(adapter)));
   }
 
-  const scratch = join(project, '.tmp');
+  const scratch = cachePath(project, 'tmp');
   mkdirSync(scratch, { recursive: true });
   const preview = mkdtempSync(join(scratch, 'somnus-next-preview-'));
   const app = join(preview, 'app');
@@ -125,6 +126,8 @@ async function stage(installation, adapter) {
     cpSync(join(source, name), join(app, name === 'DSH NEXT.exe' ? 'Somnus.exe' : name), { recursive: true });
   }
   cpSync(join(source, 'resources', 'runtime'), join(resources, 'runtime'), { recursive: true });
+  const { copyHostFiles } = requireElectron('./runtime/resources.cjs');
+  await copyHostFiles(join(project, 'electron'), join(resources, 'somnus'));
   const target = join(resources, 'app.asar');
   await repack(original, target, changes);
   const verify = archives(target);

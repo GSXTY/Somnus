@@ -1,0 +1,21 @@
+.workspace-embedded-terminal:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 215px;
+}
+.workspace-embedded-terminal-screen {
+  background: #141918;
+  border-radius: 8px;
+  flex: 1 1 0;
+  min-height: 180px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 7px;
+}
+.workspace-embedded-terminal-screen .terminal {
+  height: 100%;
+}
+
+.workspace-terminal-tabs{display:flex;gap:6px;overflow:auto;flex:none}.workspace-terminal-tabs>div{display:flex;align-items:center;border:1px solid var(--shell-line);border-radius:8px}.workspace-terminal-tabs button[role=tab]{border:0;background:transparent;color:var(--shell-muted);padding:7px 9px;white-space:nowrap}.workspace-terminal-tabs button[aria-selected=true]{color:var(--shell-accent);background:var(--shell-selected);border-radius:7px}.workspace-terminal-surface:not([hidden]){display:flex;flex-direction:column;flex:1;min-height:180px}.workspace-embedded-terminal .workspace-panel-row{flex-wrap:wrap}.workspace-embedded-terminal .ant-select{min-width:130px}

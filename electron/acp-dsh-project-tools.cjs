@@ -1,14 +1,17 @@
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { createServer } = require('node:http');
 const { projectFileTools } = require('./acp-project.cjs');
+const { approvalPreview } = require('./acp-native-approval.cjs');
 const { TEAM_CLAIM } = require('./acp-dsh-teamwork.cjs');
 
 const TOKEN_VARIABLE = 'DSH_SOMNUS_PROJECT_TOKEN';
 const ENDPOINT_VARIABLE = 'DSH_SOMNUS_PROJECT_ENDPOINT';
 const MAX_BODY = 128 * 1024;
 const SHELL_APPROVAL = 'native_shell_approval';
+const NATIVE_APPROVAL = 'native_tool_approval';
 const USER_QUESTION = 'native_user_question';
 const STEER_CLAIM = 'native_steer_claim';
+const SESSION_CHECK = 'native_session_identity';
 const STEER_COMMAND = 'somnus-running-input';
 const definitions = projectFileTools({
   workspace_id: 'workspace', project: { available: true, supports_create: true },
@@ -29,6 +32,8 @@ import { isAbsolute, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const inject = ['tools', 'workingDirectory', 'shell', 'commands'];
+
+${approvalPreview.toString()}
 
 function requestContext(agent) {
   const session = agent?.session;
@@ -51,6 +56,11 @@ async function somnusCall(session, requestId, name, args, signal) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || 'Somnus 工具未完成。');
   return result;
+}
+
+async function managedSession(context) {
+  if (context.session?.id.startsWith('somnus-')) return true;
+  try { return (await somnusCall(context.session, context.requestId, '${SESSION_CHECK}', {})).allowed === true; } catch { return false; }
 }
 
 async function shellApproval(ctx, request, sessionContext) {
@@ -98,7 +108,7 @@ export function apply(ctx) {
       const { session, events, requestId } = requestContext(agent);
       const start = events.findLast(event => event.type === 'turn/start');
       const decline = { kind: 'error', text: 'Task is no longer accepting input' };
-      if (agent.status !== 'running' || !start || !session?.id.startsWith('somnus-') ||
+      if (agent.status !== 'running' || !start || !await managedSession({session,requestId}) ||
           !/^[a-f0-9]{32}$/.test(steerId) ||
           events.some(event => event.type === 'turn/end' && event.seq > start.seq)) return decline;
       const claim = await somnusCall(session, requestId, '${STEER_CLAIM}', { steerId });
@@ -118,8 +128,7 @@ export function apply(ctx) {
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next();
     const sessionId = context.agent?.session.id;
-    if (typeof sessionId !== 'string' ||
-        !/^somnus-(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})-[a-f0-9]{12}$/.test(sessionId)) {
+    if (typeof sessionId !== 'string' || !await managedSession(requestContext(context.agent))) {
       return assembly;
     }
     const identity = {
@@ -133,7 +142,7 @@ export function apply(ctx) {
   });
   ctx.on('user-questions/request', async (request, next) => {
     const { session, requestId } = requestContext(request.agent);
-    if (!session?.id.startsWith('somnus-')) return next();
+    if (!await managedSession({session,requestId})) return next();
     const hold = new AbortController();
     const signal = request.signal ? AbortSignal.any([request.signal, hold.signal]) : hold.signal;
     const stream = request.wait?.timed && ctx.get('userQuestions')?.attachWait(request.agent, request.wait.callId, signal);
@@ -160,11 +169,23 @@ export function apply(ctx) {
       await stream?.return?.();
     }
   }, { prepend: true });
-  ctx.on('approval/request', (request, next) => {
+  ctx.on('approval/request', async (request, next) => {
     const context = requestContext(request.agent);
-    if (!context.session?.id.startsWith('somnus-')) return next();
-    if (request.toolName !== 'pwsh' || typeof request.callId !== 'string') return 'rejected';
-    return shellApproval(ctx, request, context);
+    if (!await managedSession(context)) return next();
+    if (request.toolName === 'pwsh') return shellApproval(ctx, request, context);
+    const approvalSignal = request.signal ?? new AbortController().signal;
+    if (approvalSignal.aborted || typeof request.toolName !== 'string' ||
+        !/^[a-zA-Z0-9_.:/-]{1,160}$/.test(request.toolName)) return 'rejected';
+    const call = typeof request.callId === 'string' ? context.events.findLast(event =>
+      event.type === 'tool/call' && event.data?.callId === request.callId && event.data?.name === request.toolName) : null;
+    if (request.callId && !call) return 'rejected';
+    return somnusCall(context.session, context.requestId, '${NATIVE_APPROVAL}', {
+      approvalId: randomUUID(), toolName: request.toolName,
+      reason: approvalPreview(request.displayReason?.['zh-CN'] || request.reason || '此工具请求本次操作授权。').slice(0, 2000),
+      argumentsPreview: approvalPreview(call?.data.arguments ?? {}),
+    }, approvalSignal).then(result => approvalSignal.aborted || result.outcome === 'cancelled' ? 'cancelled'
+      : result.outcome === 'allowed-once' ? 'allowed-once' : 'rejected',
+      () => approvalSignal.aborted ? 'cancelled' : 'rejected');
   }, { prepend: true });
   const tools = ${JSON.stringify(definitions)};
   for (const { name, description, inputSchema } of tools) ctx.tools.register({
@@ -208,7 +229,7 @@ async function projectToolHost(dispatch) {
       } catch {
         return send(response, 400, { error: '无效的 Somnus 项目工具请求。' });
       }
-      const interaction = [SHELL_APPROVAL, USER_QUESTION, STEER_CLAIM, TEAM_CLAIM].includes(input?.name);
+      const interaction = [SESSION_CHECK, SHELL_APPROVAL, NATIVE_APPROVAL, USER_QUESTION, STEER_CLAIM, TEAM_CLAIM].includes(input?.name);
       if (!input || (!interaction && !definitions.some(item => item.name === input.name))) {
         return send(response, 400, { error: '无效的 Somnus 项目工具。' });
       }
@@ -239,4 +260,4 @@ async function projectToolHost(dispatch) {
   };
 }
 
-module.exports = { projectToolHost, SHELL_APPROVAL, USER_QUESTION, STEER_CLAIM, STEER_COMMAND, TOKEN_VARIABLE, ENDPOINT_VARIABLE };
+module.exports = { SESSION_CHECK, projectToolHost, SHELL_APPROVAL, NATIVE_APPROVAL, USER_QUESTION, STEER_CLAIM, STEER_COMMAND, TOKEN_VARIABLE, ENDPOINT_VARIABLE };

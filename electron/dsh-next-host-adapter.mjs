@@ -13,9 +13,6 @@ const DATA_VARIABLES = new Map([
 const DATA_ENTRY_IDS = new Set([...DATA_VARIABLES.keys()].map(name => 'somnus-' + name));
 const MCP_CONNECTOR = '@deepseek-ai/dsh-mcp-client';
 const MCP_MANAGER = '@deepseek-ai/dsh-mcp-manager';
-const PROVIDER = 'vvman-company';
-const PROVIDER_TOKEN = 'DSH_SOMNUS_NEXT_MODEL_TOKEN';
-const LIMITS = new Set(['none', 'low', 'high', 'max']);
 
 function mcpName(value) {
   return typeof value === 'string' ? value.trim().toLowerCase().replaceAll('_', '-') : '';
@@ -80,32 +77,7 @@ export function apply(ctx, { enabledConversations }) {
 }
 `;
 
-function providerRows(lease, endpoint, env) {
-  if (lease == null) return [];
-  if (typeof lease.model !== 'string' || !MODEL.test(lease.model) || !TOKEN.test(lease.token ?? '') ||
-      !Array.isArray(lease.models) || lease.models.length > 10 ||
-      !lease.models.every(entry => typeof entry?.model === 'string' && MODEL.test(entry.model))) {
-    throw new Error('Somnus returned an invalid company model capability');
-  }
-  const models = new Map();
-  for (const entry of [{ model: lease.model, vision: lease.vision }, ...lease.models]) {
-    const reasoningEfforts = Object.fromEntries((Array.isArray(entry.reasoning_efforts) ? entry.reasoning_efforts : [])
-      .filter(effort => LIMITS.has(effort)).map(effort => [effort === 'none' ? 'off' : effort, effort]));
-    models.set(entry.model, {
-      id: entry.model, contextWindow: /^(?:deepseek-flash|deepseek-v4-(?:flash(?:-vision-exp)?|pro))$/.test(entry.model) ? 1_000_000 : 64_000,
-      maxTokens: 16_384, input: entry.vision ? ['text', 'image'] : ['text'],
-      ...(Object.keys(reasoningEfforts).length > 1 ? { reasoningEfforts } : {}),
-    });
-  }
-  env[PROVIDER_TOKEN] = lease.token;
-  return [{ insert: [{ id: 'somnus-company-model', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { [PROVIDER]: {
-    displayName: 'Somnus 公司模型', api: 'openai-responses', apiKeyEnv: PROVIDER_TOKEN,
-    compat: { supportsDeveloperRole: false, supportsLongCacheRetention: false },
-    baseURL: endpoint + '/provider', retryPolicy: { mode: 'normal', maxRetries: 0 }, models: [...models.values()],
-  } } } }] }, { id: 'agent-default-model', config: { provider: PROVIDER, model: lease.model } }];
-}
-
-export async function prepareSomnusHost({ origin, token, legacyProfileDir, fetcher = fetch, tempRoot = tmpdir() }) {
+export async function prepareSomnusHost({ origin, token, legacyProfileDir, importModelsFile, fetcher = fetch, tempRoot = tmpdir() }) {
   const address = new URL(origin);
   if (address.hostname !== '127.0.0.1' || address.protocol !== 'http:' || !address.port || address.username ||
       address.password || address.pathname !== '/' || address.search || address.hash || !TOKEN.test(token ?? '')) {
@@ -122,6 +94,7 @@ export async function prepareSomnusHost({ origin, token, legacyProfileDir, fetch
   }
   const endpoint = base + '/' + lease.id;
   const env = {};
+  if (importModelsFile) env.SOMNUS_NATIVE_IMPORT_FILE = importModelsFile;
   let directory, patchFile, teamFile, disposal;
   const dispose = () => disposal ??= (async () => {
     for (const [key, value] of Object.entries(env)) {
@@ -159,7 +132,38 @@ export async function prepareSomnusHost({ origin, token, legacyProfileDir, fetch
         '          Authorization: !!js ' + JSON.stringify("'Bearer ' + process.env." + key),
       ]);
     }
-    const rows = [...providerRows(lease.provider, endpoint, env), { id: 'subagent', config: lease.subagents }];
+    const rows = [{ id: 'subagent', config: lease.subagents },
+      { id: 'llm-deepseek', disabled: true }, { id: 'llm-deepseek-account', disabled: true },
+      { insert: [{ id: 'somnus-provider-policy', name: new URL('./somnus-provider-policy.mjs', import.meta.url).href }] }];
+    if (importModelsFile) rows.push({ insert: [{ id: 'somnus-native-migration',
+      name: new URL('./somnus-native-migration.mjs', import.meta.url).href }] });
+    if (process.env.SOMNUS_ACP_URL && process.env.SOMNUS_ACP_TOKEN) {
+      const resources = process.resourcesPath || join(process.execPath, '..', 'resources');
+      rows.push({
+        insert: [{
+          id: 'somnus-acp-adapter',
+          name: pathToFileURL(join(resources, 'somnus', 'somnus-acp-adapter.mjs')).href,
+        }],
+      });
+      rows.push({
+        insert: [{
+          id: 'somnus-codex',
+          name: MCP_CONNECTOR,
+          config: {
+            serverName: 'somnus-codex',
+            transport: 'stdio',
+            command: process.execPath,
+            args: [join(resources, 'somnus', 'acp-mcp.mjs')],
+            env: {
+              ELECTRON_RUN_AS_NODE: '1',
+              SOMNUS_ACP_URL: process.env.SOMNUS_ACP_URL,
+              SOMNUS_ACP_TOKEN: process.env.SOMNUS_ACP_TOKEN,
+            },
+            failOnStartupError: false,
+          },
+        }],
+      });
+    }
     const [execution, teamwork] = await Promise.all([
       readLegacyJson(legacyProfileDir, 'agent-execution-settings.json', 4096),
       readLegacyJson(legacyProfileDir, 'conversation-teamwork.json', 512 * 1024),

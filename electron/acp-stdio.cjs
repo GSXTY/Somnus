@@ -2,6 +2,17 @@ const { spawn } = require('node:child_process');
 
 const MAX_LINE = 4 * 1024 * 1024;
 
+function requestTimeoutError(method) {
+  const stage = {
+    initialize: '启动外部 Agent 超时，请稍后重试或在配置中心检查运行时。',
+    'session/new': '外部 Agent 创建会话超时，请检查本机运行时和 MCP 连接后重试。',
+    'session/set_model': '外部 Agent 切换模型超时，请检查模型是否可用后重试。',
+    'session/set_config_option': '外部 Agent 应用会话设置超时，请重试。',
+    authenticate: '外部 Agent 登录等待超时，请重新登录。',
+  };
+  return new AcpError(stage[method] || '等待外部 Agent 响应超时。', 'ACP_REQUEST_TIMEOUT');
+}
+
 function processEnvironment() {
   // Pass system settings here. Managed adapters receive their own authentication scope below.
   const allowed = new Set([
@@ -128,7 +139,10 @@ class AcpStdio {
     clearTimeout(pending.deadline);
     if (message.error) {
       const code = message.error.code;
-      const label = code === -32000
+      const missingDshKey = /no API key for provider route/.test(String(message.error.message || ''));
+      const label = missingDshKey
+        ? 'DSH 当前模型路由缺少授权。请在 Agent 配置中刷新 DeepSeek 登录账户并选择账户模型。'
+        : code === -32000
         ? '外部 Agent 需要登录或重新验证。请在 Agent 设置中检查登录方式。'
         : '外部 Agent 未完成此请求，请检查它的启动参数和登录状态。';
       pending.reject(new AcpError(label, code));
@@ -147,7 +161,7 @@ class AcpStdio {
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
       const deadline = timeout == null ? undefined :
-        setTimeout(() => this.stop(new AcpError('等待外部 Agent 响应超时。')), timeout);
+        setTimeout(() => this.stop(requestTimeoutError(method)), timeout);
       this.pending.set(id, { resolve, reject, deadline, method });
       this.send({ id, method, params });
     });

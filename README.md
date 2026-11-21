@@ -1,95 +1,39 @@
-<div align="center">
-  <img src="electron/brand/somnus.png" width="108" alt="Somnus 标志" />
+# Somnus
 
-  <h1>Somnus Explorer</h1>
+SomnusNext 是基于 DSH Next Desktop 的 Somnus 桌面工作台，包含多 Agent 会话、公司数据接入、文档、SQL、深度分析与呼吸波形工具。
 
-  <p><strong>面向项目协作、公司数据分析和呼吸波形复核的 Windows 桌面工作台。</strong></p>
+本目录是完整可编辑源码。当前源码基线尚未发布新安装包；本机已有程序从 `app/Somnus.exe` 或 `启动 SomnusNext.cmd` 打开。`app/` 不属于源码，不同步到 GitHub。
 
-  <p>
-    <a href="https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.9"><img alt="下载 Windows x64" src="https://img.shields.io/badge/下载-Windows%20x64-176d61?style=for-the-badge" /></a>
-    <a href="https://github.com/GSXTY/Somnus-Releases/releases"><img alt="发布版本" src="https://img.shields.io/github/v/release/GSXTY/Somnus-Releases?include_prereleases&style=for-the-badge&label=Release" /></a>
-  </p>
+## 从哪里开始修改
 
-  <p>
-    <a href="#下载与安装">下载与安装</a> ·
-    <a href="#工作台功能">功能</a> ·
-    <a href="#典型工作流">工作流</a> ·
-    <a href="USER_GUIDE.md">使用说明</a>
-  </p>
-</div>
-
-Somnus 将项目文件、AI 会话、数据工具和波形复核放在同一个桌面应用中。Windows 版支持按会话选择内置模型或通过 ACP 接入 Codex、DeepSeek Harness 等外部 Agent，也可以在配置中心管理 Skill、MCP 和插件。
-
-## 下载与安装
-
-| 平台 | 下载 | 安装方式 |
-| --- | --- | --- |
-| **Windows x64** | [Windows 安装包](https://github.com/GSXTY/Somnus-Releases/releases/tag/v0.3.0-beta.9) | 在发布页下载 `Somnus-Setup-0.3.0-beta.9-windows-x64.exe`，安装后从「开始」菜单打开 **Somnus**。 |
-
-更新前，请在系统托盘选择「退出 Somnus」，再运行新版安装程序。Windows 版关闭窗口后会继续在托盘运行。v0.3.0-beta.9 为未签名的 Windows x64 预览版，需手动下载安装；发布页提供同名 `.sha256` 校验文件和更新记录。 [使用说明](USER_GUIDE.md) · [发布历史](https://github.com/GSXTY/Somnus-Releases/releases)
-
-## 工作台预览
-
-![Somnus 的波形分析界面，显示合成 CSV 的多通道波形](docs/images/somnus-waveform-demo.webp)
-
-<sub>截图使用合成 CSV，展示波形分析和工程候选复核界面。</sub>
-
-## 工作台功能
-
-| 工作区 | 可以做什么 |
+| 内容 | 源码位置 |
 | --- | --- |
-| **会话与 Agent** | 在项目中保存多条聊天，按会话选择模型或 ACP Agent，查看流式回复、执行过程、上下文占用和模型回传的用量。 |
-| **项目与代码** | 授权本机项目目录，搜索和读取文件，创建会话级 Git 工作树，查看差异，审阅 Agent 的修改提案并运行已配置的测试。 |
-| **Skill、MCP 与插件** | 在 Somnus 配置中心管理 Skill、MCP 和个人插件，也可管理托管 DeepSeek Harness 的插件。按消息选用能力，工具操作使用当前会话权限。 |
-| **公司数据与深度分析** | 查看运营指标，通过授权的数据连接发起只读查询。独立的深度分析试用支持上传 CSV、跟踪任务并查看报告和图表，需要单独配置模型和受限 Docker 环境。 |
-| **呼吸波形复核** | 打开本机 CSV，检查流量、压力和漏气，扫描工程候选，人工确认或修改标记，查看历史批次并导出反馈。 |
-| **Windows 桌面管理** | 用托盘打开工作台或项目目录，按类别设置任务提醒，切换运行配置。可从独立恢复窗口返回上次可用配置、进入安全模式或导出启动诊断。 |
+| 桌面主页、文档、工具及原生界面 | `desktop/dsh_next/client/` |
+| 桌面启动、IPC、Agent 接入 | `desktop/dsh_next/host/`、`electron/` |
+| 共享 React 页面、配置、SQL、分析界面 | `page_design/frontend/src/` |
+| Agent 与服务 API | `ai_assistant/`、`agent_core/`、`server/` |
+| 波形、事件检测 | `event_detection/`、`server_detection/` |
+| 数据接入、深度分析 | `data_gateway/`、`mcp_connectors/`、`deep_analysis/` |
 
-[会话与工具说明](ai_assistant/README.md) · [深度分析说明](deep_analysis/README.md) · [架构与模块](docs/AGENT_PLATFORM_PLAN.md)
+完整目录表见 [SOURCE_MAP.md](SOURCE_MAP.md)。使用 `Somnus-Source.code-workspace` 可按功能浏览源码。
 
-## 典型工作流
+## 修改、检查、合并
 
-### 在项目里和 Agent 协作
-
-1. 在左侧「项目」新建或打开项目，选择要授权的本机目录。
-2. 新建会话，选择内置模型或已连接的 ACP Agent。需要时为本轮选用 Skill、MCP 或插件。
-3. 检查执行过程和修改提案，应用所需改动，再运行测试。Windows 版可在当前会话开启「完全访问」，每次 PowerShell 调用会显示命令、工作目录和超时供确认。
-
-### 查询数据或复核波形
-
-- 在看板查看运营指标。连接公司数据后，查询范围由已配置的数据源与授权表决定。开发环境可使用合成数据检查指标和视图。
-- 在「波形分析」里明确选择一份真实 CSV，选择检测方案并扫描所需区间，逐条复核后按批次导出。
-- 需要生成表格分析报告时，在「深度分析」单独上传数据并查看任务状态。
-
-> 自动筛查结果是待人工复核的工程候选，用于研发和工程分析。临床诊断与治疗决策需要相应的专业流程。
-
-## 本机数据与权限
-
-默认 Windows 数据目录为 `%LOCALAPPDATA%\VVFLY\Somnus\`。会话、标记和扫描历史与程序分开保存。新建的运行配置有独立数据目录，切回原配置即可访问其中的记录。
-
-文件、附件和工具结果可能依所选模型与工具配置发送给外部服务。安装包内提供应用组件，账号、密钥和业务数据由使用者在本机配置。本机桌面版面向单操作者。 [数据目录与恢复说明](USER_GUIDE.md) · [模型配置与数据传输说明](ai_assistant/README.md)
-
-## 从源码运行
-
-推荐 Python 3.12、Node.js 24 和 pnpm 11.25.0。以下命令从仓库根目录运行。
+每个任务从最新 main 新建分支，通过 PR 检查和审查后才合并。详细步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。当前工作副本的 `.git` 仍指向旧项目，首次使用 Git 前请按该文档执行独立 Git 修复；全新 clone 不受影响。
 
 ```powershell
-python -m pip install -r requirements.txt
 pnpm --dir page_design/frontend install --frozen-lockfile
-pnpm --dir page_design/frontend build
-python launcher.py
+python -B tools/source_checks.py
 ```
 
-`launcher.py` 启动统一的本机服务，同一地址提供工作台和 `/events` 波形页面。Windows 安装包构建见 [Electron 构建说明](docs/ELECTRON_MIGRATION.md)。已有打包组件时，可运行 `python build_electron.py --dir` 生成本机可运行目录，再启动 `dist/electron/win-unpacked/Somnus.exe`。
+检查环境为 Python 3.13、Node.js 24、pnpm 11.25.0；不需要运行程序或构建安装包。源码 CI 检查语法、目录、类型与前端回归，后端和原生桌面改动仍需相应专项验收。
 
-## 文档与项目
+## 构建与运行
 
-| 主题 | 文档 |
-| --- | --- |
-| 安装、恢复与日常使用 | [使用说明](USER_GUIDE.md) · [Electron 构建与迁移](docs/ELECTRON_MIGRATION.md) |
-| Agent、模型和工具配置 | [会话与 Agent](ai_assistant/README.md) · [MCP 配置](docs/MCP_CONNECTORS.md) |
-| 服务与架构 | [架构与模块](docs/AGENT_PLATFORM_PLAN.md) · [FastAPI 服务](docs/FASTAPI_SERVER.md) |
-| 呼吸波形与工程证据 | [检测模块](docs/EVENT_DETECTION_MODULE.md) · [患者流量 v4](docs/PATIENT_FLOW_V4.md) |
-| 版本变更 | [更新记录](RELEASE_NOTES.md) · [GitHub 发布页](https://github.com/GSXTY/Somnus-Releases/releases) |
+[完整构建和发布流程](docs/BUILD_AND_RELEASE.md) 区分源码检查、本机更新、完整程序 staging 与安装包发布。[Next 本机更新命令](desktop/dsh_next/NEXT_BUILD.md) 和 [开发产物位置](docs/DEVELOPMENT_STORAGE.md) 提供细节。
 
-第三方组件按各自许可证分发。本仓库尚未声明公开开源许可证。
+默认构建与备份写入源码目录同级 `SomnusNext-Storage`；可用 `SOMNUS_DEV_STORAGE` 指定源码目录外的位置。当前用户配置、会话等使用 `%APPDATA%/VVFLY/SomnusNext`。新会话默认 Somnus，模型供应商在配置页接入。
+
+`.env`、本地 MCP 配置、用户数据、检测运行结果、依赖、上游 ASAR 和构建产物不进入源码仓库。开发截图保留本机，不默认同步公开仓库。第三方源码、必要图标/字体及其许可证保留。
+
+现有使用说明见 [USER_GUIDE.md](USER_GUIDE.md)，历史发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。合并 PR 不自动生成或发布安装包。

@@ -1,7 +1,11 @@
 import { defineConfig } from 'vite';
+import { cachePathFromUrl } from '../../desktop/storage-paths.mjs';
+import { frontendBuildManifest } from './build-manifest.mjs';
 
 export default defineConfig({
   base: '/workbench-assets/',
+  cacheDir: cachePathFromUrl(new URL('../../', import.meta.url), 'frontend', 'vite'),
+  plugins: [frontendBuildManifest()],
   build: {
     outDir: '../web', emptyOutDir: true, assetsDir: 'assets',
     rollupOptions: {
@@ -18,3 +22,4 @@ export default defineConfig({
   },
   server: { proxy: { '/api': 'http://127.0.0.1:8765', '/events': 'http://127.0.0.1:8765' } },
 });
+

@@ -5,7 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const ts = createRequire(import.meta.url)('typescript');
-const compiled = ts.transpileModule(readFileSync(new URL('../src/DocumentLibrary.tsx', import.meta.url), 'utf8'), {
+const compiled = ts.transpileModule(readFileSync(new URL('../src/documents/DocumentLibrary.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const nodes = node => Array.isArray(node) ? node.flatMap(nodes) :
@@ -40,7 +40,7 @@ function harness(bridge, picker, window = new EventTarget()) {
     './errors.mjs': { describeError: error => error.message },
     './documentLibraryBridge': { documentBridge: () => bridge, personalDocumentsChangedEvent },
   };
-  vm.runInNewContext(compiled, { exports, window, require: name => imports[name] });
+  vm.runInNewContext(compiled, { exports, window, require: name => (imports[name] ?? (name.startsWith('.') ? Object.entries(imports).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === name.split('/').at(-1))?.[1] : undefined)) });
   const browsers = nodes(picker ? exports.DocumentPicker(picker) : exports.DocumentLibrary()).filter(node => typeof node.type === 'function');
   return scope => {
     const browser = browsers.find(node => node.props.scope === scope);

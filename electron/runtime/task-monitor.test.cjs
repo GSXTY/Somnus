@@ -1,0 +1,6 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const {TaskMonitor,policy}=require('./task-monitor.cjs');
+test('no fixed twelve minute limit: healthy long tasks keep waiting without replay',()=>{const monitor=new TaskMonitor({},0);monitor.contact(1,720001);assert.equal(monitor.check(720001),null);monitor.contact(2,3600000);assert.equal(monitor.check(3600000),null);});
+test('idle is a visible warning, disconnection and user maximum are distinct bounded decisions',()=>{const monitor=new TaskMonitor({},0);assert.equal(monitor.check(120001).code,'idle');assert.equal(monitor.check(120002),null);monitor.contact(1,120003);assert.equal(monitor.check(120004),null);assert.throws(()=>monitor.failure(180004),/失联/);assert.throws(()=>new TaskMonitor({tasks:{maxDurationMinutes:1}},0).check(60001),/最长运行/);assert.throws(()=>policy({tasks:{disconnectTimeoutSeconds:0}}),/超出范围/);});
+
+test('streaming text or tool progress counts as activity even if durable cursor is unchanged',()=>{const monitor=new TaskMonitor({},0);monitor.contact(4,0);monitor.activity(119000);assert.equal(monitor.check(121000),null);assert.equal(monitor.check(240001).code,'idle');assert.equal(monitor.activity(240002),true);assert.equal(monitor.check(240003),null);});

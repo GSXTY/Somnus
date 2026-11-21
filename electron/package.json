@@ -14,13 +14,21 @@
     "appId": "com.vvfly.respiratoryviewer",
     "electronVersion": "45.3.2",
     "npmRebuild": false,
-    "asarUnpack": ["node_modules/node-pty/**"],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
     "files": [
       "*.cjs",
+      "*.mjs",
+      "runtime/**/*.cjs",
+      "runtime/**/*.mjs",
+      "runtime/*.json",
       "package.json",
       "brand/*",
       "!*.test.cjs",
-      "!acp-dot-relay-client.cjs"
+      "!acp-dot-relay-client.cjs",
+      "!runtime/**/*.test.cjs",
+      "!runtime/**/*.test.mjs"
     ],
     "directories": {
       "output": "../dist/electron"
@@ -72,7 +80,8 @@
         "CFBundleDisplayName": "Somnus"
       },
       "artifactName": "Somnus-${version}-electron-macos-${arch}.${ext}"
-    }
+    },
+    "extends": "./electron-builder.config.cjs"
   },
   "dependencies": {
     "electron-updater": "6.8.3",

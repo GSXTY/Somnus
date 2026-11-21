@@ -8,6 +8,35 @@ const test = require('node:test');
 const { detectAdapter, detectManagedCodex } = require('./acp-discovery.cjs');
 const { registerAcpAgents } = require('./acp-ipc.cjs');
 
+test('desktop clipboard writes only bounded plain text from the workbench main frame', async t => {
+  const profileDir = await mkdtemp(path.join(os.tmpdir(), 'somnus-copy-'));
+  const origin = 'http://127.0.0.1:8765';
+  const frame = { url: origin + '/#assistant' };
+  const window = new EventEmitter();
+  window.isDestroyed = () => false;
+  window.webContents = Object.assign(new EventEmitter(), { mainFrame: frame });
+  const event = { sender: window.webContents, senderFrame: frame };
+  const handlers = new Map();
+  const writes = [];
+  const loadModule = Module._load;
+  t.mock.method(Module, '_load', (specifier, ...args) =>
+    specifier === 'electron' ? { clipboard: { writeText: text => writes.push(text) } } : loadModule.call(Module, specifier, ...args));
+  registerAcpAgents({
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler), removeHandler: name => handlers.delete(name) },
+    window, origin, profileDir, resourcesPath: profileDir, version: '1.0.0',
+  });
+  t.after(async () => {
+    window.emit('closed');
+    await rm(profileDir, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const write = handlers.get('vvman-acp:copy-text');
+  assert.throws(() => write({ ...event, senderFrame: { url: frame.url } }, 'denied'));
+  assert.throws(() => write(event, { value: 'denied' }));
+  assert.throws(() => write(event, '文本'.repeat(1_000_000)));
+  write(event, 'Somnus 文本');
+  assert.deepEqual(writes, ['Somnus 文本']);
+});
+
 test('managed DSH reconnect keeps its ID and checkpoint verifies separate account state', { skip: process.platform !== 'win32' }, async t => {
   const profileDir = await mkdtemp(path.join(os.tmpdir(), 'somnus-dsh-checkpoint-'));
   const origin = 'http://127.0.0.1:8765';

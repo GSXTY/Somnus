@@ -19,7 +19,7 @@
 
 ## Windows 本机交付
 
-- Windows 本机使用统一更新 `dist/electron/win-unpacked/Somnus.exe` 所在的可运行目录。
+- Windows 本机统一更新本项目的 `app/Somnus.exe` 所在可运行目录；`启动 SomnusNext.cmd` 指向该入口。
 - 仅当用户明确要求给同事安装包或分发文件时，才生成安装程序、分发压缩包及其校验文件。
 
 ## 数据与历史证据
@@ -27,3 +27,24 @@
 保留用户数据、原始 CSV/EDF、标记、历史批次和原始算法证据；不因页面或算法升级删除、覆盖或重写历史结果。数据来源、未知状态、工程候选与人工复核边界须清楚表达。
 
 详细架构及能力现状见 `docs/AGENT_PLATFORM_PLAN.md`。
+
+
+## 开发目录与外置产物
+
+- 完整源码仍在本目录，按 `SOURCE_MAP.md` 分工修改；不是只读副本。
+- 开发构建、临时目录、依赖缓存和备份使用 `storage_paths.py` / `desktop/storage-paths.mjs`，默认写入同级 `SomnusNext-Storage`，不要重建根 `build`、`.tmp`、`.local-backups` 等重目录。
+- `.git` 是指向外置 Git 元数据的正式 gitfile，不得删除或当作无用缓存清理。本工作副本的旧指向需要按 `CONTRIBUTING.md` 修复；修复前使用 `git --git-dir=.somnus-git --work-tree=.`，不要操作旧项目的 Git 元数据。
+- 旧 `dist/electron/win-unpacked` 入口不再作为本项目交付位置；当前唯一可运行目录是 `app`。源码检索不要递归跟随目录 junction。`node_modules`、`.venv` 与用户 `data` 保留，检索时避开依赖与数据。
+- Python 验证优先设置 `PYTHONDONTWRITEBYTECODE=1` 或将 `PYTHONPYCACHEPREFIX` 指向外置 `cache/python`，减少源码目录重新生成字节码缓存。
+
+
+## 强制开发流程（2026-11-21 起）
+
+- 新功能、修复、重构及文档都从最新 main 新建任务分支，遵循 `CONTRIBUTING.md`。
+- 修改前确认当前分支和已有修改；禁止直接向 main 提交或推送，禁止擅自覆盖他人修改或强推。
+- 完成必要测试、检查暂存差异后提交并推送分支，创建目标为 main 的 PR，记录验证和剩余限制。
+- 由项目负责人审查并合并；除非负责人明确另行授权，不自动合并 PR。
+- PR 合并不等于打包。只有明确要求时才重建本机程序、生成安装包、创建 tag 或发布 Release。
+- 本次整理不打包、不更新 `app`，不引入待讨论的数据分析新功能。
+- 不提交 API Key、密码、本地配置、真实用户数据、检测输出、截图中的敏感内容或构建二进制。
+- GitHub 服务器端强制规则需管理员启用；不能把流程文档描述为已生效的分支保护。

@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 if (process.isMainFrame && location.protocol === 'http:' &&
     location.hostname === '127.0.0.1' && location.pathname === '/') {
+  contextBridge.exposeInMainWorld('somnusClipboard', {
+    writeText: value => ipcRenderer.invoke('vvman-acp:copy-text', value),
+  });
   if (process.platform === 'win32') contextBridge.exposeInMainWorld('somnusDesktop', {
     run: action => ipcRenderer.invoke('somnus-desktop:run', action),
     teamwork: conversationId => ipcRenderer.invoke('vvman-acp:teamwork', conversationId),
@@ -14,14 +17,23 @@ if (process.isMainFrame && location.protocol === 'http:' &&
     ipcRenderer.on(channel, forward);
     return () => ipcRenderer.removeListener(channel, forward);
   }
+  if (process.platform === 'win32') contextBridge.exposeInMainWorld('somnusWorkspaceFiles', {
+    watch: input => ipcRenderer.invoke('somnus-workspace-files:watch',input),
+    unwatch: (id,cid) => ipcRenderer.invoke('somnus-workspace-files:unwatch',id,cid),
+    onChange: listener => { const receive=(_event,value)=>listener(value);ipcRenderer.on('somnus-workspace-files:change',receive);return ()=>ipcRenderer.removeListener('somnus-workspace-files:change',receive); },
+  });
   if (process.platform === 'win32') contextBridge.exposeInMainWorld('somnusWorkspaceTerminal', {
-    start: (projectId, sourceIndex, conversationId, cols, rows) =>
-      ipcRenderer.invoke(terminalPrefix + 'start', projectId, sourceIndex, conversationId, cols, rows),
-    write: (id, data) => ipcRenderer.invoke(terminalPrefix + 'write', id, data),
-    resize: (id, cols, rows) => ipcRenderer.invoke(terminalPrefix + 'resize', id, cols, rows),
-    stop: id => ipcRenderer.invoke(terminalPrefix + 'stop', id),
+    shells: () => ipcRenderer.invoke(terminalPrefix + 'shells'),
+    list: (projectId,sourceIndex,cid) => ipcRenderer.invoke(terminalPrefix+'list',projectId,sourceIndex,cid),
+    snapshot: (id,cid) => ipcRenderer.invoke(terminalPrefix+'snapshot',id,cid),
+    start: (projectId, sourceIndex, conversationId, cols, rows, shellId) =>
+      ipcRenderer.invoke(terminalPrefix + 'start', projectId, sourceIndex, conversationId, cols, rows,shellId),
+    write: (id, data,cid) => ipcRenderer.invoke(terminalPrefix + 'write', id, data,cid),
+    resize: (id, cols, rows,cid) => ipcRenderer.invoke(terminalPrefix + 'resize', id, cols, rows,cid),
+    stop: (id,cid) => ipcRenderer.invoke(terminalPrefix + 'stop', id,cid),
     onData: listener => onTerminalEvent('data', listener),
     onExit: listener => onTerminalEvent('exit', listener),
+    onState: listener => onTerminalEvent('state', listener),
   });
   if (process.platform === 'win32') contextBridge.exposeInMainWorld('somnusDshIm', {
     status: () => ipcRenderer.invoke('somnus-dsh-im:status'),
@@ -36,6 +48,7 @@ if (process.isMainFrame && location.protocol === 'http:' &&
       return ipcRenderer.invoke('somnus-plugin-pages:show', id, bounds);
     };
     contextBridge.exposeInMainWorld('somnusDshPluginPage', {
+      extensions: id => ipcRenderer.invoke('somnus-plugin-pages:extensions', id),
       list: () => ownedPages(),
       showOwned,
       status: async (id, source) => (source === 'community' && (await ownedPages(id)).length)
@@ -56,10 +69,20 @@ if (process.isMainFrame && location.protocol === 'http:' &&
     promptConversation: input => ipcRenderer.invoke('vvman-acp:native-dsh-prompt', input),
     listCommands: input => ipcRenderer.invoke('vvman-acp:native-dsh-list-commands', input),
     taskState: input => ipcRenderer.invoke('vvman-acp:native-dsh-task-state', input),
+    listAgentModes: input => ipcRenderer.invoke('vvman-acp:native-dsh-list-agent-modes', input),
+    selectAgentMode: input => ipcRenderer.invoke('vvman-acp:native-dsh-select-agent-mode', input),
     executeCommand: input => ipcRenderer.invoke('vvman-acp:native-dsh-execute-command', input),
     cancelConversation: id => ipcRenderer.invoke('vvman-acp:native-dsh-cancel', id),
     steer: input => ipcRenderer.invoke('vvman-acp:native-dsh-steer', input),
     steerQueue: input => ipcRenderer.invoke('vvman-acp:native-dsh-steer-queue', input),
+    inheritedHistory: input => ipcRenderer.invoke('vvman-acp:native-dsh-inherited-history',input),
+    nativePreferences: input => ipcRenderer.invoke('vvman-acp:native-dsh-native-preferences',input),
+    saveNativePreferences: input => ipcRenderer.invoke('vvman-acp:native-dsh-save-native-preferences',input),
+    childConversation: input => ipcRenderer.invoke('vvman-acp:native-dsh-child-conversation', input),
+    history: input => ipcRenderer.invoke('vvman-acp:native-dsh-history', input),
+    trajectory: input => ipcRenderer.invoke('vvman-acp:native-dsh-history', input),
+    historyTool: input => ipcRenderer.invoke('vvman-acp:native-dsh-history-tool', input),
+    fork: input => ipcRenderer.invoke('vvman-acp:native-dsh-fork', input),
     subagentDetail: input => ipcRenderer.invoke('vvman-acp:native-dsh-subagent-detail', input),
     subagentToolDetail: input => ipcRenderer.invoke('vvman-acp:native-dsh-subagent-tool', input),
     respondPermission: (id, requestId, optionId) =>
@@ -152,6 +175,24 @@ if (process.isMainFrame && location.protocol === 'http:' &&
     respondDevelopment: (conversationId, id, approved) => ipcRenderer.invoke('vvman-projects:respond-development', conversationId, id, approved),
     cancelDevelopment: (conversationId, id) => ipcRenderer.invoke('vvman-projects:cancel-development', conversationId, id),
   });
+  contextBridge.exposeInMainWorld('somnusRuntime', {
+    onAppearance: listener => {
+      const receive = (_event,value) => listener(value);
+      ipcRenderer.on('somnus-runtime:appearance',receive);
+      return () => ipcRenderer.removeListener('somnus-runtime:appearance',receive);
+    },
+    setAppearance: value => ipcRenderer.invoke('vvman-acp:runtime-appearance', value),
+    uiPreferences: () => ipcRenderer.invoke('vvman-acp:runtime-ui-preferences'),
+    saveUiPreferences: value => ipcRenderer.invoke('vvman-acp:save-runtime-ui-preferences', value),
+    settings: () => ipcRenderer.invoke('vvman-acp:runtime-settings'),
+    setSettings: value => ipcRenderer.invoke('vvman-acp:set-runtime-settings', value),
+    diagnostics: () => ipcRenderer.invoke('vvman-acp:runtime-diagnostics'),
+    capabilities: input => ipcRenderer.invoke('vvman-acp:runtime-capabilities', input),
+    cancelTask: input => ipcRenderer.invoke('vvman-acp:runtime-cancel-task', input),
+    interactions: input => ipcRenderer.invoke('vvman-acp:runtime-interactions', input),
+    respondPermission: (input, requestId, optionId) => ipcRenderer.invoke('vvman-acp:runtime-respond-permission', input, requestId, optionId),
+    respondQuestion: (input, requestId, answers) => ipcRenderer.invoke('vvman-acp:runtime-respond-question', input, requestId, answers),
+  });
   contextBridge.exposeInMainWorld('vvmanAcp', {
     list: () => ipcRenderer.invoke('vvman-acp:list'),
     detectAdapter: provider => ipcRenderer.invoke('vvman-acp:detect-adapter', provider),
@@ -185,6 +226,7 @@ if (process.isMainFrame && location.protocol === 'http:' &&
     save: profile => ipcRenderer.invoke('vvman-acp:save', profile),
     remove: id => ipcRenderer.invoke('vvman-acp:remove', id),
     probe: id => ipcRenderer.invoke('vvman-acp:probe', id),
+    agentReadiness: () => ipcRenderer.invoke('vvman-acp:agent-readiness'),
     saveConfigurationCheckpoint: (id, revision) => ipcRenderer.invoke('vvman-acp:save-configuration-checkpoint', id, revision),
     authenticate: (id, methodId) => ipcRenderer.invoke('vvman-acp:authenticate', id, methodId),
     cancelAuthentication: () => ipcRenderer.invoke('vvman-acp:cancel-authentication'),
@@ -194,10 +236,13 @@ if (process.isMainFrame && location.protocol === 'http:' &&
     cancelDelegation: (conversationId, requestId) => ipcRenderer.invoke('vvman-acp:cancel-delegation', conversationId, requestId),
     discoverModels: (id, modelId) => ipcRenderer.invoke('vvman-acp:discover-models', id, modelId),
     promptConversation: input => ipcRenderer.invoke('vvman-acp:prompt-conversation', input),
-    cancelConversation: id => ipcRenderer.invoke('vvman-acp:cancel-conversation', id),
+    connectionStates: input => ipcRenderer.invoke('vvman-acp:connection-states', input),
+    warmConversation: input => ipcRenderer.invoke('vvman-acp:warm-conversation', input),
+    releaseConversationAgent: input => ipcRenderer.invoke('vvman-acp:release-conversation-agent', input),
+    cancelConversation: (id, turnId) => ipcRenderer.invoke('vvman-acp:cancel-conversation', id, turnId),
     resetConversation: id => ipcRenderer.invoke('vvman-acp:reset-conversation', id),
-    respondPermission: (conversationId, requestId, optionId) =>
-      ipcRenderer.invoke('vvman-acp:respond-permission', conversationId, requestId, optionId),
+    respondPermission: (conversationId, requestId, optionId, turnId) =>
+      ipcRenderer.invoke('vvman-acp:respond-permission', conversationId, requestId, optionId, turnId),
     cancel: () => ipcRenderer.invoke('vvman-acp:cancel'),
     reset: () => ipcRenderer.invoke('vvman-acp:reset'),
     onUpdate: callback => {

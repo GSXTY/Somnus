@@ -1,3 +1,4 @@
+import { componentSourceUrl } from './source-paths.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -13,7 +14,7 @@ function nodes(value) {
 }
 
 function mount(component, options) {
-  const input = readFileSync(new URL('../src/' + component + '.tsx', import.meta.url), 'utf8');
+  const input = readFileSync(componentSourceUrl(component), 'utf8');
   const { outputText } = ts.transpileModule(input, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
   } });
@@ -38,7 +39,7 @@ function mount(component, options) {
     require(name) {
       if (name === 'react') return react;
       if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
-      if (name === './assistantApi') return options.api;
+      if (name.split('/').at(-1) === 'assistantApi') return options.api;
       return names;
     },
   });

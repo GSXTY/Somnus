@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>批量分析结果</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6f9;color:#253247;font:14px "Segoe UI","Microsoft YaHei",sans-serif}header{background:#fff;border-bottom:1px solid #dde3ec;padding:20px 28px}h1{margin:0 0 14px;font-size:22px}select,button,input{font:inherit;padding:8px;border:1px solid #cbd5e1;border-radius:6px;background:white;color:inherit}button{cursor:pointer}button:hover{background:#eaf1fc}.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}main{padding:20px;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px}.panel{background:#fff;border:1px solid #e0e5ec;border-radius:10px;padding:16px}#notice{color:#73551d;background:#fff8e5;padding:10px;margin-bottom:12px}#status{min-height:24px;color:#4b6382;margin:10px 0}canvas{width:100%;height:185px;display:block}h2{font-size:15px;margin:15px 0 6px}#events{max-height:650px;overflow:auto}#events button{display:block;text-align:left;width:100%;margin:6px 0;font-size:13px}.muted{color:#63758b;font-size:12px}pre{white-space:pre-wrap;word-break:break-word;font:12px Consolas,monospace}input[type=number]{width:100px}#slider{width:100%;margin:10px 0}@media(max-width:900px){main{grid-template-columns:1fr}select{max-width:100%}}
+</style>
+<header><h1>批量分析结果</h1><div class="controls"><label>批次 <select id="batch"></select></label><label>文件 <select id="file"></select></label></div></header>
+<main><section><div id="notice">工程候选待人工复核。文件包含不同设备标识，用户归属尚未确认。</div><div class="panel"><div class="controls"><button id="previous">← 前一段</button><button id="zoomIn">放大</button><button id="zoomOut">缩小</button><button id="next">后一段 →</button><button id="full">整段记录</button><label>起点（秒） <input id="start" type="number" min="0"></label><label>范围（秒） <input id="span" type="number" min="1"></label><button id="go">定位</button></div><input id="slider" type="range" min="0" value="0" step="1"><div id="status" role="status"></div><div id="plots"></div><div class="muted">横轴为记录起点后的源时间秒，悬停查看时间与数值。波形按当前范围保留分桶极值，候选区间使用完整结果。</div></div><details class="panel" style="margin-top:16px"><summary>算法参数与数据来源</summary><pre id="metadata"></pre></details><details class="panel" style="margin-top:16px"><summary>所选候选的完整证据</summary><pre id="evidence">点击右侧候选查看</pre></details></section><aside class="panel"><div class="controls"><label>类型 <select id="type"><option value="">全部类型</option></select></label><span id="count"></span></div><div id="events"></div></aside></main>
+<script>
+const $=id=>document.getElementById(id);
+let manifest, result, wave, start=0, span=120, sequence=0, selection=0;
+const palette={'强度显著下降候选':'#e59b9b','强度减弱候选':'#f0ca7c','数据缺失':'#bbc4d2','信号异常':'#bba5db'};
+async function api(path, params={}){const response=await fetch(path+'?'+new URLSearchParams(params));const data=await response.json();if(!response.ok)throw Error(data.error||'读取失败');return data}
+function run(action){Promise.resolve().then(action).catch(error=>{$('status').textContent=error.message})}
+function identity(){return {batch:$('batch').value,file:$('file').value}}
+function time(value){return new Date(new Date(result.recording.start.replace(' ','T')).getTime()+value*1000).toLocaleTimeString('zh-CN',{hour12:false})}
+function filtered(){return result.result.events.filter(event=>!$('type').value||event.type===$('type').value)}
+function list(){const events=filtered();$('count').textContent=events.length+' 条';$('events').replaceChildren();for(const event of events){const button=document.createElement('button');button.textContent=`${event.type} · ${time(event.start)} · ${(event.end-event.start).toFixed(0)}秒`;button.style.borderLeft='4px solid '+(palette[event.type]||'#94a3b8');button.onclick=()=>run(async()=>{start=Math.max(0,event.start-30);span=Math.max(90,event.end-event.start+60);$('evidence').textContent=JSON.stringify(event,null,2);await refresh()});$('events').append(button)}if(!events.length)$('events').textContent='当前筛选没有候选';if(wave)draw()}
+async function chooseFile(){
+ const token=++selection;
+ sequence++;
+ const requested=identity();
+ const loaded=await api('/api/result',requested);
+ if(token!==selection||requested.batch!==$('batch').value||requested.file!==$('file').value)return;
+ result=loaded;
+ wave=null;
+ start=0;
+ span=Math.min(120,result.recording.raw_duration);
+ $('type').replaceChildren(new Option('全部类型',''));
+ for(const kind of result.result.settings.event_types)$('type').add(new Option(kind,kind));
+ $('metadata').textContent=JSON.stringify({来源:result.recording,算法参数:result.result.settings,说明:result.result.warnings},null,2);
+ $('evidence').textContent='点击右侧候选查看';
+ list();
+ await refresh();
+}
+async function chooseBatch(){
+ const token=++selection;
+ sequence++;
+ const batch=$('batch').value;
+ const loaded=await api('/api/manifest',{batch});
+ if(token!==selection||batch!==$('batch').value)return;
+ manifest=loaded;
+ $('file').replaceChildren();
+ for(const entry of manifest.files){
+  if(entry.status==='completed')$('file').add(new Option(entry.filename,entry.metadata.file_id));
+ }
+ if(!$('file').value)throw Error('本批次没有已完成记录');
+ await chooseFile();
+}
+async function refresh(){const token=++sequence;const duration=result.recording.raw_duration;span=Math.min(duration,Math.max(1,span));start=Math.min(Math.max(0,start),duration-span);$('start').value=Math.round(start);$('span').value=Math.round(span);$('slider').max=Math.max(0,duration-span);$('slider').value=start;$('status').textContent='正在读取源波形…';const data=await api('/api/waveform',{...identity(),start,end:start+span,points:2000});if(token!==sequence)return;wave=data;$('status').textContent=`${time(start)} — ${time(start+span)} · ${start.toFixed(0)}–${(start+span).toFixed(0)}秒 · 原始 ${data.rows_in_view.toLocaleString()} 行`;draw()}
+function draw(){if(!wave)return;$('plots').replaceChildren();for(const [name,points] of Object.entries(wave.channels)){const heading=document.createElement('h2');heading.textContent=name+ (name==='压力'?'（Pa）':'（L/min）');const canvas=document.createElement('canvas');$('plots').append(heading,canvas);const width=canvas.clientWidth,height=185,ratio=devicePixelRatio||1;canvas.width=width*ratio;canvas.height=height*ratio;const ctx=canvas.getContext('2d');ctx.scale(ratio,ratio);const values=points.map(point=>point[1]);let low=Math.min(...values),high=Math.max(...values);if(!values.length){ctx.fillText('该范围无有效数据',50,50);continue}if(high===low){low--;high++}const left=60,right=width-15,top=12,bottom=155;const x=t=>left+(t-wave.start)/(wave.end-wave.start)*(right-left);const y=value=>bottom-(value-low)/(high-low)*(bottom-top);ctx.font='11px Segoe UI';for(let i=0;i<=4;i++){const value=low+(high-low)*i/4;ctx.strokeStyle='#e7ecf2';ctx.beginPath();ctx.moveTo(left,y(value));ctx.lineTo(right,y(value));ctx.stroke();ctx.fillStyle='#6b7b91';ctx.fillText(value.toFixed(1),3,y(value)+4);const t=wave.start+(wave.end-wave.start)*i/4;ctx.fillText(t.toFixed(0)+'s',Math.min(right-30,x(t)),177)}for(const event of filtered()){if(event.end<=wave.start||event.start>=wave.end)continue;ctx.fillStyle=(palette[event.type]||'#ddd')+'66';ctx.fillRect(x(Math.max(wave.start,event.start)),top,x(Math.min(wave.end,event.end))-x(Math.max(wave.start,event.start)),bottom-top)}ctx.strokeStyle='#2b76b8';ctx.lineWidth=1;ctx.beginPath();let previous=null;for(const point of points){if(previous===null||wave.gaps.some(gap=>gap[0]>=previous&&gap[1]<=point[0]))ctx.moveTo(x(point[0]),y(point[1]));else ctx.lineTo(x(point[0]),y(point[1]));previous=point[0]}ctx.stroke();canvas.onmousemove=event=>{const t=wave.start+(event.offsetX-left)/(right-left)*(wave.end-wave.start);const nearest=points.reduce((best,p)=>Math.abs(p[0]-t)<Math.abs(best[0]-t)?p:best,points[0]);canvas.title=`${time(nearest[0])} · ${nearest[0].toFixed(0)}秒 · ${nearest[1].toFixed(2)}`}}}
+$('batch').onchange=()=>run(chooseBatch);$('file').onchange=()=>run(chooseFile);$('type').onchange=list;
+$('previous').onclick=()=>run(()=>{start-=span;return refresh()});$('next').onclick=()=>run(()=>{start+=span;return refresh()});$('zoomIn').onclick=()=>run(()=>{start+=span/4;span/=2;return refresh()});$('zoomOut').onclick=()=>run(()=>{start-=span/2;span*=2;return refresh()});$('full').onclick=()=>run(()=>{start=0;span=result.recording.raw_duration;return refresh()});$('go').onclick=()=>run(()=>{start=Number($('start').value);span=Number($('span').value);if(!Number.isFinite(start)||!Number.isFinite(span))throw Error('请输入有效时间');return refresh()});$('slider').onchange=()=>run(()=>{start=Number($('slider').value);return refresh()});window.onresize=()=>draw();run(async()=>{const batches=await api('/api/batches');for(const batch of batches)$('batch').add(new Option(batch,batch));if(!batches.length)throw Error('结果目录中没有批次');await chooseBatch()});
+</script></html>

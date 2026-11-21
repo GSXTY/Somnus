@@ -1,3 +1,4 @@
+import { componentSourceUrl } from './source-paths.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -35,10 +36,10 @@ function harness(file, name, context, api, props) {
     './fileProposalDiff': { unifiedFileDiff: () => [] },
     './documentLibraryBridge': { personalDocumentsChangedEvent: 'somnus:personal-documents-changed' },
   };
-  const compiled = ts.transpileModule(readFileSync(new URL('../src/' + file + '.tsx', import.meta.url), 'utf8'), {
+  const compiled = ts.transpileModule(readFileSync(componentSourceUrl(file), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  vm.runInNewContext(compiled, { exports, window: context, AbortController, Event, require: id => modules[id] });
+  vm.runInNewContext(compiled, { exports, window: context, AbortController, Event, require: id => (modules[id] ?? (id.startsWith('.') ? Object.entries(modules).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === id.split('/').at(-1))?.[1] : undefined)) });
   return (nextProps = props) => { index = 0; return exports[name](nextProps); };
 }
 

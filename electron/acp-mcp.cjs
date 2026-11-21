@@ -40,6 +40,7 @@ function toolCatalog(raw) {
         tool.inputSchema?.type !== 'object' || JSON.stringify(tool.inputSchema).length > 40_000) continue;
     tools.set(tool.name, {
       name: tool.name,
+      ...(typeof tool.trusted_plugin_id === 'string' && /^[A-Za-z0-9@][A-Za-z0-9._/@-]{0,109}$/.test(tool.trusted_plugin_id) ? {trusted_plugin_id:tool.trusted_plugin_id} : {}),
       description: typeof tool.description === 'string' ? tool.description.slice(0, 4000) : '',
       inputSchema: tool.inputSchema,
       ...(tool.requires_confirmation === true ? { requires_confirmation: true } : {}),

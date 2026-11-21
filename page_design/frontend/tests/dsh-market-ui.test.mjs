@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/DshPluginMarket.tsx', import.meta.url), 'utf8'), {
+const source = ts.transpileModule(readFileSync(new URL('../src/plugins/DshPluginMarket.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const runtime = { installed: true, version: '1.0.0' };

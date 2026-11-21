@@ -1,0 +1,34 @@
+{
+  "extends": "../../../page_design/frontend/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../../../page_design/frontend",
+    "paths": {
+      "react": [
+        "node_modules/@types/react"
+      ],
+      "react/*": [
+        "node_modules/@types/react/*"
+      ],
+      "react-dom": [
+        "node_modules/@types/react-dom"
+      ],
+      "echarts/*": [
+        "node_modules/echarts/*"
+      ],
+      "antd": [
+        "node_modules/antd"
+      ],
+      "@ant-design/icons": [
+        "node_modules/@ant-design/icons"
+      ]
+    }
+  },
+  "include": [
+    "NativeAgentSettings.tsx",
+    "nativeAssetTypes.d.ts",
+    "nativeUiTypes.d.ts",
+    "LegacyWorkbench.tsx",
+    "NativeDocumentLibrary.tsx",
+    "NativeTools.tsx"
+  ]
+}

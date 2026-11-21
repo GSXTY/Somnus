@@ -1,3 +1,35 @@
+﻿.somnus-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--dsw-alias-bg-base);
+}
+
+.somnus-frame-dashboard {
+  flex: 1 1 0;
+}
+
+.somnus-frame,
+.somnus-native-config-embed iframe {
+  color-scheme: light;
+}
+
+body[data-ds-dark-theme] .somnus-frame,
+body[data-ds-dark-theme] .somnus-native-config-embed iframe {
+  color-scheme: dark;
+}
+
+.somnus-frame-state {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 240px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
 .somnus-next-workbench {
   box-sizing: border-box;
   height: 100%;
@@ -9,24 +41,140 @@
 }
 
 .somnus-next-workbench-content {
-  width: min(100%, 800px);
+  width: 100%;
+  max-width: 880px;
   margin-inline: auto;
 }
+
+.somnus-next-workbench,
+.somnus-next-workbench-content { min-width: 0; }
 
 .somnus-next-workbench-content h1 { margin: 0; font-size: 24px; font-weight: 600; }
 .somnus-next-workbench-content h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .somnus-next-workbench-content p { margin: 6px 0 14px; color: var(--dsw-alias-label-secondary); }
 
-.somnus-next-workbench-pages {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 12px;
-  margin-block: 24px;
+.somnus-next-workbench-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-block: 22px 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
-.somnus-next-workbench-pages section {
-  padding: 16px;
-  border: 1px solid var(--dsw-alias-border-l3);
+.somnus-next-nav-item {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+}
+
+.somnus-next-nav-item:hover {
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.somnus-next-nav-item[aria-current='page'] {
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.somnus-next-workbench-page {
+  padding: 18px;
+  border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 12px;
   background: var(--dsw-alias-bg-layer-1);
+}
+
+.somnus-next-open {
+  appearance: none;
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-brand-primary);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 16px;
+}
+
+.somnus-next-open:hover { filter: brightness(0.94); }
+.somnus-next-open:disabled { cursor: default; opacity: 0.6; }
+
+.somnus-next-notice { margin: 12px 0 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+
+.somnus-session-delete { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #E2EBE6; border-radius: 8px; background: #fff; color: #789088; font: 600 11px "Segoe UI","Microsoft YaHei",sans-serif; cursor: pointer; }
+.somnus-session-delete:hover { border-color: #E6B8B0; color: #B45548; background: #FDF3F1; }
+.somnus-menu-item { width: 100%; min-height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #B45548; font: 500 13px "Segoe UI","Microsoft YaHei",sans-serif; cursor: pointer; text-align: left; }
+.somnus-menu-item:hover { background: #FDF3F1; }
+.somnus-menu-icon { width: 16px; display: inline-flex; justify-content: center; font-size: 12px; }
+
+/* Somnus light-green signature: sage, mint, deep forest ink. */
+:root {
+  --somnus-green: #2F7D6B;
+  --somnus-green-deep: #1F5D4E;
+  --somnus-mint: #DDEFE4;
+  --somnus-ivory: #F2F8F4;
+  --somnus-ink: #173A2E;
+  --somnus-line: #D8E8DF;
+}
+html, body { background: var(--dsw-alias-bg-base) !important; }
+body { color: var(--somnus-ink); }
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(920px 540px at 10% 6%, rgba(47, 125, 107, 0.10), transparent 64%),
+    radial-gradient(880px 520px at 92% 94%, rgba(163, 205, 180, 0.16), transparent 66%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='170' viewBox='0 0 280 170'%3E%3Cg fill='none' stroke='%232F7D6B' stroke-opacity='.06' stroke-width='1'%3E%3Cpath d='M-20 116C40 86 76 136 140 106S236 78 300 106'/%3E%3Cpath d='M-20 132C40 102 76 152 140 122S236 94 300 122'/%3E%3Cpath d='M-20 100C40 70 76 120 140 90S236 62 300 90'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: auto, auto, 280px 170px;
+  opacity: 0.95;
+}
+#root { position: relative; z-index: 1; }
+[aria-label="主页"], [aria-label="文档"], [aria-label="工具"], [aria-label="插件"],
+[aria-label="自动化任务"], [aria-label="IM机器人"], [aria-label="配置中心"] {
+  border-radius: 10px !important;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+[aria-label="主页"]:hover, [aria-label="文档"]:hover, [aria-label="工具"]:hover,
+[aria-label="插件"]:hover, [aria-label="自动化任务"]:hover,
+[aria-label="IM机器人"]:hover, [aria-label="配置中心"]:hover { transform: translateX(2px); }
+div:has(> [contenteditable="true"]) {
+  border: 0 !important;
+  border-radius: 20px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+div:has(> [contenteditable="true"]):focus-within {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+button[aria-label="发送消息"] {
+  background: linear-gradient(140deg, var(--somnus-green), var(--somnus-green-deep)) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 18px rgba(47, 125, 107, 0.24) !important;
+}
+button[aria-label="发送消息"]:hover { filter: brightness(1.06); }
+.somnus-model-trigger {
+  border-color: var(--somnus-line) !important;
+  background: #FBFEFC !important;
+  color: var(--somnus-ink) !important;
+}
+.somnus-model-tabs button.active {
+  background: #E0EFE6 !important;
+  color: var(--somnus-green) !important;
+}
+/* Remove any residual home/hero whale canvas or decorative animation. */
+[data-home-whale], [class*="whale" i], [class*="Whale"], .JgOtAa_canvas {
+  display: none !important;
+  animation: none !important;
 }

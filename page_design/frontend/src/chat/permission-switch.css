@@ -1,0 +1,9 @@
+.conversation-permission-menu .ant-dropdown-menu .ant-dropdown-menu-item-selected {
+  background: #e6f3ee;
+  color: #145e51;
+}
+.conversation-permission-menu .ant-dropdown-menu .ant-dropdown-menu-item-selected:hover,
+.conversation-permission-menu .ant-dropdown-menu .ant-dropdown-menu-item-selected-active {
+  background: #dceee7;
+  color: #145e51;
+}

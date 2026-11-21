@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/PluginConfiguration.tsx', import.meta.url), 'utf8'), {
+const source = ts.transpileModule(readFileSync(new URL('../src/plugins/PluginConfiguration.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
@@ -83,12 +83,12 @@ test('personal inventory shows installed plugins from both DSH markets, independ
       if (name === 'react') return react;
       if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
       if (name === 'antd' || name === '@ant-design/icons') return names;
-      if (name === './DshPluginMarket') return { DshPluginMarket: 'DshPluginMarket' };
-      if (name === './OarPluginSettings') return { OarPluginSettings: 'OarPluginSettings' };
-      if (name === './DshPluginPage') return { DSH_IM_PLUGIN: im.id };
-      if (name === './PluginDevelopment') return { PluginDevelopment: 'PluginDevelopment' };
-      if (name === './errors.mjs') return { describeError: error => error.message };
-      if (name === './assistantApi') return {
+      if (name.split('/').at(-1) === 'DshPluginMarket') return { DshPluginMarket: 'DshPluginMarket' };
+      if (name.split('/').at(-1) === 'OarPluginSettings') return { OarPluginSettings: 'OarPluginSettings' };
+      if (name.split('/').at(-1) === 'DshPluginPage') return { DSH_IM_PLUGIN: im.id };
+      if (name.split('/').at(-1) === 'PluginDevelopment') return { PluginDevelopment: 'PluginDevelopment' };
+      if (name.split('/').at(-1) === 'errors.mjs') return { describeError: error => error.message };
+      if (name.split('/').at(-1) === 'assistantApi') return {
         listInstalledPlugins: async () => imported,
         removePlugin: async id => { removed.push(id); imported = imported.filter(item => item.id !== id); },
         listDefaultPlugins: async () => ({ plugins: [handoff] }),

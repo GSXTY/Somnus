@@ -1,0 +1,17 @@
+name: somnus-batch-trial
+services:
+  batch:
+    image: somnus-batch-trial:local
+    build:
+      context: ..
+      dockerfile: batch_analysis_trial/Dockerfile
+    network_mode: none
+    volumes:
+      - type: bind
+        source: D:/VVFLY/analyze_test_data_csv
+        target: /input
+        read_only: true
+      - type: bind
+        source: ./docker_runs
+        target: /output
+    command: ["--input", "/input", "--output", "/output"]

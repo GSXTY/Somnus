@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
-import * as logic from '../src/glassLogic.mjs';
+import * as logic from '../src/app/glassLogic.mjs';
 const require=createRequire(new URL('../package.json',import.meta.url)),ts=require('typescript');
-const code=ts.transpileModule(readFileSync(new URL('../src/GlassExperience.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
+const code=ts.transpileModule(readFileSync(new URL('../src/app/GlassExperience.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
 function treeNodes(tree){if(!tree||typeof tree!=='object')return [];if(Array.isArray(tree))return tree.flatMap(treeNodes);return [tree,...treeNodes(tree.props?.children)];}
 function setup(){let cursor=0;const states=[],effects=[];const ctx={enabled:true,focus:'',setFocus:id=>{ctx.focus=id}};const jsx=(type,props)=>({type,props});const react={createContext:()=>ctx,useContext:()=>ctx,useState(initial){const i=cursor++;if(!(i in states))states[i]=typeof initial==='function'?initial():initial;return[states[i],v=>{states[i]=typeof v==='function'?v(states[i]):v}];},useRef(value){const i=cursor++;return states[i]??(states[i]={current:value});},useEffect(){cursor++},useLayoutEffect(){cursor++}};const exports={};vm.runInNewContext(code,{exports,require:name=>name==='react'?react:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='antd'?{Button:'Button',Input:'Input',Modal:'Modal'}:name==='@ant-design/icons'?new Proxy({},{get:(_,key)=>key}):logic,window:{matchMedia:()=>({matches:true})},document:{querySelector:selector=>selector.includes('insights')?null:{}},console});return{ctx,render(name,props){cursor=0;return exports[name](props);},nodes:treeNodes};}
 test('command search filters actual routes and highlights without interpreting markup',()=>{assert.deepEqual(logic.filterCommands('分析').map(v=>v.key),['analysis','deep-analysis','assistant','plugins']);assert.equal(logic.filterCommands('nonsense').length,0);assert.equal(logic.highlightParts('数据分析','分析').find(v=>v.match).text,'分析');assert.equal(logic.highlightParts('<img>','img')[0].text,'<');});

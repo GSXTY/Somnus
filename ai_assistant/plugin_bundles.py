@@ -6,6 +6,7 @@ import time
 import uuid
 
 from mcp_connectors.registry import IDENTIFIER as MCP_ID
+from . import plugin_contract
 
 
 MAX_BUNDLES = 32
@@ -74,6 +75,7 @@ class PluginBundles:
     def __init__(self, database, skills):
         self.database, self.skills = database, skills
         with self.database() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS portable_plugin_contracts(plugin_id TEXT PRIMARY KEY, contract TEXT NOT NULL)')
             db.execute('''CREATE TABLE IF NOT EXISTS personal_plugins(
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
                 version TEXT NOT NULL, skill_ids TEXT NOT NULL, mcp_ids TEXT NOT NULL,
@@ -113,12 +115,20 @@ class PluginBundles:
                                         ('mcp', item['mcp_ids'], mcp_states)):
             item['missing_' + key] = [entry for entry in entries if entry not in available]
             item['inactive_' + key] = [entry for entry in entries if available.get(entry) is False]
+        item['contract'] = plugin_contract.describe(skills=bool(item['skill_ids']), mcp=bool(item['mcp_ids']))
+        return item
+
+    def _declared_public(self, db, row, states):
+        item = self._public(row, states)
+        declared = db.execute('SELECT contract FROM portable_plugin_contracts WHERE plugin_id=?', (item['id'],)).fetchone()
+        if declared:
+            item['contract'] = json.loads(declared['contract'])
         return item
 
     def list(self, registry):
         states = self._states(registry)
         with self.database() as db:
-            return [self._public(row, states) for row in db.execute('SELECT * FROM personal_plugins ORDER BY created_at,id')
+            return [self._declared_public(db, row, states) for row in db.execute('SELECT * FROM personal_plugins ORDER BY created_at,id')
                     if not self._handoff(row)]
 
     def defaults(self, registry):

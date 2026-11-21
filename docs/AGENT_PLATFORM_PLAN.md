@@ -1,5 +1,7 @@
 # Somnus 架构、分工与验收
 
+> 当前运行时、统一任务账本与插件边界见 [PLATFORM_RUNTIME.md](PLATFORM_RUNTIME.md)。本文保留业务及迁移历史，不代表当前平台的完整能力规格。
+
 > 深度分析试用更新：新增独立 `deep_analysis/` 模块及同源 `/api/deep-analysis/*`，界面标识为 **DashScope 试用 / DeepAnalyze 协议兼容**，不是已部署的 DeepAnalyze 8B。配置、上传、任务、产物和执行环境与普通聊天分开；默认模型或 Docker 未就绪时明确阻止执行，不自动拉镜像，不在宿主执行生成代码。`isolated` 复用随机浏览器身份隔离所有文件/任务/产物，`shared` 保持本机共享；仍不等于账号权限。
 
 > 服务迁移更新：默认 `launcher.py` 现启动 `server.app` 的 FastAPI / Uvicorn 统一宿主，旧 `event_detection.viewer` 保留为算法/路由兼容边界与回归入口，不再由默认启动器直接监听。部署及 `shared` / `isolated`、单 worker 边界见 [FASTAPI_SERVER.md](FASTAPI_SERVER.md)。数据库日报和每日 CSV 批量任务尚未接入。

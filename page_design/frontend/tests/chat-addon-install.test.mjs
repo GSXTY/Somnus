@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addonInstallIntent } from '../src/chatAddonInstall.ts';
+import { addonInstallIntent } from '../src/plugins/chatAddonInstall.ts';
 
 test('identifies explicit installation targets in user drafts', () => {
   const requests = [

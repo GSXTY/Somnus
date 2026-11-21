@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateImageBatch, validateImageDimensions, prepareImages, isLocalImage, imageLimits } from '../src/assistantImages.mjs';
+import { validateImageBatch, validateImageDimensions, prepareImages, isLocalImage, imageLimits } from '../src/chat/assistantImages.mjs';
 
 test('image limits reject unsupported, empty, oversized, over-count and combined-size inputs', () => {
   const file = (size, type = 'image/png') => ({ size, type });

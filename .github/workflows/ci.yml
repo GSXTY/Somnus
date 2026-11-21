@@ -1,0 +1,43 @@
+name: Source checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: source-checks
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.25.0'
+      - name: Install locked UI dependencies
+        working-directory: page_design/frontend
+        run: pnpm install --frozen-lockfile
+      - name: Check source and run regression tests
+        run: python -B tools/source_checks.py
+
+# This workflow never builds or publishes an application or installer.
+# Native ASAR tests need the pinned local binary: tools/source_checks.py --native.

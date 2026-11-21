@@ -7,7 +7,7 @@ import unicodedata
 
 from app_version import APP_VERSION
 
-from . import skill_library
+from . import skill_library, plugin_contract
 from .plugin_bundles import BundleError, MAX_BUNDLES, _manifest, _release_version
 
 
@@ -73,9 +73,15 @@ def _skill(fields):
 
 
 def parse(package):
-    if (not isinstance(package, dict) or set(package) != {'format', 'minimum_somnus_version', 'manifest', 'skills'}
+    if (not isinstance(package, dict) or not {'format', 'minimum_somnus_version', 'manifest', 'skills'} <= set(package)
+            or set(package) - {'format', 'minimum_somnus_version', 'manifest', 'skills', 'contract'}
             or package.get('format') != FORMAT):
         raise BundleError('invalid_portable_package', '未识别的 Somnus 插件包格式。')
+    if 'contract' in package:
+        try:
+            plugin_contract.validate(package['contract'])
+        except (ValueError, TypeError):
+            raise BundleError('invalid_plugin_contract', '插件能力声明无效，UI 扩展需要专门适配。') from None
     minimum = package['minimum_somnus_version']
     if not isinstance(minimum, str) or len(minimum) > 48 or not _release_version(minimum):
         raise BundleError('invalid_portable_version', '插件包的最低 Somnus 版本无效。')
@@ -113,7 +119,9 @@ def export(bundles, fields, registry):
                 raise BundleError('plugin_reference_missing', '导出过程中有 Skill 被移除，请重新检查。', 409)
             skills.append(stored_skill(row))
     package = {'format': FORMAT, 'minimum_somnus_version': APP_VERSION,
-               'manifest': manifest, 'skills': skills}
+               'manifest': manifest, 'skills': skills,
+               'contract': {'schema_version': 1, 'runtime': 'somnus',
+                            'capabilities': (['skills'] if skills else []) + (['mcp'] if manifest['mcp_ids'] else [])}}
     parse(package)
     return {'package': package, 'sha256': hashlib.sha256(canonical(package)).hexdigest()}
 
@@ -171,6 +179,7 @@ def preflight(bundles, package, registry):
     _, mcp_states = bundles._states(registry)
     with bundles.database() as db:
         report, _ = _review(db, *parsed, mcp_states, bundles.skills)
+    report['contract'] = plugin_contract.describe(skills=bool(parsed[2]), mcp=bool(parsed[1]['mcp_ids']), minimum=parsed[0], declared=package.get('contract'))
     return report
 
 
@@ -193,4 +202,7 @@ def install(bundles, package, registry):
                 skill_states[skill_id] = bool(inserted['enabled'])
             manifest['skill_ids'].append(skill_id)
         row = bundles.insert(db, manifest)
-    return bundles._public(row, (skill_states, mcp_states))
+        contract = plugin_contract.describe(skills=bool(skills), mcp=bool(manifest['mcp_ids']), minimum=parsed[0], declared=package.get('contract'))
+        db.execute('INSERT INTO portable_plugin_contracts VALUES (?,?)', (row['id'], json.dumps(contract)))
+        result = bundles._declared_public(db, row, (skill_states, mcp_states))
+    return result

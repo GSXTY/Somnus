@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { activeTaskStates, imageArtifact, safeArtifactUrl, taskLabels } from '../src/deepAnalysisApi.mjs';
-import * as format from '../src/format.mjs';
-import * as errors from '../src/errors.mjs';
+import { activeTaskStates, imageArtifact, safeArtifactUrl, taskLabels } from '../src/analysis/deepAnalysisApi.mjs';
+import * as format from '../src/shared/format.mjs';
+import * as errors from '../src/shared/errors.mjs';
 const require = createRequire(new URL('../package.json', import.meta.url)), ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/DeepAnalysis.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
+const source = ts.transpileModule(readFileSync(new URL('../src/analysis/DeepAnalysis.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
 function nodes(value) { if (!value || typeof value !== 'object') return []; if (Array.isArray(value)) return value.flatMap(nodes); return [value, ...nodes(value.props?.children)]; }
 function harness({ failUpload = false, failCreate = false, connection, statusError, ready = false, getTask } = {}) {
@@ -27,7 +27,7 @@ function harness({ failUpload = false, failCreate = false, connection, statusErr
     removeEventListener: type => events.delete(type),
   };
   const exports = {};
-  vm.runInNewContext(source, { exports, require: name => name === 'react' ? react : name === 'react/jsx-runtime' ? { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) } : name === 'antd' ? antd : name === '@ant-design/icons' ? new Proxy({}, { get: (_, key) => key }) : name === './deepAnalysisApi.mjs' ? api : name === './taskAttention' ? { watchAnalysisTask: () => {} } : name === './MarkdownView' ? { Markdown: 'Markdown' } : name === './format.mjs' ? format : name === './errors.mjs' ? errors : name.endsWith('.css') ? {} : (() => { throw Error(name); })(), AbortController, window: browser, localStorage: { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) }, Date, Error, console });
+  vm.runInNewContext(source, { exports, require: name => name.endsWith('useRetainedToolState') ? { useRetainedToolState: (_key, initial) => react.useState(initial) } : name.endsWith('nativeFetch.mjs') ? { nativeFetch: () => { throw Error('Unexpected download'); } } : name === 'react' ? react : name === 'react/jsx-runtime' ? { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) } : name === 'antd' ? antd : name === '@ant-design/icons' ? new Proxy({}, { get: (_, key) => key }) : name.split('/').at(-1) === 'deepAnalysisApi.mjs' ? api : name.split('/').at(-1) === 'taskAttention' ? { watchAnalysisTask: () => {} } : name.split('/').at(-1) === 'MarkdownView' ? { Markdown: 'Markdown' } : name.split('/').at(-1) === 'format.mjs' ? format : name.split('/').at(-1) === 'errors.mjs' ? errors : name.endsWith('.css') ? {} : (() => { throw Error(name); })(), AbortController, window: browser, localStorage: { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) }, Date, Error, console });
   const render = () => { cursor = 0; const result = exports.DeepAnalysis({ dataConnection: connection }); mounted = true; return result; }; render(); effects.forEach(effect => effect());
   return {
     calls, store, render,

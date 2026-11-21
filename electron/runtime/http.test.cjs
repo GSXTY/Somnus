@@ -1,0 +1,21 @@
+const test=require('node:test'),assert=require('node:assert/strict'),{spawn}=require('node:child_process'),path=require('node:path'),{createInterface}=require('node:readline');
+const {RuntimeRegistry}=require('./registry.cjs'),{createProjectClient}=require('../acp-project.cjs');
+test('real HTTP project client claims, persists absent renderer, preserves terminal outcome and accepts receipted late result',async(t)=>{
+ const root=path.resolve(__dirname,'../..');
+ const child=spawn(process.env.SOMNUS_TEST_PYTHON||'python',['-u','tests/runtime_http_fixture.py'],{cwd:root,windowsHide:true,env:{...process.env,PYTHONPATH:root}});t.after(()=>child.kill());
+ let stderr='';child.stderr.on('data',b=>{stderr+=b;});
+ const lines=createInterface({input:child.stdout});const ready=await new Promise((resolve,reject)=>{lines.once('line',line=>resolve(JSON.parse(line)));child.once('exit',code=>reject(Error('fixture '+code+': '+stderr)));setTimeout(()=>reject(Error('fixture timeout '+stderr)),15000).unref();});
+ const client=createProjectClient(ready.origin,ready.token),route=id=>({conversationId:ready.cid,taskId:id,agentId:ready.agent,runtime:'acp'});
+ let ownerFinish;const finishRequest=client.finishRuntimeTask;client.finishRuntimeTask=async(route,body)=>{ownerFinish=body;return finishRequest(route,body);};
+ let invokes=0;const registry=new RuntimeRegistry({acp:{promptConversation:async()=>{invokes++;return {text:'SYNTHETIC HTTP RESULT',stopReason:'end_turn'};}},projectClient:client});t.after(()=>registry.close());
+ const result=await registry.run('acp','prompt',{conversationId:ready.cid,turnId:ready.turns[0],agentId:ready.agent},undefined,()=>{throw Error('renderer gone');});assert.equal(result.text,'SYNTHETIC HTTP RESULT');assert.equal(result.persistencePending,undefined);
+ const repeated=await client.finishRuntimeTask(route(ready.turns[0]),{...ownerFinish,content:'wrong',status:'error'});
+ assert.equal(repeated.message.content,'SYNTHETIC HTTP RESULT');assert.equal(repeated.task.status,'completed');assert.equal(invokes,1);
+ const reserved=await (await fetch(ready.origin+'/fixture/reserve',{method:'POST'})).json();
+ const r=route(reserved.turn_id),body={agent_id:ready.agent,owner_id:registry.ownerId,sequence:1,status:'connecting'};
+ const claim=await client.runtimeTaskState(r,body);await client.runtimeTaskState(r,{...body,sequence:2,status:'running'});
+ await fetch(ready.origin+'/fixture/restart',{method:'POST'});
+ const late=await client.finishRuntimeTask(r,{agent_id:ready.agent,owner_id:registry.ownerId,finish_receipt:claim.finish_receipt,status:'complete',content:'REAL LATE SYNTHETIC RESULT'});
+ assert.equal(late.message.content,'REAL LATE SYNTHETIC RESULT');assert.equal(late.task.received_late,true);
+ const again=await client.finishRuntimeTask(r,{agent_id:ready.agent,owner_id:registry.ownerId,finish_receipt:claim.finish_receipt,status:'error',content:'do not overwrite'});assert.equal(again.message.content,'REAL LATE SYNTHETIC RESULT');
+});

@@ -1,0 +1,112 @@
+.session-manager {
+  display: grid;
+  gap: 12px;
+}
+.session-manager-search,
+.session-manager-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.session-manager-filters {
+  flex-wrap: wrap;
+}
+.session-manager-filters > .ant-select {
+  min-width: 110px;
+  max-width: 175px;
+}
+.session-manager-results {
+  overflow: auto;
+  max-height: min(57vh, 520px);
+  padding-inline: 2px;
+}
+.session-manager-empty {
+  margin: 0;
+  padding: 28px 12px;
+  color: #526762;
+  text-align: center;
+}
+.session-manager-section + .session-manager-section {
+  margin-top: 12px;
+}
+.session-manager-section h3 {
+  color: #526762;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  padding: 8px 10px;
+}
+.session-manager-section h3 span {
+  margin-inline-start: 4px;
+  font-weight: 400;
+}
+.session-manager-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 34%) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 56px;
+  padding-inline: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.session-manager-row:hover,
+.session-manager-row:focus-within {
+  background: #f4f8f6;
+}
+.session-manager-row[data-selected="true"] {
+  background: #e7f2ed;
+  border-color: #cfe1d9;
+}
+.session-manager-open {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  color: #202a28;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-manager-open:disabled {
+  cursor: default;
+}
+.session-manager-title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.session-manager-title strong,
+.session-manager-meta,
+.session-manager-state > span:first-child:not(.ant-tag) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-manager-meta,
+.session-manager-state {
+  color: #526762;
+  font-size: 12px;
+}
+.session-manager-state {
+  display: flex;
+  gap: 5px;
+  justify-content: end;
+  align-items: center;
+  min-width: 0;
+}
+.session-manager-state .ant-tag {
+  margin: 0;
+}
+@media (max-width: 540px) {
+  .session-manager-row {
+    grid-template-columns: minmax(90px, 1fr) minmax(0, 36%) auto;
+    gap: 5px;
+  }
+  .session-manager-state {
+    flex-wrap: wrap;
+  }
+}

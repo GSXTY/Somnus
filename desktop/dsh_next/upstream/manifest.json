@@ -1,0 +1,9 @@
+{
+  "file": "app.asar",
+  "sha256": "575dacb11c91686c635460839f7a2a71c38b719349f5b0312ffe65b696e62cd2",
+  "bytes": 210008089,
+  "repository": "xue-ding-e/DSH-Next",
+  "commit": "f2483c6d26104b3594cb0e22f56c0331b55dfffe",
+  "version": "0.2.2-rc.2.20261115.31",
+  "note": "Pinned unmodified upstream build input. Runtime uses app/resources/app.asar; this archive is used only to rebuild source overlays."
+}

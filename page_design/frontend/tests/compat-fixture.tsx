@@ -1,0 +1,13 @@
+import React, { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { ConfigProvider } from 'antd';
+import { PluginExtensions } from '../src/plugins/PluginExtensions';
+import { Models } from '../src/configuration/Models';
+import { PermissionSwitch } from '../src/chat/PermissionSwitch';
+import { ActionApproval } from '../src/chat/ExecutionDetails';
+import type { ConversationPermission } from '../src/chat/assistantApi';
+import '../src/chat/assistant.css';
+window.somnusDshPluginPage={extensions:async()=>[{id:'one',pluginId:'synthetic-plugin',label:'项目概览',slot:'sidebar',renderer:'page',pageId:'synthetic-plugin#overview',compatibility:'ready'},{id:'two',pluginId:'recommendation',label:'推荐卡片',slot:'chat-card',renderer:'recommendation',compatibility:'ready'},{id:'three',pluginId:'third-party',label:'自定义聊天组件',slot:'chat-card',renderer:'recommendation',compatibility:'adapter-required',reason:'此插件使用 DSH 专用插槽，需要适配。'}],status:async()=>({available:true}),show:async()=>{},bounds:async()=>{},close:async()=>{}};
+const decisions:string[]=[];(window as any).fixtureDecisions=decisions;
+function Fixture(){const [mode,setMode]=useState<ConversationPermission>('workspace_write');return <ConfigProvider theme={{token:{colorPrimary:'#176c61'}}}><div style={{padding:24,maxWidth:1100,margin:'auto'}}><h1>Somnus</h1><section aria-label="权限验收"><PermissionSwitch permission={mode} disabled={false} allowFullAccess onBusyChange={()=>{}} onChange={setMode}/><span id="mode">{mode}</span></section><ActionApproval request={{requestId:'native1',title:'允许这次文件操作？',kind:'write',details:{kind:'native_tool',toolName:'write',reason:'写入合成项目文件',argumentsPreview:'{"path":"hello.c","content":"合成内容"}'},options:[{id:'allow_once',kind:'allow_once',name:'批准'},{id:'reject_once',kind:'reject_once',name:'拒绝'}]}} onRespond={async value=>{decisions.push(String(value));}}/><Models windowsDesktop/><PluginExtensions active revision={0} onOpen={page=>{decisions.push(page.id);}}/></div></ConfigProvider>};
+const style=document.createElement('style');style.textContent=':root{--shell-line:#dce8e4;--shell-muted:#81928f;--shell-bg:#f1f7f5;--shell-accent:#176c61;--shell-surface:#fff;}body{margin:0;color:#173831;font-family:Arial,sans-serif;}';document.head.append(style);createRoot(document.getElementById('root')!).render(<Fixture/>);

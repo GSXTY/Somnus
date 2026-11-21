@@ -1,6 +1,11 @@
 const assert = require('node:assert/strict');
 const { existsSync, readFileSync } = require('node:fs');
 const path = require('node:path');
+// Keep synthetic fixture failures visible even though production ACP discards stderr.
+for (const event of ['uncaughtException', 'unhandledRejection']) process.on(event, error => {
+  require('node:fs').appendFileSync(path.join(__dirname, 'fixture-errors.log'), require('node:util').inspect(error, { depth: 5 }) + '\n');
+  process.exit(1);
+});
 const { createInterface } = require('node:readline');
 
 const sessionId = 'shared-wire-session';

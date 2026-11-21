@@ -27,3 +27,15 @@ page_design/web/
 /mcp.json
 /viewer-restart.stdout.tmp
 /tools/cloudflared.exe
+/app/
+/desktop/dsh_next/upstream/app.asar
+
+# Independent Git metadata for this checkout (the old .git points to another project).
+/.somnus-git/
+# Local experimental outputs are data, not source.
+/batch_analysis_trial/runs/
+/batch_analysis_trial/docker_runs/
+/batch_analysis_trial/local_output_check/
+# Local screenshots can contain account or production data.
+/docs/images/
+/somnus-waveform-layout.png

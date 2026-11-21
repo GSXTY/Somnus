@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readProjectLaunch, readWorkspaceView, isStandardView, workspacePath, recordWorkspaceVisit } from '../src/workspaceNavigation.mjs';
-import { activeRailView, builtInTools, workspaceRail } from '../src/navigation.mjs';
+import { readProjectLaunch, readWorkspaceView, isStandardView, workspacePath, recordWorkspaceVisit } from '../src/app/workspaceNavigation.mjs';
+import { activeRailView, builtInTools, workspaceRail } from '../src/app/navigation.mjs';
 
 test('native backend links retain the Somnus chat surface', () => {
   const root = 'http://127.0.0.1:8765/';

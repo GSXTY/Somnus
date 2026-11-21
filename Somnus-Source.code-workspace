@@ -1,0 +1,97 @@
+{
+  "folders": [
+    {
+      "name": "Somnus 源码（完整项目，可编辑）",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.git": true,
+      "**/dist": true,
+      "**/build": true,
+      "**/.tmp": true,
+      "**/.local-backups": true,
+      "**/.build-deps": true,
+      "**/.mcp-deps": true,
+      "**/.frontend-cache": true,
+      "**/.release-tools": true,
+      "**/vendor": true,
+      "**/node_modules": true,
+      "**/.venv": true,
+      "**/venv": true,
+      "**/__pycache__": true,
+      "**/.pytest_cache": true,
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/.cache": true,
+      "**/release": true,
+      "**/.env": true,
+      "**/.env.*": true
+    },
+    "search.exclude": {
+      "**/.git": true,
+      "**/dist": true,
+      "**/build": true,
+      "**/.tmp": true,
+      "**/.local-backups": true,
+      "**/.build-deps": true,
+      "**/.mcp-deps": true,
+      "**/.frontend-cache": true,
+      "**/.release-tools": true,
+      "**/vendor": true,
+      "**/node_modules": true,
+      "**/.venv": true,
+      "**/venv": true,
+      "**/__pycache__": true,
+      "**/.pytest_cache": true,
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/.cache": true,
+      "**/release": true,
+      "**/.env": true,
+      "**/.env.*": true
+    },
+    "files.watcherExclude": {
+      "**/.git/**": true,
+      "**/dist/**": true,
+      "**/build/**": true,
+      "**/.tmp/**": true,
+      "**/.local-backups/**": true,
+      "**/.build-deps/**": true,
+      "**/.mcp-deps/**": true,
+      "**/.frontend-cache/**": true,
+      "**/.release-tools/**": true,
+      "**/vendor/**": true,
+      "**/node_modules/**": true,
+      "**/.venv/**": true,
+      "**/venv/**": true,
+      "**/__pycache__/**": true,
+      "**/.pytest_cache/**": true,
+      "**/.mypy_cache/**": true,
+      "**/.ruff_cache/**": true,
+      "**/.cache/**": true,
+      "**/release/**": true
+    },
+    "git.autoRepositoryDetection": false,
+    "git.openRepositoryInParentFolders": "never",
+    "git.autorefresh": false,
+    "git.autofetch": false,
+    "git.decorations.enabled": false,
+    "search.followSymlinks": false
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "前端类型检查",
+        "type": "shell",
+        "command": "node node_modules/typescript/bin/tsc --noEmit",
+        "options": {
+          "cwd": "${workspaceFolder}/page_design/frontend"
+        },
+        "problemMatcher": "$tsc"
+      }
+    ]
+  }
+}

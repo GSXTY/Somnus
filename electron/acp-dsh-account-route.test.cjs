@@ -1,0 +1,5 @@
+const assert=require('node:assert/strict');
+const {selectDshAccount,accountModel}=require('./acp-dsh-account-route.cjs');
+const id=JSON.stringify(['deepseek-account','deepseek-flash']);
+function current(modelId='api',models=[{id,name:'Flash'}]){return {sessionId:'s',modelSelection:{configId:'model',modelId,models},connection:{request:async(method,params)=>({configOptions:[{id:'model',category:'model',type:'select',currentValue:params.value,options:models.map(m=>({value:m.id,name:m.name}))}]})}}}
+(async()=>{assert(accountModel(id));assert(!accountModel('api'));assert(!accountModel(JSON.stringify(['other','deepseek-account'])));const c=current();await selectDshAccount(c,100);assert.equal(c.modelSelection.modelId,id);const already=current(id);already.connection.request=()=>{throw Error('unneeded')};await selectDshAccount(already,100);await assert.rejects(selectDshAccount(current('api',[]),100),e=>e.code===-32000);console.log('6 account-route checks passed')})().catch(e=>{console.error(e);process.exitCode=1});

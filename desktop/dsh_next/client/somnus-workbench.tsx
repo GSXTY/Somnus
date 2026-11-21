@@ -1,55 +1,54 @@
-import { useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import type {} from './slot-contract.ts'
 import './somnus-workbench.css'
+import { LegacyWorkbench } from './LegacyWorkbench'
+import { NativeDocumentLibrary } from './NativeDocumentLibrary'
+import { attachConfigurationRelay, nativeRefreshActivity } from '../../../page_design/frontend/src/configuration/embeddedConfigurationBridge.mjs'
+import { NativeAgentSettings, NativeModelSettingsAction, NativeModelIdentity } from './NativeAgentSettings'
+export { NativeAgentSettings, NativeModelIdentity } from './NativeAgentSettings'
 
-export type SomnusPage = 'workbench' | 'waveform'
-
-export interface SomnusNavigationBridge {
-  openPage(page: SomnusPage): Promise<void>
+export interface SomnusApiBridge {
+  request(path: string): Promise<{ status: number; body: ArrayBuffer }>
+  origin(): Promise<string>
+  acp?(): Promise<{ url: string; token: string }>
+  setAcpModel?(modelId: string): Promise<boolean>
+  setAcpApproval?(mode: 'auto' | 'readonly'): Promise<boolean>
+  purgeSession?(sessionId: string): Promise<number>
+  configuration?(method: string, args: unknown[]): Promise<unknown>
+  onConfigurationUpdate?(listener: (update: unknown) => void): () => void
 }
 
-const panelId = 'somnus-workbench' as MainPanelId
+const NativeTools = lazy(() => import('./NativeTools'))
+
 const localeId = 'somnus-workbench'
+let inspectNativeActivity = () => ({ known: false, active: true })
 const zh = {
-  title: 'Somnus 工作台',
-  intro: '在独立窗口中打开工作台或波形分析。',
-  workbench: '工作台',
-  workbenchDescription: '查看设备数据、分析工具和设置。',
-  waveform: '波形分析',
-  waveformDescription: '打开本地采样记录，查看呼吸波形和事件。',
-  openWorkbench: '打开工作台',
-  openWaveform: '打开波形分析',
-  opening: '正在打开…',
-  openError: '暂时无法打开 Somnus 页面，请重试。',
-  database: '公司数据库 MCP',
-  databaseDescription: '提供公司数据库的只读查询。',
-  textToSql: 'Text-to-SQL MCP',
-  textToSqlDescription: '将自然语言问题转换为 SQL。',
-  managedMcp: '由 Somnus 管理，始终启用。',
+  chat: '会话管理',
+  home: '主页',
+  documents: '文档',
+  tools: '工具',
+  config: '配置中心',
+  im: 'IM 机器人',
+  codex: 'Codex',
+  loading: '正在连接 Somnus…',
+  imNotice: 'IM 机器人需要 DSH 插件宿主，稍后接入。',
 }
 const en: typeof zh = {
-  title: 'Somnus workbench',
-  intro: 'Open the workbench or the waveform viewer in a separate window.',
-  workbench: 'Workbench',
-  workbenchDescription: 'View device data, analysis tools, and settings.',
-  waveform: 'Waveform viewer',
-  waveformDescription: 'Open a local recording and view respiratory waveforms and events.',
-  openWorkbench: 'Open workbench',
-  openWaveform: 'Open waveform viewer',
-  opening: 'Opening…',
-  openError: 'The Somnus page could not be opened. Try again.',
-  database: 'Company Database MCP',
-  databaseDescription: 'Provides read-only company database queries.',
-  textToSql: 'Text-to-SQL MCP',
-  textToSqlDescription: 'Turns natural-language questions into SQL.',
-  managedMcp: 'Managed by Somnus and always enabled.',
+  chat: 'Chats',
+  home: 'Home',
+  documents: 'Documents',
+  tools: 'Tools',
+  config: 'Configuration',
+  im: 'IM bot',
+  codex: 'Codex',
+  loading: 'Connecting to Somnus…',
+  imNotice: 'The IM bot page needs the DSH plugin host and will be wired later.',
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -58,91 +57,135 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-function WorkbenchIcon({ size }: PropsRuntime<'sidebar.panellist'>) {
+type PageKey = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type IconName = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+
+const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: IconName; order: number }[] = [
+  { id: 'somnus-home' as MainPanelId, key: 'home', view: 'dashboard', icon: 'home', order: -10 },
+  { id: 'somnus-documents' as MainPanelId, key: 'documents', view: 'documents', icon: 'documents', order: -9 },
+  { id: 'somnus-tools' as MainPanelId, key: 'tools', view: 'plugins', icon: 'tools', order: -8 },
+]
+
+function PanelIcon({ size, name }: { size: number; name: IconName }) {
+  const paths: Record<IconName, ReactNode> = {
+    chat: <><path d="M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z" /><path d="M8 9h8M8 12h5" /></>,
+    home: <><path d="M4 11.2 12 4l8 7.2" /><path d="M6.5 10v9h11v-9" /></>,
+    documents: <><path d="M7 3.5h7l3 3v14H7z" /><path d="M14 3.5v3.2h3.2" /><path d="M9.5 11h5M9.5 14.5h5" /></>,
+    tools: <><path d="m14.5 5.5 4 4-9 9-4-4z" /><path d="M6.5 16.5 5 18a2.1 2.1 0 0 1-3-3l1.5-1.5" /></>,
+    config: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" /></>,
+    im: <><rect x="4" y="6" width="16" height="12" rx="3" /><path d="M8.5 21v-3M15.5 21v-3" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /></>,
+    codex: <><path d="m8 6-4 6 4 6M16 6l4 6-4 6M13 5l-2 14" /></>,
+  }
   return <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true"
     fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="4" width="18" height="16" rx="3" />
-    <path d="M6.5 12h3l1.8-3.2 2.2 6.4 1.7-3.2h2.3" />
+    {paths[name]}
   </svg>
 }
 
-function WorkbenchPanel({ t, navigation }: PropsLocale<typeof localeId> & { navigation: SomnusNavigationBridge }) {
-  const [opening, setOpening] = useState<SomnusPage>()
-  const [failed, setFailed] = useState(false)
+function SomnusFrame({ view }: { view: string }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  const [origin, setOrigin] = useState<string>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    const bridge = (window as Window & { somnusApi?: SomnusApiBridge }).somnusApi
+    if (!bridge?.origin) { setError('Somnus API 桥未就绪'); return }
+    void bridge.origin().then(value => { if (active) setOrigin(value) })
+      .catch(failure => { if (active) setError(failure instanceof Error ? failure.message : '连接失败') })
+    return () => { active = false }
+  }, [])
+  useEffect(() => {
+    if (!origin || !frame.current) return
+    return attachConfigurationRelay(window, frame.current, new URL(origin).origin,
+      (window as Window & { somnusApi?: SomnusApiBridge }).somnusApi, () => inspectNativeActivity())
+  }, [origin, view])
+  if (error) return <div className="somnus-frame-state" role="alert">{error}</div>
+  if (!origin) return <div className="somnus-frame-state">正在连接 Somnus…</div>
+  const className = view === 'dashboard' ? 'somnus-frame somnus-frame-dashboard' : 'somnus-frame'
+  return <iframe ref={frame} key={view} className={className} title={view} src={`${origin}/workbench-assets/embed.html?somnus_parent_origin=${encodeURIComponent(window.location.origin)}#${view}`} />
+}
 
-  async function openPage(page: SomnusPage) {
-    setOpening(page)
-    setFailed(false)
-    try {
-      await navigation.openPage(page)
-    } catch {
-      setFailed(true)
-    } finally {
-      setOpening(undefined)
-    }
-  }
-
-  return <section className="somnus-next-workbench" aria-labelledby="somnus-next-workbench-title">
-    <div className="somnus-next-workbench-content">
-      <header>
-        <h1 id="somnus-next-workbench-title">{t('title')}</h1>
-        <p>{t('intro')}</p>
-      </header>
-      <div className="somnus-next-workbench-pages">
-        <section aria-labelledby="somnus-next-workbench-page">
-          <h2 id="somnus-next-workbench-page">{t('workbench')}</h2>
-          <p>{t('workbenchDescription')}</p>
-          <Button variant="primary" disabled={Boolean(opening)} onClick={() => void openPage('workbench')}>
-            {t(opening === 'workbench' ? 'opening' : 'openWorkbench')}
-          </Button>
-        </section>
-        <section aria-labelledby="somnus-next-waveform-page">
-          <h2 id="somnus-next-waveform-page">{t('waveform')}</h2>
-          <p>{t('waveformDescription')}</p>
-          <Button variant="outline" disabled={Boolean(opening)} onClick={() => void openPage('waveform')}>
-            {t(opening === 'waveform' ? 'opening' : 'openWaveform')}
-          </Button>
-        </section>
-      </div>
-      {failed && <p role="alert">{t('openError')}</p>}
-    </div>
-  </section>
+function Panel({ page, t }: { page: typeof pages[number]; t: (key: keyof typeof zh) => string }) {
+  if (page.key === 'home') return <LegacyWorkbench />
+  if (page.key === 'documents') return <NativeDocumentLibrary />
+  if (page.key === 'tools') return <Suspense fallback={<div className="somnus-frame-state">正在加载工具…</div>}><NativeTools /></Suspense>
+  if (!page.view) return <div className="somnus-frame-state">{t('imNotice')}</div>
+  return <SomnusFrame view={page.view} />
 }
 
 export function registerSomnusWorkbench(ctx: Context): void {
-  const navigation = typeof window === 'undefined' ? undefined :
-    (window as Window & { somnusNext?: SomnusNavigationBridge }).somnusNext
-  if (typeof navigation?.openPage !== 'function') return
-
+  ctx.inject(['somnusSettings'], scope => {
+    const settings = (scope as unknown as { somnusSettings: { open(section?: string): void } }).somnusSettings
+    scope.slots.inject('conversation.input.model.options', () => scope.slots.register({
+      name: 'conversation.input.model.options',
+    }, ({ dismiss }: { dismiss(): void }) => <NativeModelSettingsAction dismiss={dismiss} onOpen={() => settings.open('models')} />))
+  })
+  const configuration = (method: string, args: unknown[]) => {
+    const bridge = (window as Window & { somnusApi?: SomnusApiBridge }).somnusApi
+    if (!bridge?.configuration) return Promise.reject(new Error('Agent 配置连接尚未就绪'))
+    return bridge.configuration(method, args)
+  }
+  ctx.inject(['somnusNativeModelStyles'], scope => {
+    const styles = (scope as unknown as { somnusNativeModelStyles: Record<string, string> }).somnusNativeModelStyles
+    scope.slots.inject('settings.section', () => scope.slots.register({
+      name: 'settings.section', id: 'somnus-external-agents', order: 12,
+      label: () => '外部 Agent', inject: () => ({ configuration, styles }),
+    }, NativeAgentSettings))
+  })
+  ctx.slots.inject('conversation.input.model.label', () => ctx.slots.register({
+    name: 'conversation.input.model.label',
+  }, NativeModelIdentity))
+  ctx.inject(['sessions'], scope => {
+    const sessions = (scope as unknown as { sessions: { list: { getSnapshot(): unknown } } }).sessions
+    scope.effect(() => {
+      inspectNativeActivity = () => nativeRefreshActivity(sessions.list.getSnapshot())
+      return () => { inspectNativeActivity = () => ({ known: false, active: true }) }
+    }, 'Somnus safe model refresh status')
+  })
   ctx.effect(() => ctx.locale.register(localeId, { zh, en }), 'Somnus workbench labels')
   const t = ctx.locale.bind(localeId)
-  ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main',
-    key: panelId,
-    locale: localeId,
-    inject: () => ({ navigation }),
-  }, WorkbenchPanel))
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: panelId,
-    order: 20,
-    locale: localeId,
-    label: () => t('title'),
-  }, WorkbenchIcon))
-
-  ctx.slots.inject('plugins.item', function* () {
-    for (const [id, title, description] of [
-      ['somnus-database', 'database', 'databaseDescription'],
-      ['somnus-text-to-sql', 'textToSql', 'textToSqlDescription'],
-    ] as const) {
-      yield ctx.slots.register({
-        name: 'plugins.item',
-        id,
-        order: 50,
-        locale: localeId,
-        label: () => t(title),
-      }, ({ t, view }: PropsLocale<typeof localeId> & PropsRuntime<'plugins.item'>) =>
-        view === 'summary' ? t(description) : <p>{t('managedMcp')}</p>)
+  for (const page of pages) {
+    ctx.slots.inject('main', () => ctx.slots.register({
+      name: 'main',
+      key: page.id,
+      locale: localeId,
+    }, (props: PropsLocale<typeof localeId>) => <Panel page={page} t={props.t} />))
+    ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+      name: 'sidebar.panellist',
+      id: page.id,
+      order: page.order,
+      locale: localeId,
+      label: () => t(page.key),
+    }, ({ size }: PropsRuntime<'sidebar.panellist'>) => <PanelIcon size={size} name={page.icon} />))
+  }
+  ctx.inject(['uiWorkspace'], scope => {
+    const workspace = scope.uiWorkspace as unknown as {
+      archiveSession(sessionId: string, options?: { stopActivity?: boolean }): Promise<void>
     }
+    scope.slots.inject('sidebar.workspaces.session.menu.item', () => scope.slots.register({
+      name: 'sidebar.workspaces.session.menu.item',
+      id: 'somnus-purge-session',
+      order: 600,
+      locale: localeId,
+    }, ({ sessionId, useMenuOpenState }: { sessionId?: string; useMenuOpenState: () => readonly [boolean, (open: boolean) => void] }) => {
+      const [, setMenuOpen] = useMenuOpenState()
+      if (!sessionId) return null
+      return <button type="button" role="menuitem" className="somnus-menu-item"
+        onClick={async () => {
+          setMenuOpen(false)
+          if (!window.confirm('彻底删除会话？此操作不可恢复。')) return
+          try {
+            await workspace.archiveSession(sessionId, { stopActivity: true })
+            await window.somnusApi?.purgeSession?.(sessionId)
+          } catch (error) {
+            window.alert('删除会话失败：' + (error instanceof Error ? error.message : String(error)))
+          }
+        }}><span className="somnus-menu-icon" aria-hidden="true">🗑</span>彻底删除会话</button>
+    }))
   })
 }
+
+
+
+
+

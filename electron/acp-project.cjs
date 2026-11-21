@@ -39,7 +39,7 @@ function projectFileTools(prepared) {
 }
 
 function mayPropose(prepared) {
-  return ['workspace_write', 'full'].includes(prepared?.permission_mode);
+  return ['workspace_write', 'workspace_direct', 'full'].includes(prepared?.permission_mode);
 }
 
 function backendRequest(origin, token, conversationId, turnId, action, payload, signal) {
@@ -90,8 +90,47 @@ function createProjectClient(origin, token) {
   const companyEndpoint = (conversationId, turnId) => new URL('/api/assistant/conversations/' +
     encodeURIComponent(conversationId) + '/external-turns/' + encodeURIComponent(turnId) + '/company-provider', origin).href;
   const companyWebEndpoint = new URL('/api/assistant/company-web-runtime', origin).href;
+  async function runtimeRequest(route, action, body) {
+    const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(route.conversationId) +
+      '/runtime-tasks/' + encodeURIComponent(route.taskId) + '/' + action, origin);
+    const response = await fetch(endpoint, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8000),
+      headers: { 'X-Data-Agent-Native': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const result = await response.json();
+    if (!response.ok) throw Object.assign(new AcpError(result.error?.message || '无法确认 Agent 任务状态。'),
+      { code: result.error?.code, task: result.task, epoch: result.epoch });
+    return result;
+  }
+  async function nativeRequest(suffix, body, method) {
+    const endpoint = new URL('/api/assistant/' + suffix, origin);
+    const response = await fetch(endpoint, {method:method||(body===undefined?'GET':'POST'),redirect:'error',signal:AbortSignal.timeout(8000),headers:{'X-Data-Agent-Native':token,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
+    const data=await response.json();if(!response.ok)throw Object.assign(new AcpError(data.error?.message||'原生会话操作未能完成。'),{code:data.error?.code});return data;
+  }
   return {
+    archiveNativeForkPage: (rid,body) => nativeRequest('native-forks/'+encodeURIComponent(rid)+'/history/pages',body),
+    inheritedHistory: (cid,after,limit=50) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/inherited-history?limit='+encodeURIComponent(limit)+(after?'&after='+encodeURIComponent(after):'')),
+    nativePreferences: cid => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-preferences'),
+    saveNativePreferences: (cid,body) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-preferences',body,'PUT'),
+    nativeSession: (cid, agentId = 'fbbce833-544a-42a1-8579-cba2a817383e') => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-sessions?agent_id='+encodeURIComponent(agentId)),
+    childConversation: (cid,turnId,childId) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/child-conversations?turn_id='+encodeURIComponent(turnId)+'&child_id='+encodeURIComponent(childId)),
+    authorizeNativeHistory: (cid,body) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-history/authorize',body),
+    bindNativeSession: (cid,body) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-sessions',body),
+    reserveNativeFork: (cid,body) => nativeRequest('conversations/'+encodeURIComponent(cid)+'/native-forks',body),
+    commitNativeFork: (rid,body) => nativeRequest('native-forks/'+encodeURIComponent(rid)+'/commit',body),
+    abortNativeFork: rid => nativeRequest('native-forks/'+encodeURIComponent(rid)+'/abort',{}),
     companyEndpoint,
+    runtimeTaskState: (route, body) => runtimeRequest(route, 'state', body),
+    finishRuntimeTask: (route, body) => runtimeRequest(route, 'finish', body),
+    abandonRuntimeTask: (route, body) => runtimeRequest(route, 'abandon', body),
+    async agentMode(conversationId, mode) {
+      const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(conversationId) + '/agent-mode', origin);
+      const response = await fetch(endpoint, { method: mode === undefined ? 'GET' : 'POST',
+        headers: { 'X-Data-Agent-Native': token, ...(mode === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(mode === undefined ? {} : { body: JSON.stringify({ agent_mode: mode }) }),
+        redirect: 'error', signal: AbortSignal.timeout(8000) });
+      const result = await response.json();
+      if (!response.ok) throw new AcpError(result.error?.message || '无法确认当前会话的工作模式。');
+      return result;
+    },
     async steerMessage(conversationId, steerId) {
       const endpoint = new URL('/api/assistant/conversations/' + encodeURIComponent(conversationId), origin);
       const response = await fetch(endpoint, {
@@ -175,7 +214,7 @@ function createProjectClient(origin, token) {
           (config.ready && (typeof revision !== 'string' || !/^[a-f0-9-]{32,36}$/.test(revision)))) {
         throw new AcpError('本机服务返回了无效的公司默认模型配置。');
       }
-      return { ready: config.ready, revision };
+      return { ready: config.ready, revision, ...(config.personal === true ? { personal: true } : {}) };
     },
     prepare: ({ agentId, conversationId, turnId }, signal) =>
       backendRequest(origin, token, conversationId, turnId, 'prepare', { agent_id: agentId }, signal),
