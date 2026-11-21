@@ -21,12 +21,17 @@ BUILD = artifact_path('build', 'electron')
 def build_backend():
     if not (ROOT / 'page_design/web/index.html').is_file():
         raise SystemExit('请先在 page_design/frontend 安装依赖并执行 pnpm build。')
+    receipt = BUILD / 'backend' / 'SomnusBackend' / 'somnus-backend-build.json'
+    receipt.unlink(missing_ok=True)
     env = {**os.environ, 'PYINSTALLER_CONFIG_DIR': str(BUILD / 'pyinstaller-cache')}
     subprocess.run([
         sys.executable, '-m', 'PyInstaller', '--noconfirm',
         '--distpath', str(BUILD / 'backend'), '--workpath', str(BUILD / 'work'),
         str(ROOT / 'desktop/electron_backend.spec'),
     ], cwd=ROOT, env=env, check=True)
+    receipt.write_text(json.dumps({
+        'schemaVersion': 1, 'producer': 'SomnusNext PyInstaller', 'sourceVersion': APP_VERSION,
+    }, indent=2) + '\n', encoding='utf-8')
 
 
 def build_shell(directory_only, runtime):

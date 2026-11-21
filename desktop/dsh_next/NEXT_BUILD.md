@@ -1,5 +1,7 @@
 # SomnusNext 构建与本机更新
 
+本文记录基于固定发布归档的兼容更新方式。完整上游源码已另行接入 `vendor/dsh-next/`，新的隔离源码编译入口和 CI 说明见 [完整源码开发](../../docs/SOURCE_BUILD.md)。源码构建不读取这里的原始 `upstream/app.asar`；现有程序和兼容更新方式保留，不能把新流程的源码检查成功当作完整桌面验收成功。
+
 ## 常规更新
 
 固定上游 DSH Next 提交为 `f2483c6d26104b3594cb0e22f56c0331b55dfffe`，版本为 `0.2.2-rc.2.20261115.31`。本地未修改构建输入在 `upstream/app.asar`，版本、来源及 SHA-256 记录在 `upstream/manifest.json`。不要用已修改的 Somnus ASAR 替换该文件。

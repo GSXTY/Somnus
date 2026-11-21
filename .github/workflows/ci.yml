@@ -23,7 +23,12 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONUTF8: '1'
     steps:
+      - name: Allow long paths in the isolated Windows runner
+        run: git config --global core.longpaths true
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'

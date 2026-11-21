@@ -39,3 +39,5 @@ page_design/web/
 # Local screenshots can contain account or production data.
 /docs/images/
 /somnus-waveform-layout.png
+# Explicit sandbox-only source compilation workspace; normal builds use external storage.
+/.source-build-cache/

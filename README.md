@@ -4,6 +4,8 @@ SomnusNext 是基于 DSH Next Desktop 的 Somnus 桌面工作台，包含多 Age
 
 本目录是完整可编辑源码。当前源码基线尚未发布新安装包；本机已有程序从 `app/Somnus.exe` 或 `启动 SomnusNext.cmd` 打开。`app/` 不属于源码，不同步到 GitHub。
 
+完整 DSH Next 上游源码通过固定版本的子模块接入 `vendor/dsh-next/`。新 clone 请加 `--recurse-submodules`；已有 clone 执行 `git submodule update --init --recursive`。获取、源码构建及验收边界见 [完整源码开发说明](docs/SOURCE_BUILD.md)。
+
 ## 从哪里开始修改
 
 | 内容 | 源码位置 |
@@ -14,12 +16,13 @@ SomnusNext 是基于 DSH Next Desktop 的 Somnus 桌面工作台，包含多 Age
 | Agent 与服务 API | `ai_assistant/`、`agent_core/`、`server/` |
 | 波形、事件检测 | `event_detection/`、`server_detection/` |
 | 数据接入、深度分析 | `data_gateway/`、`mcp_connectors/`、`deep_analysis/` |
+| 完整上游桌面、界面和运行时实现 | `vendor/dsh-next/` |
 
 完整目录表见 [SOURCE_MAP.md](SOURCE_MAP.md)。使用 `Somnus-Source.code-workspace` 可按功能浏览源码。
 
 ## 修改、检查、合并
 
-每个任务从最新 main 新建分支，通过 PR 检查和审查后才合并。详细步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。当前工作副本的 `.git` 仍指向旧项目，首次使用 Git 前请按该文档执行独立 Git 修复；全新 clone 不受影响。
+每个任务从最新 main 新建分支，通过 PR 检查和审查后才合并。详细步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。只有仍指向旧项目 Git 元数据的早期工作副本才需要该文档中的修复；已经修复的工作副本和全新 clone 都不需要重复修复。
 
 ```powershell
 pnpm --dir page_design/frontend install --frozen-lockfile

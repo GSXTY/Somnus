@@ -1,0 +1,79 @@
+name: Source compilation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.gitmodules'
+      - 'vendor/dsh-next'
+      - 'desktop/dsh_next/source-*'
+      - 'desktop/dsh_next/stage-next.mjs'
+      - 'tools/prepare_dsh_source.py'
+      - 'build_electron.py'
+      - '.github/workflows/source-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-compilation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: source-compilation
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Allow long paths in the isolated Windows runner
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.28.5'
+      - name: Set isolated build storage
+        run: |
+          $buildStorage = Join-Path $env:RUNNER_TEMP 'somnus-source-validation'
+          "SOMNUS_DEV_STORAGE=$buildStorage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install Somnus UI and desktop support dependencies
+        run: |
+          pnpm --dir page_design/frontend install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --dir electron install --frozen-lockfile --ignore-scripts
+      - name: Install Somnus backend build dependencies
+        run: python -m pip install -r requirements-electron.txt -r requirements-test.txt
+      - name: Verify source and build shared UI
+        run: |
+          python -B tools/source_checks.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --dir page_design/frontend build
+      - name: Build Somnus backend from source
+        run: python -B build_electron.py --backend-only
+      - name: Compile DSH and Somnus into an isolated application directory
+        run: |
+          $backendDir = Join-Path $env:SOMNUS_DEV_STORAGE 'artifacts/build/electron/backend/SomnusBackend'
+          $pnpmEntry = Join-Path (Split-Path -Parent $env:PNPM_HOME) 'pnpm/bin/pnpm.mjs'
+          if (!(Test-Path -LiteralPath $pnpmEntry)) { throw 'Pinned pnpm JavaScript entry is missing' }
+          node desktop/dsh_next/source-build.mjs --build --storage $env:SOMNUS_DEV_STORAGE --backend-dir $backendDir --pnpm-entry $pnpmEntry
+      - name: Preserve source compilation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-compilation-report
+          path: '${{ runner.temp }}/somnus-source-validation/cache/dsh-source/**/somnus-source-build.json'
+          if-no-files-found: ignore
+
+# Only reports are uploaded. No installer, application archive, tag, or Release is published.

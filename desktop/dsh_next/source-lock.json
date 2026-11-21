@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/xue-ding-e/DSH-Next.git",
+  "commit": "f2483c6d26104b3594cb0e22f56c0331b55dfffe",
+  "path": "vendor/dsh-next",
+  "license": "MIT",
+  "packageName": "@deepseek-ai/dsh-root",
+  "packageManager": "pnpm@11.28.5",
+  "nodeMinimum": "24.9.0",
+  "lockfileSha256": "ac299a598d543de869fadf9ab762a1432b4eedbec27dd46a4efa8fbfb05d88fc"
+}
