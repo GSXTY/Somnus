@@ -1,10 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
-const web = new URL('../../web/', import.meta.url)
-const html = await readFile(new URL('index.html', web), 'utf8')
-const marker = '</head>'
-if (!html.includes(marker)) throw new Error('index.html has no </head>')
-const embed = html.replace(marker, `  <script>document.documentElement.dataset.somnusEmbed = '1'; document.documentElement.dataset.visualTheme = 'codex';</script>
+export async function makeEmbed(output) {
+  const html = await readFile(join(output, 'index.html'), 'utf8')
+  const marker = '</head>'
+  if (!html.includes(marker)) throw new Error('index.html has no </head>')
+  const embed = html.replace(marker, `  <script>document.documentElement.dataset.somnusEmbed = '1'; document.documentElement.dataset.visualTheme = 'codex';</script>
   <style>
     html, body, #root { height: 100%; margin: 0; overflow: hidden; background: var(--shell-bg, #f4f8f6); }
     .global-header.ant-layout-header, .navigation.ant-layout-sider { display: none !important; }
@@ -16,5 +17,5 @@ const embed = html.replace(marker, `  <script>document.documentElement.dataset.s
     .analysis-workspace-frame { width: 100%; height: 100%; border: 0; }
   </style>
 ${marker}`)
-await writeFile(new URL('embed.html', web), embed)
-console.log('wrote page_design/web/embed.html')
+  await writeFile(join(output, 'embed.html'), embed)
+}

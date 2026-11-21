@@ -33,7 +33,9 @@ def main():
         ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
     print(f'Python syntax: {len(files)} source files', flush=True)
     run(sys.executable, '-B', 'tools/check_source_layout.py')
-    run(sys.executable, '-B', '-m', 'unittest', 'tests.test_storage_paths')
+    run(sys.executable, '-B', 'tools/prepare_dsh_source.py', '--check')
+    run(sys.executable, '-B', '-m', 'unittest', 'tests.test_storage_paths', 'tests.test_dsh_source', 'tests.test_backend_build_receipt')
+    run('node', '--test', 'desktop/dsh_next/source-build.test.mjs', 'desktop/dsh_next/source-overlay.test.mjs')
     tsc = 'page_design/frontend/node_modules/typescript/bin/tsc'
     run('node', tsc, '--noEmit', '--project', 'page_design/frontend/tsconfig.json')
     run('node', tsc, '--noEmit', '--project', 'desktop/dsh_next/client/tsconfig.native-ui.json')

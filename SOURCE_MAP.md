@@ -49,3 +49,5 @@
 ## 源码基线与协作
 
 当前源码根目录是 `D:\VVFLY\SomnusNext`；`app/` 是现有运行程序。桌面原生主页、文档、工具入口在 `desktop/dsh_next/client`，共享页面在 `page_design/frontend/src`。开发遵循 [分支与 PR 流程](CONTRIBUTING.md)，打包见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
+
+完整上游源码在 `vendor/dsh-next/`：桌面实现为 `apps/desktop/src`，桌面 Host 为 `apps/desktop-host`，界面插件为 `packages/client`，运行时与工具为其他 `packages` 分组。该目录是固定提交的 Git 子模块；Somnus 的源码适配和构建入口在 `desktop/dsh_next/source-*.mjs`，详见 [完整源码开发](docs/SOURCE_BUILD.md)。

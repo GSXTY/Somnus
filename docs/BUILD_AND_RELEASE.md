@@ -1,5 +1,7 @@
 # Somnus 构建与发布
 
+完整上游源码的获取、编译和隔离程序目录生成见 [SOURCE_BUILD.md](SOURCE_BUILD.md)。下文保留已有发布归档路线及分发要求；源码编译工作流只上传验证报告，不发布程序或安装包。
+
 本轮只整理并同步源码，不更新本机程序、不生成安装包、不创建发布 tag。以下命令是后续构建说明。
 
 ## 三种不同操作
@@ -57,4 +59,4 @@ python -B build_electron.py --next-extracted C:\build-inputs\dsh-next --next-ins
 5. 用户明确需要分发时，再对已验收的 **Next staging 目录**制作 NSIS 安装程序。应使用 electron-builder 的 `--prepackaged` 路径，并单独核对 Next 的 appId `com.vvfly.somnusnext`、安装/卸载、升级和用户数据目录。现有默认配置仍包含旧 appId，此次没有新增或验证安装包配方，不能直接把默认配置当作已验证的 Next 发布流水线。
 6. 测试安装/升级后生成 SHA-256、记录源码提交和上游版本、整理发布说明；经项目负责人授权再创建 tag、上传到 `GSXTY/Somnus-Releases`。源码同步到 `GSXTY/Somnus` 不等于发布安装包。
 
-目前 GitHub 仅启用源码检查工作流；PR、合并和 tag 都不会自动打包发布。以后要启用发布自动化，需单独 PR 实现上述 Next 分发流程，并验收后启用。
+GitHub 的 `Source checks` 运行源码回归；涉及源码构建的 PR 还会触发 `Source compilation`，在隔离环境生成供验证的程序目录并只上传报告。PR、合并和 tag 都不会自动制作或发布安装包。以后要启用发布自动化，需单独 PR 实现上述 Next 分发流程，并验收后启用。

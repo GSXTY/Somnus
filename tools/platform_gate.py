@@ -65,7 +65,8 @@ def validate_assets():
     manifest = json.loads((output / 'build-manifest.json').read_text(encoding='utf-8'))
     if manifest.get('schema_version') != 1 or manifest.get('producer') != 'somnus-frontend':
         raise ValueError('Invalid frontend manifest')
-    names = ['package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts', 'build-manifest.mjs']
+    names = ['package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts', 'build-manifest.mjs',
+             'index.html', 'scripts/make-embed.mjs']
     for folder in ('src', 'public'):
         for path in (frontend / folder).rglob('*'):
             if path.is_symlink():

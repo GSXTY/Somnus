@@ -16,7 +16,6 @@
       "**/.mcp-deps": true,
       "**/.frontend-cache": true,
       "**/.release-tools": true,
-      "**/vendor": true,
       "**/node_modules": true,
       "**/.venv": true,
       "**/venv": true,
@@ -27,7 +26,9 @@
       "**/.cache": true,
       "**/release": true,
       "**/.env": true,
-      "**/.env.*": true
+      "**/.env.*": true,
+      "**/.somnus-git": true,
+      "**/.source-build-cache": true
     },
     "search.exclude": {
       "**/.git": true,
@@ -39,7 +40,6 @@
       "**/.mcp-deps": true,
       "**/.frontend-cache": true,
       "**/.release-tools": true,
-      "**/vendor": true,
       "**/node_modules": true,
       "**/.venv": true,
       "**/venv": true,
@@ -50,7 +50,9 @@
       "**/.cache": true,
       "**/release": true,
       "**/.env": true,
-      "**/.env.*": true
+      "**/.env.*": true,
+      "**/.somnus-git": true,
+      "**/.source-build-cache": true
     },
     "files.watcherExclude": {
       "**/.git/**": true,
@@ -71,7 +73,9 @@
       "**/.mypy_cache/**": true,
       "**/.ruff_cache/**": true,
       "**/.cache/**": true,
-      "**/release/**": true
+      "**/release/**": true,
+      "**/.somnus-git/**": true,
+      "**/.source-build-cache/**": true
     },
     "git.autoRepositoryDetection": false,
     "git.openRepositoryInParentFolders": "never",
