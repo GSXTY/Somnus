@@ -6,7 +6,7 @@ $gitfilePath = Join-Path $projectRoot '.git'
 if (!(Test-Path -LiteralPath (Join-Path $metadataPath 'HEAD'))) {
     throw 'Independent Git metadata is missing. A fresh clone already has its own .git and needs no repair.'
 }
-if ((Get-Item -LiteralPath $gitfilePath).PSIsContainer) {
+if ((Get-Item -Force -LiteralPath $gitfilePath).PSIsContainer) {
     throw 'This checkout already has a .git directory. Do not replace it.'
 }
 $oldGitfile = [IO.File]::ReadAllText($gitfilePath)
