@@ -61,7 +61,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --dir page_design/frontend build
       - name: Build Somnus backend from source
-        run: python -B build_electron.py --backend-only
+        run: |
+          python -B build_electron.py --backend-only
+          $buildCode = $LASTEXITCODE
+          if ($buildCode -ne 0) {
+            $gatePath = Join-Path $env:SOMNUS_DEV_STORAGE 'artifacts/build/electron/platform-gate.json'
+            if (Test-Path -LiteralPath $gatePath) {
+              $gate = Get-Content -LiteralPath $gatePath -Raw | ConvertFrom-Json
+              if ($gate.provenance.assets_error) { Write-Output $gate.provenance.assets_error }
+              foreach ($check in $gate.checks) {
+                if (!$check.ok) {
+                  Write-Output ("Failed gate: " + $check.id)
+                  Write-Output $check.summary
+                }
+              }
+            }
+            exit $buildCode
+          }
       - name: Compile DSH and Somnus into an isolated application directory
         run: |
           $backendDir = Join-Path $env:SOMNUS_DEV_STORAGE 'artifacts/build/electron/backend/SomnusBackend'
@@ -73,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: source-compilation-report
-          path: '${{ runner.temp }}/somnus-source-validation/cache/dsh-source/**/somnus-source-build.json'
+          path: |
+            ${{ runner.temp }}/somnus-source-validation/cache/dsh-source/**/somnus-source-build.json
+            ${{ runner.temp }}/somnus-source-validation/artifacts/build/electron/platform-gate.json
           if-no-files-found: ignore
 
 # Only reports are uploaded. No installer, application archive, tag, or Release is published.
