@@ -23,6 +23,10 @@ concurrency:
 jobs:
   compile:
     name: source-compilation
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.pull_request.number == 4 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'build/local-source-update')
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -194,5 +198,178 @@ jobs:
           retention-days: 1
           compression-level: 3
 
-# Ordinary runs upload only reports. The exact same-repository local-update PR may
-# retain its verified application directory for one day; no installer or Release is published.
+  transfer:
+    name: transfer-verified-local-application
+    if: >-
+      success() && github.event_name == 'pull_request' && github.event.pull_request.number == 4 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'build/local-source-update' &&
+      github.event.pull_request.base.sha == '31d232e27b12fded71b51c5a59687dc44aebf750'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+      SOMNUS_TRANSFER_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Retrieve the already verified source application
+        uses: actions/download-artifact@v4
+        with:
+          name: somnus-local-source-update
+          path: ${{ runner.temp }}/somnus-source-transfer/application
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 44899550385
+      - name: Verify the application tree and split its transport archive
+        id: split
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import zipfile
+
+          source_commit = '31d232e27b12fded71b51c5a59687dc44aebf750'
+          build_head = '18ab8e92ca010e81685ebfd6e33c40ee9abd1973'
+          upstream_commit = 'f2483c6d26104b3594cb0e22f56c0331b55dfffe'
+          source_run = '44899550385'
+          part_limit = 300 * 1024 * 1024
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+          pull = event['pull_request']
+          if (os.environ['GITHUB_EVENT_NAME'] != 'pull_request'
+              or pull['number'] != 4
+              or pull['head']['repo']['full_name'] != os.environ['GITHUB_REPOSITORY']
+              or pull['head']['ref'] != 'build/local-source-update'
+              or pull['base']['sha'] != source_commit):
+              raise RuntimeError('Transfer is restricted to the requested source baseline and same-repository PR')
+
+          transfer = Path(os.environ['RUNNER_TEMP']) / 'somnus-source-transfer'
+          application = (transfer / 'application').resolve(strict=True)
+          original_manifest = application / 'delivery-manifest.json'
+          original_bytes = original_manifest.read_bytes()
+          delivery = json.loads(original_bytes)
+          required = {'ok': True, 'applicationReady': True, 'terminalSmoke': True,
+                      'uiAccepted': False, 'originalAsarRequired': False, 'installerCreated': False}
+          if (delivery.get('sourceCommit') != source_commit or delivery.get('buildHead') != build_head
+              or delivery.get('upstreamCommit') != upstream_commit or delivery.get('runId') != source_run
+              or any(delivery.get(name) is not value for name, value in required.items())):
+              raise RuntimeError('The downloaded application is not the verified source build')
+
+          expected = set()
+          for row in delivery['files']:
+              name = row['path']
+              logical = PurePosixPath(name)
+              if (logical.is_absolute() or '\\' in name or '..' in logical.parts
+                  or name == 'delivery-manifest.json' or name in expected):
+                  raise RuntimeError('Invalid or duplicate application manifest path')
+              path = (application / name).resolve(strict=True)
+              if not path.is_relative_to(application) or not path.is_file():
+                  raise RuntimeError('Application manifest points outside its tree')
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              if path.stat().st_size != row['bytes'] or digest != row['sha256']:
+                  raise RuntimeError('Application file integrity failed: ' + name)
+              expected.add(name)
+          actual = set()
+          for directory, directories, names in os.walk(application, followlinks=False):
+              for name in directories + names:
+                  path = Path(directory) / name
+                  if path.is_symlink() or path.is_junction():
+                      raise RuntimeError('Transport must not follow filesystem links')
+              actual.update((Path(directory) / name).relative_to(application).as_posix() for name in names)
+          if actual != expected | {'delivery-manifest.json'}:
+              raise RuntimeError('Application tree contains missing or unlisted files')
+
+          output = transfer / 'transport'
+          output.mkdir()
+          archive = output / 'somnus-local-source-update.transport.zip'
+          with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zipped:
+              for name in sorted(actual):
+                  zipped.write(application / name, arcname=name)
+          archive_bytes = archive.stat().st_size
+          count = (archive_bytes + part_limit - 1) // part_limit
+          if not 1 <= count <= 3:
+              raise RuntimeError('Transport archive requires more than the three permitted 300 MiB parts')
+          with archive.open('rb') as stream:
+              archive_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          parts = []
+          with archive.open('rb') as stream:
+              for number in range(1, count + 1):
+                  part = output / (archive.name + '.part' + str(number).zfill(3))
+                  digest = hashlib.sha256()
+                  written = 0
+                  with part.open('wb') as target:
+                      while written < part_limit:
+                          chunk = stream.read(min(1024 * 1024, part_limit - written))
+                          if not chunk:
+                              break
+                          target.write(chunk)
+                          digest.update(chunk)
+                          written += len(chunk)
+                  if not 0 < written <= part_limit:
+                      raise RuntimeError('Transport part size is outside the allowed range')
+                  parts.append({'file': part.name, 'artifact': 'somnus-local-source-update-part-' + str(number).zfill(3),
+                                'bytes': written, 'sha256': digest.hexdigest()})
+                  with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as values:
+                      values.write('part' + str(number) + '=' + str(part) + '\n')
+              if stream.read(1):
+                  raise RuntimeError('Transport archive was not completely split')
+          manifest = {
+              'schemaVersion': 1, 'producer': 'SomnusNext verified application transport',
+              'sourceCommit': source_commit, 'buildHead': build_head, 'upstreamCommit': upstream_commit,
+              'sourceRunId': source_run,
+              'sourceArtifact': {'id': 14705389197, 'name': 'somnus-local-source-update', 'bytes': 615040505,
+                                 'sha256': '99f95ef521b64e0dcd9d6f6215e65a83576b1b7b80e61c6fb03736fb7d92c173'},
+              'deliveryManifestSha256': hashlib.sha256(original_bytes).hexdigest(),
+              'transferHead': os.environ['SOMNUS_TRANSFER_HEAD'], 'transferRef': os.environ['GITHUB_REF'],
+              'transferRunId': os.environ['GITHUB_RUN_ID'],
+              'archive': {'file': archive.name, 'bytes': archive_bytes, 'sha256': archive_digest},
+              'partLimitBytes': part_limit, 'parts': parts,
+          }
+          (output / 'transport-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print('Verified application and prepared ' + str(count) + ' bounded transport parts')
+      - name: Retain transport part one
+        if: success() && steps.split.outputs.part1 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: somnus-local-source-update-part-001
+          path: ${{ steps.split.outputs.part1 }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retain transport part two
+        if: success() && steps.split.outputs.part2 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: somnus-local-source-update-part-002
+          path: ${{ steps.split.outputs.part2 }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retain transport part three
+        if: success() && steps.split.outputs.part3 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: somnus-local-source-update-part-003
+          path: ${{ steps.split.outputs.part3 }}
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retain the transport manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: somnus-local-source-update-transport-manifest
+          path: ${{ runner.temp }}/somnus-source-transfer/transport/transport-manifest.json
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+# Ordinary runs compile and upload only reports. PR 4 transfers its already verified
+# application as bounded one-day artifacts; no installer or Release is published.
