@@ -121,7 +121,7 @@ input.on('line', line => {
     case 'session/set_config_option':
       assert.equal(modernModels, true);
       if (params.configId === 'backend-model') {
-        assert.ok(params.value === 'mock-selectable' || (dshAccount && models.some(m => m.modelId === params.value))); 
+        assert.ok(params.value === 'mock-selectable' || (dshAccount && models.some(m => m.modelId === params.value)));
         model = params.value;
         effort = '';
       } else {

@@ -431,7 +431,7 @@ Provider 桥接：
 - 侧栏顺序保持：主页、文档、工具、配置中心、IM机器人、插件、自动化任务。
 - 截图：[somnus-dsh-im.png](images/somnus-dsh-im.png)。
 
-注意：插件文件安装在用户 profile 的 `node_modules/@xmanrui/dsh-im`，不是 app.asar 内；换机器或重装 profile 时需要重新分发该插件。 
+注意：插件文件安装在用户 profile 的 `node_modules/@xmanrui/dsh-im`，不是 app.asar 内；换机器或重装 profile 时需要重新分发该插件。
 
 ## 29. 波形分析页高度修复（2026-11-20）
 
