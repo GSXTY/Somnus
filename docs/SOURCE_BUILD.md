@@ -15,6 +15,8 @@
 
 上游源码通过 Git 子模块固定在 `xue-ding-e/DSH-Next` 的 `f2483c6d26104b3594cb0e22f56c0331b55dfffe`，保留其 MIT 许可证及第三方声明。子模块是完整的独立 Git 源码仓库，不是从旧 ASAR 解出来的文件。
 
+打开根目录 `Somnus-Source.code-workspace` 或直接打开项目文件夹，都可以浏览和搜索 `vendor/dsh-next`。编辑器隐藏的是 Git 元数据、依赖及临时构建缓存，不再隐藏整个 vendor 源码目录。
+
 ## 获取源码
 
 新电脑使用：
