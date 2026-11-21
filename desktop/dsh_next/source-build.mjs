@@ -12,6 +12,8 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const markerName = '.somnus-source-workspace.json';
 const owner = 'SomnusNext source build';
 let currentReport;
+const windowsRuntimePathBudget = 230;
+const windowsRuntimeDll = 'apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/win-unpacked/resources/runtime/primary-runtime/dependencies/python/Lib/site-packages/lxml/_elementpath.cp313-win_amd64.pyd';
 
 function gitBytes(source, args) {
   const result = spawnSync('git', ['-C', source, ...args], { windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
@@ -30,6 +32,22 @@ export function assertExternalWorkspace(workspace, ...sources) {
       throw new Error('The source build workspace must be outside the source checkout');
     }
   }
+}
+
+/** Keep the source root short enough for native libraries in the assembled Windows payload. */
+export function defaultWorkspace(storage, commit) {
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('The source workspace requires a full pinned commit');
+  return join(storage, 's', commit.slice(0, 12));
+}
+
+/** Reserve headroom for the Windows DLL loader before downloading or compiling dependencies. */
+export function assertWindowsRuntimePath(workspace, platform = process.platform) {
+  if (platform !== 'win32') return undefined;
+  const candidate = join(workspace, windowsRuntimeDll);
+  if (candidate.length > windowsRuntimePathBudget) {
+    throw new Error(`The assembled Windows runtime DLL path would be ${candidate.length} characters, exceeding the ${windowsRuntimePathBudget}-character source-staging safety budget. Use --workspace with a shorter external directory. Candidate: ${candidate}`);
+  }
+  return { candidate, length: candidate.length, safetyBudget: windowsRuntimePathBudget };
 }
 
 /** Read the exact source identity and refuse changes to the pristine dependency. */
@@ -208,10 +226,11 @@ async function main() {
   }
   if (values['local-workspace'] && values.storage) throw new Error('--local-workspace owns its dedicated cache; omit --storage');
   const storage = values['local-workspace'] ? join(root, '.source-build-cache') : storageRoot(root, values.storage);
-  const workspace = values.workspace ? resolve(values.workspace) : join(storage, 'cache/dsh-source', lock.commit.slice(0, 12));
+  const workspace = values.workspace ? resolve(values.workspace) : defaultWorkspace(storage, lock.commit);
   validateWorkspace(workspace, source, values['local-workspace']);
+  const windowsRuntimePath = values.build || values.check ? assertWindowsRuntimePath(workspace) : undefined;
   if (values.check || !(values.prepare || values.install || values.compile || values.build)) {
-    console.log(JSON.stringify({ ok: true, ...identity, source, workspace, originalAsarRequired: false }));
+    console.log(JSON.stringify({ ok: true, ...identity, source, workspace, windowsRuntimePath, originalAsarRequired: false }));
     return;
   }
   const prepared = await prepareWorkspace(source, workspace, lock, { localWorkspace: values['local-workspace'] });

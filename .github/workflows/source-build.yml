@@ -46,10 +46,10 @@ jobs:
           version: '11.28.5'
       - name: Set isolated build storage
         run: |
-          $buildStorage = Join-Path $env:RUNNER_TEMP 'somnus-source-validation'
+          $buildStorage = Join-Path $env:RUNNER_TEMP 's'
           "SOMNUS_DEV_STORAGE=$buildStorage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $sourceLock = Get-Content -LiteralPath 'desktop/dsh_next/source-lock.json' -Raw | ConvertFrom-Json
-          $sourceReport = Join-Path $buildStorage ('cache/dsh-source/' + $sourceLock.commit.Substring(0, 12) + '/somnus-source-build.json')
+          $sourceReport = Join-Path $buildStorage ('s/' + $sourceLock.commit.Substring(0, 12) + '/somnus-source-build.json')
           "SOMNUS_SOURCE_REPORT=$sourceReport" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare the actual upstream source snapshot
         run: node desktop/dsh_next/source-build.mjs --prepare --storage $env:SOMNUS_DEV_STORAGE
@@ -97,7 +97,7 @@ jobs:
           name: source-compilation-report
           path: |
             ${{ env.SOMNUS_SOURCE_REPORT }}
-            ${{ runner.temp }}/somnus-source-validation/artifacts/build/electron/platform-gate.json
+            ${{ runner.temp }}/s/artifacts/build/electron/platform-gate.json
           if-no-files-found: ignore
 
 # Only reports are uploaded. No installer, application archive, tag, or Release is published.

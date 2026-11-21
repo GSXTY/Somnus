@@ -80,7 +80,9 @@ node desktop/dsh_next/source-build.mjs --build --storage $env:SOMNUS_DEV_STORAGE
 
 `--backend-only` 会执行现有平台门禁，再冻结后端。成功后写入 `somnus-backend-build.json`，源码构建检查该记录，并拒绝从当前 `app/` 取后端。pnpm 不在 PATH 或其启动器无法定位时，可给源码构建命令加 `--pnpm-entry <pnpm.mjs 的绝对路径>`；版本仍必须匹配上游锁定版本。
 
-默认工作区在外置存储 `cache/dsh-source/f2483c6d2610/`，复制固定源码后应用 Somnus 的入口与适配。不会修改维护用的 `vendor/dsh-next/`。重复构建复用依赖并重新应用自有适配。产物位置与实际状态写入工作区的 `somnus-source-build.json`；编译成功、程序目录生成、实际界面验收是不同状态，不能互相代替。
+默认工作区在外置存储 `s/f2483c6d2610/`，复制固定源码后应用 Somnus 的入口与适配。不会修改维护用的 `vendor/dsh-next/`。重复构建复用依赖并重新应用自有适配。产物位置与实际状态写入工作区的 `somnus-source-build.json`；编译成功、程序目录生成、实际界面验收是不同状态，不能互相代替。
+
+Windows 的内置 Python 原生模块对深目录仍有限制，Git 长路径设置不能替代 DLL 加载验证。构建入口会在安装依赖前检查预留路径长度；若提示路径过长，用较短的外置存储目录，或传入 `--workspace D:\SomnusBuild\w`。该目录必须位于源码之外，且为空或已有本工具的所有权记录；不会跳过上游文档运行测试。
 
 受限环境下的 `--local-workspace` 只允许使用项目内专属 `.source-build-cache/` 子目录，这是用于诊断的显式例外，不是普通构建的默认位置。该目录不提交 Git；不要把它当作源码。
 

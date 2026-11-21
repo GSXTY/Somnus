@@ -4,7 +4,7 @@ import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { assertExternalWorkspace, inspectBackend, pnpmCommand, prepareWorkspace } from './source-build.mjs';
+import { assertExternalWorkspace, assertWindowsRuntimePath, defaultWorkspace, inspectBackend, pnpmCommand, prepareWorkspace } from './source-build.mjs';
 
 test('a build workspace must not overwrite either source tree', () => {
   const product = join(tmpdir(), 'somnus-source-fixture');
@@ -13,6 +13,19 @@ test('a build workspace must not overwrite either source tree', () => {
     assert.throws(() => assertExternalWorkspace(destination, product, upstream), /outside/);
   }
   assert.doesNotThrow(() => assertExternalWorkspace(join(tmpdir(), 'somnus-build-fixture'), product, upstream));
+});
+
+test('the default source workspace leaves headroom for Windows runtime DLL imports', () => {
+  const commit = 'f2483c6d26104b3594cb0e22f56c0331b55dfffe';
+  const storage = 'D:/a/_temp/s';
+  const workspace = defaultWorkspace(storage, commit);
+  assert.equal(workspace, join(storage, 's', commit.slice(0, 12)));
+  const measured = assertWindowsRuntimePath(workspace, 'win32');
+  assert.ok(measured.length <= measured.safetyBudget);
+  assert.throws(() => defaultWorkspace(storage, 'not-a-commit'), /full pinned commit/);
+  // This is the exact layout that failed its packaged Python lxml import in CI.
+  assert.throws(() => assertWindowsRuntimePath('D:/a/_temp/somnus-source-validation/cache/dsh-source/f2483c6d2610', 'win32'), /shorter external directory/);
+  assert.equal(assertWindowsRuntimePath('a'.repeat(300), 'linux'), undefined);
 });
 
 test('an explicit pnpm JavaScript entry runs with Node and a missing entry fails visibly', async t => {
