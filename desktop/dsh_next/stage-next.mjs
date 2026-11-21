@@ -17,12 +17,16 @@ const release = JSON.parse(await readFile(new URL('next-release.json', import.me
 const branding = JSON.parse(await readFile(new URL('branding.json', import.meta.url), 'utf8'));
 const somnusPackage = JSON.parse(await readFile(join(root, 'electron', 'package.json'), 'utf8'));
 const requireElectron = createRequire(join(root, 'electron', 'package.json'));
-const requireBuilder = createRequire(requireElectron.resolve('electron-builder'));
-const requireBuilderLib = createRequire(requireBuilder.resolve('app-builder-lib'));
-const requireAsar = createRequire(requireBuilderLib.resolve('@electron/asar'));
-const asar = requireBuilderLib('@electron/asar');
-const { Pickle } = requireAsar('./pickle');
-const { getFileIntegrity } = requireAsar('./integrity');
+let archiveTools;
+function getArchiveTools() {
+  if (archiveTools) return archiveTools;
+  const requireBuilder = createRequire(requireElectron.resolve('electron-builder'));
+  const requireBuilderLib = createRequire(requireBuilder.resolve('app-builder-lib'));
+  const requireAsar = createRequire(requireBuilderLib.resolve('@electron/asar'));
+  archiveTools = { requireBuilderLib, asar: requireBuilderLib('@electron/asar'),
+    Pickle: requireAsar('./pickle').Pickle, getFileIntegrity: requireAsar('./integrity').getFileIntegrity };
+  return archiveTools;
+}
 const hostRoot = 'dsh/node_modules/@deepseek-ai';
 const appId = 'com.vvfly.somnusnext';
 const packageName = 'somnus-next-desktop';
@@ -152,6 +156,7 @@ export async function createSomnusChanges(read, { sourceBuild, profileBootFile }
 
 /** Preserve all unmodified packed offsets, links, and unpacked file records. */
 async function rewriteArchive(input, output, changes) {
+  const { asar, Pickle, getFileIntegrity } = getArchiveTools();
   const { header, headerSize } = asar.getRawHeader(input);
   const dataStart = 8 + headerSize;
   let offset = (await stat(input)).size - dataStart;
@@ -183,6 +188,7 @@ async function rewriteArchive(input, output, changes) {
 }
 
 async function writeVerifiedArchive(original, target, changes) {
+  const { asar } = getArchiveTools();
   await rewriteArchive(original, target, changes);
   for (const [file, contents] of changes) {
     if (!asar.extractFile(target, normalize(file)).equals(contents)) throw new Error(`Staged ASAR failed verification at ${file}.`);
@@ -196,6 +202,7 @@ async function digest(file) {
 }
 
 async function brandWindowsExecutable(input, output) {
+  const { requireBuilderLib } = getArchiveTools();
   const { NtExecutable, NtExecutableResource, Data, Resource } = requireBuilderLib('resedit');
   const executable = NtExecutable.from(await readFile(input));
   const resources = NtExecutableResource.from(executable);
@@ -234,6 +241,7 @@ function copyWindowsTree(source, target, ignored = []) {
 }
 
 async function stage(installation, backend, installer) {
+  const { asar } = getArchiveTools();
   if (await digest(installer) !== release.windowsInstallerSha256) throw new Error('DSH Next installer checksum does not match the pinned release.');
   const source = await realpath(installation);
   const original = join(source, 'resources', 'app.asar');
@@ -281,6 +289,7 @@ if (process.platform !== 'win32' || !installation || !backend || !installer || e
   throw new Error('Usage: node desktop/dsh_next/stage-next.mjs <extracted DSH Next release> <SomnusBackend directory> <upstream installer>');
 }
 if (installation === '--archive-only') {
+  const { asar } = getArchiveTools();
   const original = await realpath(backend);
   const changes = await createSomnusChanges(file => asar.extractFile(original, normalize(file)));
   await writeVerifiedArchive(original, resolve(installer), changes);

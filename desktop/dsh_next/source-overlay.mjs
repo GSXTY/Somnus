@@ -186,7 +186,8 @@ export async function applySomnusBuiltOverlay(unpackedAppDir, { sourceRoot, somn
   }
   const require = createRequire(join(owner, 'electron/package.json'));
   const builder = createRequire(require.resolve('electron-builder'));
-  const asar = builder('@electron/asar');
+  const builderLib = createRequire(builder.resolve('app-builder-lib'));
+  const asar = builderLib('@electron/asar');
   const archive = join(output, 'resources/app.asar');
   const files = asar.listPackage(archive);
   const profileBootFile = sourceProfileBootFile(files);
@@ -203,6 +204,8 @@ export async function applySomnusBuiltOverlay(unpackedAppDir, { sourceRoot, somn
     }
   }
   await rename(temporaryArchive, archive);
+  // The original header was read above; its offsets changed when the archive was replaced.
+  asar.uncache(archive);
   const resources = join(output, 'resources');
   const support = join(resources, 'somnus');
   const { copyHostFiles } = require('./runtime/resources.cjs');

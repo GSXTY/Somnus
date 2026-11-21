@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { applySomnusBuiltOverlay, prepareSomnusSourceOverlay, sourceProfileBootFile, verifySomnusSourceEntry } from './source-overlay.mjs';
+import { createSomnusChanges } from './stage-next.mjs';
 
 const owner = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 
@@ -87,4 +88,12 @@ test('source finalization refuses output from a different build workspace', asyn
   const root = await workspace(t);
   const another = await workspace(t);
   await assert.rejects(applySomnusBuiltOverlay(another, { sourceRoot: root }), /belong to this isolated source workspace/);
+});
+
+test('release and source transforms refuse unrecognized inputs before reading any runtime files', async () => {
+  const files = [];
+  const read = file => { files.push(file); return Buffer.from(JSON.stringify({ name: 'not-the-pinned-release', main: 'lib/main.js' })); };
+  await assert.rejects(createSomnusChanges(read), /Expected the unmodified/);
+  await assert.rejects(createSomnusChanges(read, { sourceBuild: { commit: 'different', entry: 'somnus-source/main.mjs' }, profileBootFile: 'dsh/node_modules/@deepseek-ai/dsh/lib/profile-boot-new.js' }), /source build does not carry/);
+  assert.deepEqual(files, ['package.json', 'package.json']);
 });
