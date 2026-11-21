@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -90,9 +90,71 @@ test('a repeated source snapshot restores tracked input while preserving install
   assert.equal(await readFile(join(workspace, 'owned.txt'), 'utf8'), 'tracked input\n');
   assert.equal(await readFile(join(workspace, 'node_modules/installed.txt'), 'utf8'), 'keep dependencies');
   assert.equal(execute(['status', '--porcelain', '--untracked-files=no']), '');
+  const report = join(workspace, 'somnus-source-build.json');
+  await writeFile(report, JSON.stringify({ ok: true, applicationReady: true }));
+  await rm(join(workspace, 'owned.txt'));
+  await mkdir(join(workspace, 'owned.txt'));
+  await assert.rejects(prepareWorkspace(source, workspace, { commit }));
+  const failed = JSON.parse(await readFile(report, 'utf8'));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.applicationReady, false);
+  assert.equal(failed.stage, 'preparing');
   const unowned = join(directory, 'unowned');
   await mkdir(unowned);
   await writeFile(join(unowned, 'personal.txt'), 'leave alone');
+  await writeFile(join(unowned, 'somnus-source-build.json'), 'unowned report');
   await assert.rejects(prepareWorkspace(source, unowned, { commit }), /unowned/);
   assert.equal(await readFile(join(unowned, 'personal.txt'), 'utf8'), 'leave alone');
+  assert.equal(await readFile(join(unowned, 'somnus-source-build.json'), 'utf8'), 'unowned report');
 });
+
+for (const representation of ['text checkout', 'directory-like Git link entry', 'real directory symlink']) {
+  test(`source links are exported as Git text without traversal: ${representation}`, async t => {
+    if (representation === 'real directory symlink' && process.platform === 'win32' && !process.env.GITHUB_ACTIONS) {
+      t.skip('This local Windows sandbox does not permit creating symlinks; the CI runner covers real links');
+      return;
+    }
+    const directory = await mkdtemp(join(tmpdir(), 'somnus-link-source-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const source = join(directory, 'source');
+    const workspace = join(directory, 'build');
+    const external = join(directory, 'outside');
+    await mkdir(source);
+    await mkdir(external);
+    await writeFile(join(external, 'personal.txt'), 'external data must not be copied');
+    const execute = (args, input) => {
+      const result = spawnSync('git', ['-C', source, ...args], { input, encoding: 'utf8', windowsHide: true,
+        env: { ...process.env, GIT_AUTHOR_NAME: 'Source test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+          GIT_COMMITTER_NAME: 'Source test', GIT_COMMITTER_EMAIL: 'test@example.invalid' } });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    execute(['init']);
+    const target = '../outside';
+    const link = join(source, 'skills-link');
+    if (representation === 'text checkout') await writeFile(link, target);
+    else if (representation === 'directory-like Git link entry') await mkdir(link);
+    else {
+      try { await symlink(target, link, 'dir'); }
+      catch (error) {
+        if (error.code !== 'EPERM' && error.code !== 'EACCES') throw error;
+        t.skip('This host does not permit a real directory symlink');
+        return;
+      }
+    }
+    const blob = execute(['hash-object', '-w', '--stdin'], target);
+    const tree = execute(['mktree'], `120000 blob ${blob}\tskills-link\n`);
+    const commit = execute(['commit-tree', tree], 'link source fixture\n');
+    execute(['update-ref', 'HEAD', commit]);
+    execute(['read-tree', 'HEAD']);
+    execute(['config', 'core.symlinks', representation === 'real directory symlink' ? 'true' : 'false']);
+    await prepareWorkspace(source, workspace, { commit });
+    const exported = join(workspace, 'skills-link');
+    assert.equal(await readFile(exported, 'utf8'), target);
+    assert.equal((await lstat(exported)).isFile(), true);
+    assert.equal((await lstat(exported)).isSymbolicLink(), false);
+    const configured = spawnSync('git', ['-C', workspace, 'config', '--get', 'core.symlinks'], { encoding: 'utf8' });
+    assert.equal(configured.stdout.trim(), 'false');
+    assert.equal(await readFile(join(external, 'personal.txt'), 'utf8'), 'external data must not be copied');
+  });
+}

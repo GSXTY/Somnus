@@ -13,12 +13,14 @@ const markerName = '.somnus-source-workspace.json';
 const owner = 'SomnusNext source build';
 let currentReport;
 
-function git(source, args) {
-  const result = spawnSync('git', ['-C', source, ...args], { encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+function gitBytes(source, args) {
+  const result = spawnSync('git', ['-C', source, ...args], { windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr.trim()}`);
-  return result.stdout.trimEnd();
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr.toString('utf8').trim()}`);
+  return result.stdout;
 }
+
+function git(source, args) { return gitBytes(source, args).toString('utf8').trimEnd(); }
 
 /** Reject build workspaces inside either the product source or its source dependency. */
 export function assertExternalWorkspace(workspace, ...sources) {
@@ -52,17 +54,30 @@ export async function prepareWorkspace(source, workspace, lock, { localWorkspace
     const record = JSON.parse(await readFile(marker, 'utf8'));
     if (record.owner !== owner || record.commit !== lock.commit) throw new Error('Existing source workspace has a different owner or commit');
   } else if ((await readdir(workspace)).length) throw new Error('Refusing to overwrite a nonempty, unowned source workspace');
+  // An interrupted second preparation must never leave an earlier successful
+  // report describing the workspace it is about to change.
+  await writeFile(join(workspace, 'somnus-source-build.json'), JSON.stringify({
+    ok: false, stage: 'preparing', commit: lock.commit, workspace,
+    applicationReady: false, uiAccepted: false, originalAsarRequired: false, installerCreated: false,
+  }, null, 2));
   await writeFile(marker, JSON.stringify({ schemaVersion: 1, owner, commit: lock.commit, source }, null, 2));
   await writeFile(join(workspace, '.somnus-build-workspace.json'), JSON.stringify({
     schema: 1, projectRoot: await realpath(root), upstreamCommit: lock.commit,
   }, null, 2));
-  const files = git(source, ['ls-files', '-z']).split('\0').filter(Boolean);
-  for (const name of files) {
+  const files = git(source, ['ls-files', '--stage', '-z']).split('\0').filter(Boolean);
+  for (const entry of files) {
+    const matched = /^(100644|100755|120000) ([a-f0-9]{40}) 0\t(.+)$/s.exec(entry);
+    if (!matched) throw new Error('Unsupported or unmerged tracked source entry');
+    const [, mode, object, name] = matched;
     const destination = resolve(workspace, name);
     const rel = relative(workspace, destination);
     if (rel.startsWith('..' + sep) || isAbsolute(rel)) throw new Error('Invalid tracked source path');
     await mkdir(dirname(destination), { recursive: true });
-    await copyFile(join(source, name), destination);
+    // Export Git link text rather than following a worktree directory symlink.
+    // This matches a standard Windows core.symlinks=false checkout and never
+    // traverses a link into a user's external directory.
+    if (mode === '120000') await writeFile(destination, gitBytes(source, ['cat-file', 'blob', object]));
+    else await copyFile(join(source, name), destination);
   }
   // The official build records a real source commit. Object storage is read through
   // an alternate; no hook, ref, index or configuration in the dependency is changed.
@@ -73,6 +88,7 @@ export async function prepareWorkspace(source, workspace, lock, { localWorkspace
   if (existsSync(join(sourceGit, 'shallow'))) await copyFile(join(sourceGit, 'shallow'), join(workspace, '.git/shallow'));
   git(workspace, ['config', 'core.autocrlf', 'false']);
   git(workspace, ['config', 'core.longpaths', 'true']);
+  git(workspace, ['config', 'core.symlinks', 'false']);
   git(workspace, ['update-ref', 'refs/heads/somnus-source', lock.commit]);
   git(workspace, ['symbolic-ref', 'HEAD', 'refs/heads/somnus-source']);
   git(workspace, ['read-tree', 'HEAD']);
