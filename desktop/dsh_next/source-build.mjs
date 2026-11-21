@@ -169,28 +169,87 @@ export async function inspectBackend(directory, expectedVersion, productRoot = r
   return backend;
 }
 
-function run(command, cwd, env) {
+async function terminateOwnedProcess(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  let treeFailure;
+  if (process.platform === 'win32') {
+    const result = spawnSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/taskkill.exe'),
+      ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, encoding: 'utf8', timeout: 5000 });
+    if (result.error) treeFailure = result.error;
+    else if (result.status !== 0) treeFailure = new Error('Could not confirm termination of the owned child process tree: ' + result.stderr);
+  } else {
+    try { process.kill(-child.pid, 'SIGKILL'); }
+    catch (error) { if (error.code !== 'ESRCH') treeFailure = error; }
+  }
+  // Use the original process handle even when a restricted Windows host refuses
+  // PID-based taskkill. A tree-cleanup failure is still reported, never hidden.
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  return treeFailure;
+}
+
+/** Run one owned command, optionally requiring its entire smoke process to exit by a deadline. */
+export async function runOwnedProcess(command, cwd, env, { timeoutMs = 0 } = {}) {
   console.log('+ ' + command.join(' '));
-  return new Promise((resolveRun, reject) => {
-    const child = spawn(command[0], command.slice(1), { cwd, env, windowsHide: true, stdio: 'inherit' });
+  const child = spawn(command[0], command.slice(1), { cwd, env, windowsHide: true,
+    detached: timeoutMs > 0 && process.platform !== 'win32', stdio: 'inherit' });
+  const completed = new Promise((resolveRun, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => code === 0 ? resolveRun() : reject(new Error(`${command[0]} exited with ${code ?? signal}`)));
   });
+  if (timeoutMs <= 0) return completed;
+  let timer;
+  const deadlineError = Object.assign(new Error(`Owned process exceeded its ${timeoutMs}ms exit deadline`), { childPid: child.pid });
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(deadlineError), timeoutMs); });
+  try { return await Promise.race([completed, deadline]); }
+  catch (error) {
+    if (error === deadlineError) {
+      const cleanupFailure = await terminateOwnedProcess(child);
+      let cleanupTimer;
+      try {
+        await Promise.race([completed.catch(() => {}), new Promise((_, reject) => {
+          cleanupTimer = setTimeout(() => reject(new Error('Owned smoke process did not exit after termination')), 5000);
+        })]);
+      } finally { clearTimeout(cleanupTimer); }
+      if (cleanupFailure) {
+        deadlineError.cause = cleanupFailure;
+        deadlineError.message += '; the owned child exited but process-tree cleanup could not be confirmed: ' + cleanupFailure.message;
+      }
+    }
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
+const run = runOwnedProcess;
+
 /** Exercise the fresh Electron ABI and its extracted terminal dependency without opening a GUI. */
-export async function smokeSourceTerminal(application, environment = process.env) {
-  const script = `
+export function sourceTerminalSmokeScript() {
+  return `
 const path = require('node:path');
 const terminal = require(path.join(process.argv[1], 'resources/somnus/node_modules/node-pty'));
 const pty = terminal.spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'echo somnus-source-pty'], { cwd: process.argv[1], env: process.env, cols: 80, rows: 24 });
 let output = '';
-const deadline = setTimeout(() => { pty.kill(); console.error('Source terminal smoke timed out'); process.exitCode = 1; }, 10000);
-pty.onData(data => { output += data; });
-pty.onExit(event => { clearTimeout(deadline); if (event.exitCode !== 0 || !output.includes('somnus-source-pty')) { console.error('Source terminal smoke failed: ' + output); process.exitCode = 1; } else console.log('Somnus source terminal smoke passed'); });
+let finished = false;
+let exitSubscription;
+const dataSubscription = pty.onData(data => { output += data; });
+function finish(error) {
+  if (finished) return;
+  finished = true;
+  clearTimeout(deadline);
+  dataSubscription.dispose();
+  exitSubscription?.dispose();
+  try { pty.kill(); } catch (killError) { error ??= killError; }
+  if (error) { console.error(error.message); process.exitCode = 1; }
+  else console.log('Somnus source terminal smoke passed');
+}
+const deadline = setTimeout(() => { finish(new Error('Source terminal smoke timed out')); process.exit(1); }, 10000);
+exitSubscription = pty.onExit(event => { finish(event.exitCode !== 0 || !output.includes('somnus-source-pty') ? new Error('Source terminal smoke failed: ' + output) : undefined); });
 `;
-  await run([join(application, 'Somnus.exe'), '-e', script, application], application,
-    { ...environment, ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '' });
+}
+
+/** Exercise the fresh Electron ABI and terminal with independent child and parent deadlines. */
+export async function smokeSourceTerminal(application, environment = process.env) {
+  await run([join(application, 'Somnus.exe'), '-e', sourceTerminalSmokeScript(), application], application,
+    { ...environment, ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '' }, { timeoutMs: 30000 });
 }
 
 async function recordProgress(stage) {

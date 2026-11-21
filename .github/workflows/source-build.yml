@@ -51,6 +51,7 @@ jobs:
           $sourceLock = Get-Content -LiteralPath 'desktop/dsh_next/source-lock.json' -Raw | ConvertFrom-Json
           $sourceReport = Join-Path $buildStorage ('s/' + $sourceLock.commit.Substring(0, 12) + '/somnus-source-build.json')
           "SOMNUS_SOURCE_REPORT=$sourceReport" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOMNUS_SOURCE_WORKSPACE=$(Split-Path -Parent $sourceReport)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare the actual upstream source snapshot
         run: node desktop/dsh_next/source-build.mjs --prepare --storage $env:SOMNUS_DEV_STORAGE
       - name: Install Somnus UI and desktop support dependencies
@@ -84,6 +85,7 @@ jobs:
             exit $buildCode
           }
       - name: Compile DSH and Somnus into an isolated application directory
+        timeout-minutes: 30
         run: |
           $backendDir = Join-Path $env:SOMNUS_DEV_STORAGE 'artifacts/build/electron/backend/SomnusBackend'
           $pnpmEntry = Join-Path (Split-Path -Parent $env:PNPM_HOME) 'pnpm/bin/pnpm.mjs'
@@ -98,6 +100,9 @@ jobs:
           path: |
             ${{ env.SOMNUS_SOURCE_REPORT }}
             ${{ runner.temp }}/s/artifacts/build/electron/platform-gate.json
+            ${{ env.SOMNUS_SOURCE_WORKSPACE }}/apps/desktop/.desktop-build/packaging-runs/*/*.log
+            ${{ env.SOMNUS_SOURCE_WORKSPACE }}/apps/desktop/.desktop-build/packaging-runs/*/*.json
+            ${{ env.SOMNUS_SOURCE_WORKSPACE }}/apps/desktop/.desktop-build/packaging-runs/*/*.jsonl
           if-no-files-found: ignore
 
 # Only reports are uploaded. No installer, application archive, tag, or Release is published.

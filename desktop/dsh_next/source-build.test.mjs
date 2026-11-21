@@ -3,8 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import vm from 'node:vm';
 import test from 'node:test';
-import { assertExternalWorkspace, assertWindowsRuntimePath, defaultWorkspace, inspectBackend, pnpmCommand, prepareWorkspace } from './source-build.mjs';
+import { assertExternalWorkspace, assertWindowsRuntimePath, defaultWorkspace, inspectBackend, pnpmCommand, prepareWorkspace, runOwnedProcess, sourceTerminalSmokeScript } from './source-build.mjs';
 
 test('a build workspace must not overwrite either source tree', () => {
   const product = join(tmpdir(), 'somnus-source-fixture');
@@ -26,6 +27,52 @@ test('the default source workspace leaves headroom for Windows runtime DLL impor
   // This is the exact layout that failed its packaged Python lxml import in CI.
   assert.throws(() => assertWindowsRuntimePath('D:/a/_temp/somnus-source-validation/cache/dsh-source/f2483c6d2610', 'win32'), /shorter external directory/);
   assert.equal(assertWindowsRuntimePath('a'.repeat(300), 'linux'), undefined);
+});
+
+test('terminal smoke releases the ConPTY worker on natural exit and fails closed on timeout', () => {
+  function fixture() {
+    const state = { killed: 0, disposed: 0, cleared: 0, messages: [], process: { argv: ['fixture.exe', 'fixture'], env: {} } };
+    const pty = {
+      kill() { state.killed++; },
+      onData(callback) { state.data = callback; return { dispose() { state.disposed++; } }; },
+      onExit(callback) { state.exit = callback; return { dispose() { state.disposed++; } }; },
+    };
+    state.process.exit = code => { state.exited = code; };
+    vm.runInNewContext(sourceTerminalSmokeScript(), {
+      require: name => name === 'node:path' ? { join } : { spawn: () => pty },
+      process: state.process,
+      setTimeout: callback => { state.deadline = callback; return 'owned timer'; },
+      clearTimeout: token => { assert.equal(token, 'owned timer'); state.cleared++; },
+      console: { log: value => state.messages.push(value), error: value => state.messages.push(value) },
+    });
+    return state;
+  }
+  const natural = fixture();
+  natural.data('somnus-source-pty');
+  natural.exit({ exitCode: 0 });
+  assert.equal(natural.killed, 1);
+  assert.equal(natural.disposed, 2);
+  assert.equal(natural.cleared, 1);
+  assert.ok(natural.messages.includes('Somnus source terminal smoke passed'));
+  const timeout = fixture();
+  timeout.deadline();
+  assert.equal(timeout.killed, 1);
+  assert.equal(timeout.disposed, 2);
+  assert.equal(timeout.process.exitCode, 1);
+  assert.equal(timeout.exited, 1);
+  assert.ok(timeout.messages.includes('Source terminal smoke timed out'));
+});
+
+test('the independent smoke deadline terminates its owned child instead of leaving it running', async () => {
+  let childPid;
+  await assert.rejects(runOwnedProcess([process.execPath, '-e', 'setInterval(() => {}, 1000)'], process.cwd(), process.env,
+    { timeoutMs: 500 }), error => {
+    assert.match(error.message, /exit deadline/);
+    childPid = error.childPid;
+    return true;
+  });
+  assert.ok(Number.isInteger(childPid));
+  assert.throws(() => process.kill(childPid, 0), error => error.code === 'ESRCH');
 });
 
 test('an explicit pnpm JavaScript entry runs with Node and a missing entry fails visibly', async t => {
