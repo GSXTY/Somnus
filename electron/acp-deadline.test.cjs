@@ -18,11 +18,11 @@ test('ACP deadline moves on progress but never passes its absolute bound', () =>
   assert.deepEqual(events, ['hard']);
 });
 
-test('ACP approval pauses remaining idle time with a bounded total grace', () => {
+test('ACP approval pauses idle warning with bounded grace and never cancels for silence', () => {
   let now = 0;
   const events = [];
   const deadline = new AcpDeadline(reason => events.push(reason), {
-    idleMs: 20, hardMs: 100, approvalBudgetMs: 15, clock: () => now,
+    idleMs: 20, hardMs: 100, approvalBudgetMs: 15, clock: () => now, onIdle: value => events.push(value.code),
   });
   now = 17;
   assert.equal(deadline.beginApproval(10), 10);
@@ -38,6 +38,8 @@ test('ACP approval pauses remaining idle time with a bounded total grace', () =>
   now = 35;
   deadline.schedule();
   assert.deepEqual(events, ['idle']);
+  assert.equal(deadline.closed, false);
+  deadline.close();
 });
 
 test('closing a prompt clears both ordinary and permission deadlines', () => {
@@ -50,4 +52,16 @@ test('closing a prompt clears both ordinary and permission deadlines', () => {
   now = 61;
   deadline.schedule();
   assert.deepEqual(events, []);
+});
+
+
+test('default unlimited ACP survives the former twelve minute cap and warns once until activity', () => {
+  let now=0; const stops=[],warnings=[];
+  const deadline=new AcpDeadline(reason=>stops.push(reason),{clock:()=>now,onIdle:value=>warnings.push(value.code)});
+  now=13*60_000;deadline.schedule();
+  assert.equal(deadline.hardAt,Infinity);assert.equal(deadline.closed,false);
+  assert.deepEqual(stops,[]);assert.deepEqual(warnings,['idle']);
+  now+=60_000;deadline.schedule();assert.deepEqual(warnings,['idle']);
+  deadline.progress();now+=120_001;deadline.schedule();assert.deepEqual(warnings,['idle','idle']);
+  deadline.close();
 });

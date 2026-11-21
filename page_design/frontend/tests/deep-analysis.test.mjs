@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepStatus, uploadAnalysisFile, createAnalysisTask, getAnalysisTask, cancelAnalysisTask, safeArtifactUrl, imageArtifact, activeTaskStates } from '../src/deepAnalysisApi.mjs';
-import { readWorkspaceView, workspacePath, isStandardView } from '../src/workspaceNavigation.mjs';
-import { commands } from '../src/glassLogic.mjs';
+import { deepStatus, uploadAnalysisFile, createAnalysisTask, getAnalysisTask, cancelAnalysisTask, safeArtifactUrl, imageArtifact, activeTaskStates } from '../src/analysis/deepAnalysisApi.mjs';
+import { readWorkspaceView, workspacePath, isStandardView } from '../src/app/workspaceNavigation.mjs';
+import { commands } from '../src/app/glassLogic.mjs';
 
 test('deep analysis is a separate in-shell route and command, preserving the waveform view route', () => {
   assert.equal(readWorkspaceView(new URL('http://localhost/#deep-analysis')), 'deep-analysis');

@@ -5,7 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const ts = createRequire(import.meta.url)('typescript');
-const compiled = ts.transpileModule(readFileSync(new URL('../src/PluginDevelopment.tsx', import.meta.url), 'utf8'), {
+const compiled = ts.transpileModule(readFileSync(new URL('../src/plugins/PluginDevelopment.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const nodes = node => Array.isArray(node) ? node.flatMap(nodes) :
@@ -52,7 +52,7 @@ test('plugin development separates checks, local trial install and exportable re
     },
   };
   const imports = { react, antd, './assistantApi': api, './errors.mjs': { describeError: error => error.message }, 'react/jsx-runtime': { jsx, jsxs: jsx } };
-  vm.runInNewContext(compiled, { exports, window: {}, AbortController, require: name => imports[name] });
+  vm.runInNewContext(compiled, { exports, window: {}, AbortController, require: name => (imports[name] ?? (name.startsWith('.') ? Object.entries(imports).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === name.split('/').at(-1))?.[1] : undefined)) });
   const render = () => {
     cursor = 0;
     return nodes(exports.PluginDevelopment({ owner: true, skills: [], mcp: [], onClose() {}, onInstalled: plugin => calls.push(plugin.id) }));

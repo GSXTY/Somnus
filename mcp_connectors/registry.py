@@ -400,6 +400,12 @@ class Registry:
                 policy = self.configs[server_id]['tool_permissions'].get(tool['name'], 'confirm')
                 yield self._tool_name(server_id, tool['name']), server, tool, policy
 
+    def tool_server_ids(self):
+        with self.lock:
+            return {self._tool_name(server_id,tool['name']):server_id
+                    for server_id in self.connections if self.configs.get(server_id,{}).get('enabled')
+                    for tool in self.results.get(server_id,{}).get('tools',[])}
+
     def tool_policy(self, name):
         with self.lock:
             return next((policy for key, _, _, policy in self._active_tools() if key == name), 'confirm')
@@ -442,8 +448,17 @@ class Registry:
                  for item in result.get('content', []) if isinstance(item, dict)]
         if not parts and 'structuredContent' in result:
             parts.append(json.dumps(result['structuredContent'], ensure_ascii=False))
-        return {'ok': not result.get('isError'), 'content': ('\n'.join(parts) or '(无文本返回)')[:9000],
-                'summary': f'{server.name} · {tool_name}'}
+        response = {'ok': not result.get('isError'), 'content': ('\n'.join(parts) or '(无文本返回)')[:9000],
+                    'summary': f'{server.name} · {tool_name}'}
+        structured = result.get('structuredContent')
+        card = structured.get('somnus_ui') if isinstance(structured,dict) else None
+        if response['ok'] and isinstance(card,dict):
+            try:
+                from ai_assistant.plugin_cards import document
+                response['somnus_ui'] = {'document':document(card.get('document'))}
+            except (ValueError,TypeError,UnicodeError):
+                pass
+        return response
 
     def close(self):
         with self.lock:

@@ -1,3 +1,8 @@
+const { registerWorkspaceFiles } = require('./workspace-files.cjs');
+const { createAppearance } = require('./runtime/appearance.cjs');
+const { createUiPreferences } = require('./acp-ui-preferences.cjs');
+const { RuntimeDiagnostics } = require('./runtime/diagnostics.cjs');
+const { createRuntimePolicy } = require('./acp-runtime-policy.cjs');
 const path = require('node:path');
 const { AcpAgents } = require('./acp-agents.cjs');
 const { detectAdapter, detectManagedCodex, matchesLaunch } = require('./acp-discovery.cjs');
@@ -9,6 +14,7 @@ const { registerDshImView, registerDshPluginPage } = require('./acp-dsh-im-view.
 const { registerOwnedDshPages } = require('./acp-dsh-plugin-pages.cjs');
 const { DshPluginMarket } = require('./acp-dsh-market.cjs');
 const { NativeDshChat } = require('./acp-native-dsh-chat.cjs');
+const { RuntimeRegistry } = require('./runtime/registry.cjs');
 const { draftStore, queueStore } = require('./acp-dsh-recovery.cjs');
 const { createQueueSteering } = require('./acp-dsh-queue-steer.cjs');
 const { createDshPluginSettings } = require('./acp-dsh-plugin-settings.cjs');
@@ -30,7 +36,8 @@ function eligibleAuthUrl(target, input) {
 }
 
 function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token, profileDir, version,
-  dshRuntimeDir = profileDir, resourcesPath = process.resourcesPath, WebContentsView, session }) {
+  dshRuntimeDir = profileDir, resourcesPath = process.resourcesPath, WebContentsView, session,
+  trustedOrigin = origin, configurationOnly = false, allowedActions }) {
   let confirmingAuthUrl = false;
   const openAuthUrl = shell && (async (profile, target, params, isPending) => {
     const url = eligibleAuthUrl(target, params.url);
@@ -50,15 +57,20 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
       confirmingAuthUrl = false;
     }
   });
-  const projectClient = token ? createProjectClient(origin, token) : undefined;
+  const projectClient = !configurationOnly && token ? createProjectClient(origin, token) : undefined;
   const executionSettings = createExecutionSettings(profileDir);
-  const workflow = token && process.platform === 'win32'
+  const workflow = !configurationOnly && token && process.platform === 'win32'
     ? new ProjectWorkflow({ ipcMain, dialog, shell, window, origin, token, profileDir, executionSettings }) : undefined;
   const dshMarket = new DshPluginMarket(profileDir, resourcesPath, dshRuntimeDir,
     projectClient?.openCompanyWeb, executionSettings, projectClient?.companyRuntime);
+  dshMarket.appVersion = version;
+  dshMarket.runtimePolicy = createRuntimePolicy(profileDir);
+  dshMarket.diagnostics = new RuntimeDiagnostics(() => dshMarket.runtimePolicy.get());
   dshMarket.oar = createOarIntegration(dshMarket);
-  void initializeDesktopMcpDefault(profileDir, resourcesPath).catch(error => console.warn('Somnus desktop MCP initialization:', error.message));
-  void dshMarket.initializeDefaultIm();
+  if (!configurationOnly) {
+    void initializeDesktopMcpDefault(profileDir, resourcesPath).catch(error => console.warn('Somnus desktop MCP initialization:', error.message));
+    void dshMarket.initializeDefaultIm();
+  }
   const installChatAddon = createChatAddonInstaller(dshMarket, origin, workflow && (async (id, conversationId) => {
     if (typeof conversationId !== 'string') throw new Error('请选择当前工作区聊天。');
     return (await workflow.target(id, 'project_git_diff', { source: 'source_1' },
@@ -70,54 +82,93 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     registerDshPluginPage(dshView);
     registerOwnedDshPages(dshView);
   }
+  if (workflow) registerWorkspaceFiles({ipcMain,window,origin,workflow});
   if (workflow) registerWorkspaceTerminal({ ipcMain, window, origin, workflow, resourcesPath,
     dshStartup: () => dshMarket.terminalStartup() });
   const agents = new AcpAgents(path.join(profileDir, 'external-acp-agents.json'), version, resourcesPath,
     openAuthUrl, projectClient, workflow, dshMarket, executionSettings);
-  const handle = (action, use) => ipcMain.handle('vvman-acp:' + action, (event, ...args) => {
-    trustWorkbench(event, window, origin);
-    return use(event, ...args);
+  const handle = (action, use) => {
+    if (configurationOnly && !allowedActions?.has(action)) return;
+    ipcMain.handle('vvman-acp:' + action, (event, ...args) => {
+      trustWorkbench(event, window, trustedOrigin);
+      return use(event, ...args);
+    });
+  };
+  handle('copy-text', (_event, value) => {
+    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 4 * 1024 * 1024) {
+      throw new Error('剪贴板内容过大或格式无效。');
+    }
+    require('electron').clipboard.writeText(value);
   });
+  let nativeChat;
+  let runtimeRegistry;
   if (projectClient && workflow) {
-    const nativeChat = new NativeDshChat(dshMarket, projectClient, workflow);
+    nativeChat = new NativeDshChat(dshMarket, projectClient, workflow);
     handle('teamwork', (_event, conversationId) => dshMarket.teamwork(conversationId));
     handle('set-teamwork', (event, conversationId, enabled) =>
-      nativeChat.setTeamwork(conversationId, enabled, () => trustWorkbench(event, window, origin)));
-    handle('native-dsh-prompt', (event, input) => nativeChat.prompt(input,
-      () => trustWorkbench(event, window, origin), update => {
+      nativeChat.setTeamwork(conversationId, enabled, () => trustWorkbench(event, window, trustedOrigin)));
+    handle('native-dsh-prompt', (event, input) => runtimeRegistry.run('dsh-native', 'prompt', input,
+      () => trustWorkbench(event, window, trustedOrigin), update => {
         if (!event.senderFrame?.detached) event.senderFrame?.send('vvman-acp:native-dsh-update', update);
       }));
-    handle('native-dsh-cancel', (_event, id) => nativeChat.cancel(id));
+    handle('native-dsh-cancel', (_event, id) => runtimeRegistry.cancel('dsh-native', id));
     handle('native-dsh-steer', (event, input) =>
-      nativeChat.steer(input, () => trustWorkbench(event, window, origin)));
+      nativeChat.steer(input, () => trustWorkbench(event, window, trustedOrigin)));
     handle('native-dsh-list-commands', (event, input) =>
-      nativeChat.listCommands(input, () => trustWorkbench(event, window, origin)));
+      nativeChat.listCommands(input, () => trustWorkbench(event, window, trustedOrigin)));
     handle('native-dsh-task-state', (event, input) =>
-      nativeChat.taskState(input, () => trustWorkbench(event, window, origin)));
+      nativeChat.taskState(input, () => trustWorkbench(event, window, trustedOrigin)));
+    handle('native-dsh-list-agent-modes', (event, input) =>
+      nativeChat.listAgentModes(input, () => trustWorkbench(event, window, trustedOrigin)));
+    handle('native-dsh-select-agent-mode', (event, input) =>
+      nativeChat.selectAgentMode(input, () => trustWorkbench(event, window, trustedOrigin)));
     handle('native-dsh-execute-command', (event, input) =>
-      nativeChat.executeCommand(input, () => trustWorkbench(event, window, origin), update => {
+      runtimeRegistry.run('dsh-native', 'command', input, () => trustWorkbench(event, window, trustedOrigin), update => {
         if (!event.senderFrame?.detached) event.senderFrame?.send('vvman-acp:native-dsh-update', update);
       }));
+    handle('native-dsh-inherited-history',(event,input)=>nativeChat.history.inheritedHistory(input,()=>trustWorkbench(event,window,trustedOrigin)));
+    handle('native-dsh-native-preferences',(event,input)=>nativeChat.history.nativePreferences(input,()=>trustWorkbench(event,window,trustedOrigin)));
+    handle('native-dsh-save-native-preferences',(event,input)=>nativeChat.history.nativePreferences(input,()=>trustWorkbench(event,window,trustedOrigin),true));
+    handle('native-dsh-child-conversation', (event,input) => nativeChat.history.childConversation(input, () => trustWorkbench(event,window,trustedOrigin)));
+    handle('native-dsh-history', (event, input) => nativeChat.history.ledger(input, () => trustWorkbench(event, window, trustedOrigin)));
+    handle('native-dsh-history-tool', (event, input) => nativeChat.history.inspect(input, () => trustWorkbench(event, window, trustedOrigin)));
+    handle('native-dsh-fork', (event, input) => nativeChat.history.fork(input, () => trustWorkbench(event, window, trustedOrigin)));
     handle('native-dsh-subagent-detail', (event, input) =>
-      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, origin)));
+      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, trustedOrigin)));
     handle('native-dsh-subagent-tool', (event, input) =>
-      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, origin), true));
+      nativeChat.subagentDetail(input, () => trustWorkbench(event, window, trustedOrigin), true));
     handle('native-dsh-respond-permission', (_event, id, requestId, optionId) =>
-      nativeChat.respondPermission(id, requestId, optionId));
+      runtimeRegistry.permission('dsh-native', id, requestId, optionId));
     handle('native-dsh-respond-question', (_event, id, requestId, answers) =>
-      nativeChat.respondQuestion(id, requestId, answers));
+      runtimeRegistry.question(id, requestId, answers));
     handle('native-dsh-hold-question', (_event, id, requestId, held) =>
       nativeChat.holdQuestion(id, requestId, held));
     handle('native-dsh-recover-questions', (event, id) =>
-      nativeChat.recoverQuestions(id, () => trustWorkbench(event, window, origin)));
+      nativeChat.recoverQuestions(id, () => trustWorkbench(event, window, trustedOrigin)));
     const drafts = draftStore(profileDir, require('electron').safeStorage);
     handle('native-dsh-read-draft', (_event, id) => drafts.read(id));
     handle('native-dsh-save-draft', (_event, id, draft) => drafts.save(id, draft));
     const queues = createQueueSteering(queueStore(profileDir, require('electron').safeStorage), projectClient, nativeChat);
     handle('native-dsh-read-queue', (_event, id) => queues.read(id));
     handle('native-dsh-save-queue', (_event, id, items) => queues.save(id, items));
-    handle('native-dsh-steer-queue', (event, input) => queues.steer(input, () => trustWorkbench(event, window, origin)));
+    handle('native-dsh-steer-queue', (event, input) => queues.steer(input, () => trustWorkbench(event, window, trustedOrigin)));
   }
+  runtimeRegistry = configurationOnly ? undefined : new RuntimeRegistry({ acp: agents, native: nativeChat, projectClient, profileDir, safeStorage: require('electron').safeStorage });
+  const uiPreferences = createUiPreferences(profileDir);
+  const appearance = configurationOnly ? undefined : createAppearance(window, require('electron').nativeTheme, uiPreferences.get()?.theme || 'light', value => {
+    try { trustWorkbench({sender:window.webContents,senderFrame:window.webContents.mainFrame},window,origin); window.webContents.send?.('somnus-runtime:appearance',value); } catch { /* Never notify an untrusted or replaced page. */ }
+  });
+  handle('runtime-appearance', (_event, value) => appearance.set(value));
+  handle('runtime-ui-preferences', () => uiPreferences.get());
+  handle('save-runtime-ui-preferences', (_event, value) => uiPreferences.set(value));
+  handle('runtime-settings', () => dshMarket.runtimePolicy.get());
+  handle('set-runtime-settings', (_event, value) => dshMarket.runtimePolicy.set(value));
+  handle('runtime-diagnostics', () => ({ runtime: 'dsh-native', connected: Boolean(dshMarket.settingsServer?.child && !dshMarket.settingsServer.child.killed), activeTasks: runtimeRegistry?.tasks.size ?? 0, persistence: runtimeRegistry?.outbox.durable() ? 'encrypted' : 'memory-only', settings: dshMarket.runtimePolicy.get(), diagnostics: dshMarket.diagnostics.snapshot() }));
+  handle('runtime-capabilities', (_event, input) => runtimeRegistry.capabilities(input));
+  handle('runtime-cancel-task', (_event, input) => runtimeRegistry.cancelTask(input));
+  handle('runtime-interactions', (_event, input) => runtimeRegistry.interactions(input));
+  handle('runtime-respond-permission', (_event, input, requestId, optionId) => runtimeRegistry.respondPermission(input, requestId, optionId));
+  handle('runtime-respond-question', (_event, input, requestId, answers) => runtimeRegistry.respondQuestion(input, requestId, answers));
   handle('list', () => agents.list());
   handle('agent-execution-settings', () => executionSettings.get());
   handle('set-agent-execution-settings', (_event, settings) => executionSettings.set(settings));
@@ -125,27 +176,27 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     if (!projectClient || (modelId != null && (typeof modelId !== 'string' || modelId.length > 120))) return null;
     const [launch, profile, config] = await Promise.all([dshMarket.launch(), dshMarket.webProfile(),
       projectClient.companyRuntime(modelId).catch(() => null)]);
-    trustWorkbench(event, window, origin);
+    trustWorkbench(event, window, trustedOrigin);
     return launch && profile && config?.ready ? { agentId: COMPANY_AGENT_ID } : null;
   });
   handle('dsh-plugin-market', () => dshMarket.status());
   handle('dsh-installed-plugins', () => dshMarket.installedPlugins());
   handle('dsh-oar-status', () => dshMarket.oar.status());
   handle('set-dsh-oar-enabled', (event, enabled) => {
-    const validateSender = () => trustWorkbench(event, window, origin);
+    const validateSender = () => trustWorkbench(event, window, trustedOrigin);
     return agents.changeDshPlugins(null, true, validateSender, 'chat', {
       install: () => dshMarket.oar.setEnabled(enabled, validateSender),
     });
   });
   const pluginSettings = createDshPluginSettings(dshMarket);
   handle('dsh-plugin-settings', (event, id, source) =>
-    pluginSettings.read(id, source, () => trustWorkbench(event, window, origin)));
+    pluginSettings.read(id, source, () => trustWorkbench(event, window, trustedOrigin)));
   handle('save-dsh-plugin-settings', (event, id, source, section, revision, edits) =>
-    pluginSettings.save(id, source, section, revision, edits, () => trustWorkbench(event, window, origin)));
+    pluginSettings.save(id, source, section, revision, edits, () => trustWorkbench(event, window, trustedOrigin)));
   handle('dsh-skills', () => listDshSkills(dshMarket.home));
-  handle('dsh-mcp-connections', event => readDshMcpInventory(dshMarket, () => trustWorkbench(event, window, origin)));
+  handle('dsh-mcp-connections', event => readDshMcpInventory(dshMarket, () => trustWorkbench(event, window, trustedOrigin)));
   handle('install-chat-addon', (event, input) => {
-    const validateSender = () => trustWorkbench(event, window, origin);
+    const validateSender = () => trustWorkbench(event, window, trustedOrigin);
     const install = () => installChatAddon(input, validateSender, stage => {
       if (!event.senderFrame?.detached) event.senderFrame.send('vvman-acp:chat-addon-progress', stage);
     });
@@ -153,7 +204,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   });
   handle('dsh-community-market', (_event, query, refresh, sourceId, options) => dshMarket.communityStatus(query, refresh, sourceId, options));
   handle('set-dsh-community-market-sources', (event, urls) =>
-    dshMarket.community.setSources(urls, () => trustWorkbench(event, window, origin)));
+    dshMarket.community.setSources(urls, () => trustWorkbench(event, window, trustedOrigin)));
   const confirmDshCommunityPlugin = async ({ id, version, sourceUrl, installing, build, profile }) => {
     const result = await dialog.showMessageBox(window, {
       type: 'warning',
@@ -169,23 +220,23 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     return result.response === 1;
   };
   handle('install-dsh-plugin-source', (event, reference) => {
-    const validateSender = () => trustWorkbench(event, window, origin);
+    const validateSender = () => trustWorkbench(event, window, trustedOrigin);
     return agents.changeDshPlugins(null, true, validateSender, 'chat', {
       install: () => dshMarket.community.installSource(reference, validateSender, confirmDshCommunityPlugin),
     });
   });
   handle('change-dsh-community-plugin', (event, id, action, query, marketSource) => {
-    return agents.changeDshPlugins(id, action, () => trustWorkbench(event, window, origin), 'community',
+    return agents.changeDshPlugins(id, action, () => trustWorkbench(event, window, trustedOrigin), 'community',
       { query, marketSource, confirm: confirmDshCommunityPlugin });
   });
   handle('install-dsh-community-plugin-version', (event, id, requestedVersion, marketSource, query) =>
-    agents.changeDshPlugins(id, 'version', () => trustWorkbench(event, window, origin), 'community',
+    agents.changeDshPlugins(id, 'version', () => trustWorkbench(event, window, trustedOrigin), 'community',
       { requestedVersion, marketSource, query, confirm: confirmDshCommunityPlugin }));
   handle('set-dsh-installed-plugin-enabled', (event, id, source, enabled) => {
-    return agents.changeDshPlugins(id, enabled, () => trustWorkbench(event, window, origin), 'installed', { source, confirm: confirmDshCommunityPlugin });
+    return agents.changeDshPlugins(id, enabled, () => trustWorkbench(event, window, trustedOrigin), 'installed', { source, confirm: confirmDshCommunityPlugin });
   });
   handle('uninstall-dsh-plugin', (event, id, source) => agents.changeDshPlugins(id, false,
-    () => trustWorkbench(event, window, origin), 'uninstall', { source, confirm: async ({ id, versions }) => {
+    () => trustWorkbench(event, window, trustedOrigin), 'uninstall', { source, confirm: async ({ id, versions }) => {
       const result = await dialog.showMessageBox(window, {
         type: 'warning', title: '卸载插件', message: id + ' · ' + versions.join(', '),
         detail: '将从当前 Somnus 配置卸载此插件。原始项目文件会保留。',
@@ -193,8 +244,8 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
       });
       return result.response === 1;
     } }));
-  handle('install-dsh-plugin', (event, id) => agents.changeDshPlugins(id, true, () => trustWorkbench(event, window, origin)));
-  handle('remove-dsh-plugin', (event, id) => agents.changeDshPlugins(id, false, () => trustWorkbench(event, window, origin)));
+  handle('install-dsh-plugin', (event, id) => agents.changeDshPlugins(id, true, () => trustWorkbench(event, window, trustedOrigin)));
+  handle('remove-dsh-plugin', (event, id) => agents.changeDshPlugins(id, false, () => trustWorkbench(event, window, trustedOrigin)));
   let dshAccountState;
   const observeDshAccount = status => {
     if ((status.state === 'signed-in' || status.state === 'signed-out') && status.state !== dshAccountState) {
@@ -204,13 +255,13 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     return status;
   };
   handle('managed-dsh-account-status', async event => observeDshAccount(
-    await dshMarket.accountStatus(() => trustWorkbench(event, window, origin))));
+    await dshMarket.accountStatus(() => trustWorkbench(event, window, trustedOrigin))));
   handle('sign-in-managed-dsh-account', async event => observeDshAccount(
-    await dshMarket.signInAccount(shell, () => trustWorkbench(event, window, origin))));
+    await dshMarket.signInAccount(shell, () => trustWorkbench(event, window, trustedOrigin))));
   handle('detect-adapter', async (event, provider) => {
     const profile = provider === 'deepseek-harness-native'
       ? await dshMarket.launch() : await detectAdapter(provider, process.env, resourcesPath);
-    trustWorkbench(event, window, origin);
+    trustWorkbench(event, window, trustedOrigin);
     return profile;
   });
   handle('choose-executable', async event => {
@@ -219,7 +270,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
       filters: [{ name: 'Windows 程序', extensions: ['exe'] }],
       properties: ['openFile'],
     });
-    trustWorkbench(event, window, origin);
+    trustWorkbench(event, window, trustedOrigin);
     return result.canceled ? null : result.filePaths[0] || null;
   });
   let confirming = false;
@@ -240,7 +291,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
         cancelId: 0,
         noLink: true,
       });
-      trustWorkbench(event, window, origin);
+      trustWorkbench(event, window, trustedOrigin);
       if (result.response !== 1) throw new Error('已取消保存外部 Agent。');
       return agents.save(saved);
     } finally {
@@ -256,9 +307,9 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
       const profile = await detectManagedCodex(resourcesPath);
       if (!profile) throw new Error('此版本缺少随附的 Codex 组件。可使用本机检测或手动接入。');
       const saved = (await agents.list()).find(agent => matchesLaunch(agent, profile));
-      trustWorkbench(event, window, origin);
+      trustWorkbench(event, window, trustedOrigin);
       const agent = saved ?? await confirmProfile(event, profile, true);
-      trustWorkbench(event, window, origin);
+      trustWorkbench(event, window, trustedOrigin);
       const info = await agents.connectCodex(agent.id, profile);
       return { agent, info };
     } finally {
@@ -286,9 +337,9 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
         if (candidates.length > 1) throw new Error('存在多条旧的托管 DSH 配置，请保留要重新连接的条目。');
         [relocated] = candidates;
       }
-      trustWorkbench(event, window, origin);
+      trustWorkbench(event, window, trustedOrigin);
       const agent = saved ?? await agents.save(relocated ? { ...profile, id: relocated.id } : profile);
-      trustWorkbench(event, window, origin);
+      trustWorkbench(event, window, trustedOrigin);
       const info = await agents.probe(agent.id);
       return { agent, info };
     } finally {
@@ -297,6 +348,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   });
   handle('remove', (_event, id) => agents.remove(id));
   handle('probe', (_event, id) => agents.probe(id));
+  handle('agent-readiness', () => agents.readinessStates());
   handle('save-configuration-checkpoint', async (event, id, revision) => {
     if (!token || typeof id !== 'string' || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) {
       throw new Error('检查点验证请求无效。');
@@ -305,7 +357,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     if (!profile) throw new Error('ACP Agent 已移除，请重新选择。');
     const probe = await agents.probe(id);
     // Managed DSH reports its account state separately from the ACP session.
-    const validateSender = () => trustWorkbench(event, window, origin);
+    const validateSender = () => trustWorkbench(event, window, trustedOrigin);
     const dshAccountVerified = probe.authentication === 'unverified' &&
       matchesLaunch(profile, await dshMarket.launch()) &&
       (await dshMarket.accountStatus(validateSender)).state === 'signed-in';
@@ -314,7 +366,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     }
     const current = (await agents.list()).find(item => item.id === id);
     if (JSON.stringify(profile) !== JSON.stringify(current)) throw new Error('ACP 配置已变更，请重新验证。');
-    trustWorkbench(event, window, origin);
+    trustWorkbench(event, window, trustedOrigin);
     const response = await fetch(new URL('/api/assistant/configuration-checkpoints', origin), {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
       headers: { 'Content-Type': 'application/json', 'X-Data-Agent-Native': token, 'X-Data-Agent-Local': '1' },
@@ -334,7 +386,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
       try {
         frame.send('vvman-acp:update', update);
       } catch {
-        agents.reset();
+        // A renderer transport failure must not cancel an independently owned task.
       }
     };
   }
@@ -343,18 +395,22 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
   handle('run-delegation', (_event, input) => agents.runDelegation(input));
   handle('cancel-delegation', (_event, conversationId, requestId) => agents.cancelDelegation(conversationId, requestId));
   handle('discover-models', (_event, id, modelId) => agents.discoverModels(id, modelId));
-  handle('prompt-conversation', (event, input) => agents.promptConversation(input, updateHandler(event)));
-  handle('cancel-conversation', (_event, id) => agents.cancelConversation(id));
+  handle('connection-states', (_event, input) => agents.connectionStates(input));
+  handle('warm-conversation', (_event, input) => agents.warmConversation(input));
+  handle('release-conversation-agent', (_event, input) => agents.releaseConversationAgent(input));
+  handle('prompt-conversation', (event, input) => runtimeRegistry.run('acp', 'prompt', input, undefined, updateHandler(event)));
+  handle('cancel-conversation', (_event, id, turnId) => runtimeRegistry.cancel('acp', id, turnId));
   handle('reset-conversation', (_event, id) => agents.resetConversation(id));
-  handle('respond-permission', (_event, conversationId, requestId, optionId) =>
-    agents.respondPermission(conversationId, requestId, optionId));
+  handle('respond-permission', (_event, conversationId, requestId, optionId, turnId) =>
+    runtimeRegistry.permission('acp', conversationId, requestId, optionId, turnId));
   handle('cancel', () => agents.cancel());
   handle('reset', () => agents.reset());
-  window.on('closed', () => { workflow?.reset(); agents.close(); dshMarket.closeSettings(); });
+  window.on('closed', () => { runtimeRegistry?.close(); workflow?.reset(); agents.close(); dshMarket.closeSettings(); });
   window.webContents.on('did-start-navigation', details => {
-    if (details.isMainFrame && !details.isSameDocument) { workflow?.reset(); agents.reset(); }
+    // Runtime ownership remains in the host across renderer navigation.
+    void details;
   });
-  window.webContents.on('render-process-gone', () => { workflow?.reset(); agents.reset(); });
+  window.webContents.on('render-process-gone', () => { /* Host tasks persist and settle independently. */ });
   return agents;
 }
 

@@ -1,0 +1,70 @@
+.group-agent-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid var(--assistant-border, rgba(127, 127, 127, .19));
+}
+.group-agent-title {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--ant-color-text-secondary, inherit);
+}
+.group-agent-roster {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.group-agent-bar:has(.group-agent-roster:empty) .group-agent-roster { flex: 0; }
+.group-agent-profile {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  min-height: 31px;
+  border-radius: 7px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.group-agent-profile:hover, .group-agent-profile:focus-visible {
+  background: var(--ant-color-fill-secondary, rgba(127, 127, 127, .13));
+}
+.group-agent-name { text-align: start; overflow-wrap: anywhere; }
+.group-agent-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(127, 127, 127, .18);
+  background: #f5f6f9;
+  color: #343b4a;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.group-agent-avatar img { width: 15px; height: 15px; object-fit: contain; }
+.group-agent-add { white-space: nowrap; }
+.group-agent-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.group-agent-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #397f68; }
+.group-agent-status[data-waiting="true"]::before { background: #ae7119; }
+.group-recipient-button { max-width: 235px; display: inline-flex; align-items: center; gap: 6px; }
+.group-recipient-button > span:not(.group-agent-avatar) { overflow: hidden; text-overflow: ellipsis; }
+.group-recipient-button .group-agent-avatar { width: 19px; height: 19px; flex-basis: 19px; }
+.group-recipient-button .group-agent-avatar img { width: 12px; height: 12px; }
+.group-reply-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.group-message-target { color: var(--ant-color-text-secondary, inherit); text-align: end; font-size: 12px; padding-bottom: 3px; }
+.group-awaiting-turns { display: grid; gap: 8px; }
+.group-stage-error { margin-top: 7px; }
+
+.group-active-count { color: var(--ant-color-text-secondary, inherit); white-space: nowrap; }

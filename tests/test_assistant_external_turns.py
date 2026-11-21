@@ -62,6 +62,46 @@ class ExternalTurnsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    def test_conversation_members_are_persisted_and_target_explicit_turns(self):
+        codex = self.input['agent_id']
+        dsh = 'b3c21df0-0781-4de2-8e01-c0e48e8c155f'
+        member_url = self.chat + '/agent-members'
+
+        def change(agent_id, added, expected=200):
+            response = self.client.post(member_url, headers=self.desktop, json={'agent_id': agent_id, 'added': added})
+            self.assertEqual(response.status_code, expected, response.text)
+            return response.json()
+
+        self.assertEqual(self.client.post(member_url, json={'agent_id': codex, 'added': True}).status_code, 403)
+        self.assertEqual(change('bad-id', True, 400)['error']['code'], 'invalid_external_agent')
+        self.assertEqual(change(codex, True)['agent_members'], [codex])
+        self.assertEqual(change(codex, True)['agent_members'], [codex])
+        self.assertEqual(change(dsh, True)['agent_members'], [codex, dsh])
+        self.service = AssistantService(self.path, self.config)
+        self.app.state.assistant_service = self.service
+        current = self.client.get(self.chat).json()
+        self.assertEqual(current['conversation']['agent_members'], [codex, dsh])
+        self.assertEqual(current['messages'], [])
+        self.assertEqual(self.service.create()['agent_members'], [])
+
+        for agent_id, name in ((codex, 'Codex'), (dsh, 'DSH')):
+            self.input.update(agent_id=agent_id, agent_name=name, member_only=True)
+            turn = self.begin()
+            other = dsh if agent_id == codex else codex
+            overlap = self.client.post(self.external, headers=self.desktop, json={**self.input, 'agent_id': other})
+            self.assertEqual(overlap.status_code, 409, overlap.text)
+            self.assertEqual(overlap.json()['error']['code'], 'conversation_busy')
+            self.service.finish_external_turn(self.cid, turn['turn_id'], '合成回复', 'complete')
+
+        history = self.client.get(self.chat).json()['messages']
+        self.assertEqual([(row['reply_meta']['provider_id'], row['reply_meta']['provider_name'])
+                          for row in history if row['role'] == 'assistant'], [(codex, 'Codex'), (dsh, 'DSH')])
+        self.assertEqual(change(dsh, False)['agent_members'], [codex])
+        removed = self.client.post(self.external, headers=self.desktop, json=self.input)
+        self.assertEqual(removed.status_code, 409, removed.text)
+        self.assertEqual(removed.json()['error']['code'], 'conversation_agent_missing')
+        self.assertEqual(self.client.get(self.chat).json()['messages'], history)
+
     def test_queue_reservation_rejects_duplicate_across_repository_reopen(self):
         self.input['queue_id'] = '4' * 32
         self.begin()
@@ -176,7 +216,7 @@ class ExternalTurnsTest(unittest.TestCase):
             granted = self.client.post(runtime_path, headers=self.native)
             self.assertEqual(granted.status_code, 200, granted.text)
             first = granted.json()
-            self.assertEqual(set(first), {'id', 'token', 'model', 'vision', 'subagents', 'revision', 'models'})
+            self.assertEqual(set(first), {'id', 'token', 'model', 'vision', 'subagents', 'revision', 'models', 'data_servers'})
             self.assertNotIn(self.config.api_key, granted.text)
             first_route = f"{runtime_path}/{first['id']}"
             provider_path = first_route + '/provider/chat/completions'
@@ -646,7 +686,7 @@ class ExternalTurnsTest(unittest.TestCase):
         self.app.state.assistant_service = self.service
         final = self.service.begin_external_turn(self.cid, 'current', agent, 'Extern', 'third-model')
         prepared = self.service.prepare_external_turn(self.cid, final['turn_id'], agent)
-        self.assertEqual(prepared['history'], [
+        self.assertEqual([{key: row[key] for key in ('role', 'content')} for row in prepared['history']], [
             {'role': 'user', 'content': 'built-in question'}, {'role': 'assistant', 'content': 'built-in answer'},
             {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'answer first'},
             {'role': 'user', 'content': 'different agent'}, {'role': 'assistant', 'content': 'answer different agent'},
@@ -666,6 +706,29 @@ class ExternalTurnsTest(unittest.TestCase):
         self.assertEqual(messages[-3:], [dict(role='user', content='current'),
                                          dict(role='assistant', content='ACP continuing answer'),
                                          dict(role='user', content='continue')])
+
+    def test_external_history_identifies_repeated_text_from_distinct_members(self):
+        agent = self.input['agent_id']
+        other = '7b083bee-b370-42aa-8850-bc3beaff5893'
+        completed = []
+        for who in (agent, other):
+            turn = self.service.begin_external_turn(self.cid, 'same question', who, 'Extern')
+            self.service.finish_external_turn(self.cid, turn['turn_id'], 'same answer', 'complete')
+            completed.append(turn)
+        active = self.service.begin_external_turn(self.cid, 'next', agent, 'Extern')
+        packet = self.service.prepare_external_turn(self.cid, active['turn_id'], agent)
+        self.assertEqual([row['content'] for row in packet['history']],
+                         ['same question', 'same answer', 'same question', 'same answer'])
+        self.assertEqual([row['message_id'] for row in packet['history']],
+                         [value for turn in completed for value in
+                          (turn['user_message']['id'], turn['turn_id'])])
+        self.assertEqual(packet['history_predecessor'], completed[-1]['turn_id'])
+        self.assertEqual(len({row['message_id'] for row in packet['history']}), 4)
+        self.assertNotIn(active['turn_id'], {row['message_id'] for row in packet['history']})
+        from ai_assistant import conversation_context
+        with self.service.db() as db:
+            _, plain = conversation_context.build(db, self.cid, active['turn_id'], text_only=True)
+        self.assertTrue(all(set(row) == {'role', 'content'} for row in plain))
 
     def test_external_context_compacts_completed_same_chat_text_across_agents(self):
         from ai_assistant import conversation_context
@@ -694,7 +757,8 @@ class ExternalTurnsTest(unittest.TestCase):
         self.assertIn('ALLOWED_EARLY_RULE', summary)
         self.assertIn('OTHER_AGENT_RULE', summary)
         self.assertEqual(len(recent), 2 * conversation_context.RECENT_TURNS)
-        self.assertEqual(recent[-1], dict(role='assistant', content='RECENT_ANSWER'))
+        self.assertEqual({key: recent[-1][key] for key in ('role', 'content')},
+                         dict(role='assistant', content='RECENT_ANSWER'))
         self.assertLessEqual(sum(len(message['content'].encode('utf-8')) for message in recent),
                              conversation_context.RECENT_BYTES)
         self.assertNotRegex(json.dumps([summary, recent]), 'ERROR_SECRET|ERROR_REPLY|CANCEL_SECRET|CANCEL_REPLY|CURRENT_QUESTION')

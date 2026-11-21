@@ -1,0 +1,9 @@
+**
+!batch_analysis_trial/
+!batch_analysis_trial/requirements.txt
+!batch_analysis_trial/run_batch.py
+!event_detection/
+!event_detection/__init__.py
+!event_detection/dynamic_baseline_detector.py
+!event_detection/dynamic_baseline_web.py
+!event_detection/dynamic_baseline_comparison.py

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, resolve } from 'node:path'
+import { productProfile } from './product-profile.mjs'
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, session, shell, Tray, WebContentsView } from 'electron'
 
 interface BackendProcess {
@@ -37,20 +38,20 @@ const startupPageKey = 'vvman.startup-page'
 
 function moduleDirectory() {
   if (app.isPackaged) return join(process.resourcesPath, 'somnus')
-  const sourceRoot = process.env.SOMNUS_EXPLORER_ROOT ?? ''
-  if (!isAbsolute(sourceRoot)) throw new Error('SOMNUS_EXPLORER_ROOT must point to the Somnus project when running from source')
+  const sourceRoot = process.env.SOMNUSNEXT_ROOT ?? process.env.SOMNUS_EXPLORER_ROOT ?? ''
+  if (!isAbsolute(sourceRoot)) throw new Error('SOMNUSNEXT_ROOT must point to the Somnus project when running from source')
   return join(sourceRoot, 'electron')
 }
 
 export function configureSomnusPaths() {
   const override = app.commandLine.getSwitchValue('user-data-dir')
-  const baseDir = override ? resolve(override) : join(app.getPath('appData'), 'RespiratoryViewer')
+  const baseDir = productProfile(app.getPath('appData'), override)
   mkdirSync(baseDir, { recursive: true })
   app.setPath('userData', baseDir)
   app.setPath('sessionData', baseDir)
   try {
     const { DesktopProfileStore } = require(join(moduleDirectory(), 'desktop-profiles.cjs')) as ProfileStoreModule
-    const store = new DesktopProfileStore(baseDir, Boolean(override))
+    const store = new DesktopProfileStore(baseDir, true)
     const profile = store.resolve(store.read().active)
     if (profile.roamingDir !== baseDir) app.setPath('sessionData', profile.roamingDir)
   } catch (error) {
@@ -82,6 +83,7 @@ export function createSomnusDesktop() {
   let localWindow: BrowserWindow | undefined
   let activeOrigin: string | undefined
   let pageQueue = Promise.resolve()
+  let primaryFocus: (() => boolean) | undefined
   let pendingFolder: string | null = null
   let openFolder: ((folder: string) => Promise<void>) | undefined
   let pickFolder: (() => Promise<void>) | undefined
@@ -97,7 +99,7 @@ export function createSomnusDesktop() {
     if (profiles) return profiles
     const { createDesktopProfiles } = require(join(moduleDirectory(), 'desktop-recovery.cjs'))
     profiles = createDesktopProfiles({ app, BrowserWindow, ipcMain, dialog, baseDir: app.getPath('userData'),
-      isolatedDefault: app.commandLine.hasSwitch('user-data-dir'),
+      isolatedDefault: true,
       restart: (args: string[]) => { app.relaunch({ args }); app.quit() } })
     return profiles!
   }
@@ -112,7 +114,7 @@ export function createSomnusDesktop() {
 
   const start = () => opening ??= (async () => {
     if (stopped) throw new Error('Somnus service is closing')
-    const sourceRoot = process.env.SOMNUS_EXPLORER_ROOT ?? ''
+    const sourceRoot = process.env.SOMNUSNEXT_ROOT ?? process.env.SOMNUS_EXPLORER_ROOT ?? ''
     const modules = moduleDirectory()
     const { backendCommand, startBackend } = require(join(modules, 'backend.cjs')) as BackendModule
     const profile = profileControls()
@@ -120,6 +122,9 @@ export function createSomnusDesktop() {
     const env = {
       ...process.env,
       RESPIRATORY_VIEWER_PROJECT_TOKEN: token,
+      SOMNUS_DSH_CONFIGURED_PROVIDERS: '1',
+      SOMNUS_DOCUMENTS_DIR: join(profile.active.roamingDir, 'documents'),
+      SOMNUS_SHARED_DOCUMENTS_DIR: join(process.resourcesPath, 'shared-documents'),
       ...profile.environment(),
     }
     const command = backendCommand({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, sourceRoot })
@@ -138,6 +143,7 @@ export function createSomnusDesktop() {
         DSH_SOMNUS_BRIDGE_ORIGIN: origin,
         DSH_SOMNUS_BRIDGE_TOKEN: token,
         DSH_SOMNUS_LEGACY_PROFILE: profile.active.roamingDir,
+        DSH_SOMNUS_IMPORT_MODELS: join(env.AI_AGENT_DATA_DIR || profile.active.roamingDir, 'models.json'),
       } }
     } catch (error) {
       await started.stop()
@@ -271,6 +277,7 @@ export function createSomnusDesktop() {
   }
 
   const openHome = () => {
+    if (primaryFocus?.()) return Promise.resolve()
     const profile = profileControls()
     if (profile.focus()) return Promise.resolve()
     if (profile.isRecovery) return profile.openRecovery()
@@ -293,7 +300,8 @@ export function createSomnusDesktop() {
     const { createDesktopTray } = require(join(moduleDirectory(), 'desktop-tray.cjs'))
     const report = (error: Error) => dialog.showErrorBox('Somnus', error.message)
     tray = await createDesktopTray({ Tray, Menu, icon: join(process.resourcesPath, 'somnus.ico'),
-      dataDir: profile.active.roamingDir, show: () => void openHome().catch(report),
+      dataDir: profile.active.roamingDir,
+      show: () => { if (!primaryFocus?.()) void openHome().catch(report) },
       openFolder: profile.safeMode || profile.isRecovery ? undefined : () => void openHome().then(() => pickFolder?.()).catch(report),
       openProfiles: () => void profile.openProfiles().catch(report),
       openRecovery: () => void profile.openRecovery().catch(report),
@@ -302,11 +310,13 @@ export function createSomnusDesktop() {
   }
 
   return { start, openHome, launchFolder, setupTray,
+    setPrimaryFocus: (focus: (() => boolean) | undefined) => { primaryFocus = focus },
     openRecovery: (error: Error) => profileControls().openRecovery(error),
     engineEnabled: () => !profileControls().safeMode && !profileControls().isRecovery,
     close: async () => {
     stopped = true
     localWindow?.destroy()
+    primaryFocus = undefined
     const currentTray = tray
     tray = undefined
     try { await Promise.all([backend?.stop(), currentTray?.flush()]) }

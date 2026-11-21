@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchDashboard, fetchUser } from '../src/api.ts';
+import { fetchDashboard, fetchUser } from '../src/shared/api.ts';
 
 const blank = () => ({ schema_version: 1, data_quality: { expected_records: null, received_records: null, lost_records: null, loss_rate: null, unit: 'records', basis: '未接入记录计数' }, source: { mode: 'unconfigured', connected: false, label: '未连接' }, period: {}, fleet: {}, users: [], daily: [], alerts: [], alert_distribution: [], insights: [], constraints: [], kpis: Object.fromEntries(['active_users', 'treatment_hours', 'reported_events', 'online_rate'].map(key => [key, { value: null, previous: null, trend: [] }])) });
 

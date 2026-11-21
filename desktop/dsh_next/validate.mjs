@@ -1,3 +1,4 @@
+import { cachePath } from '../storage-paths.mjs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
@@ -115,7 +116,7 @@ function runSource(checkout, operation) {
     const savedLocation = join(checkout, upstream.packageDirectory, '.desktop-next', 'home', 'desktop-next-location.json');
     if (existsSync(savedLocation)) throw new Error('此源码目录已有应用内数据目录选择。请使用独立、未配置的上游检出。');
   }
-  const scratch = join(projectRoot, '.tmp');
+  const scratch = cachePath(projectRoot, 'tmp');
   mkdirSync(scratch, { recursive: true });
   const profile = mkdtempSync(join(scratch, 'dsh-next-profile-'));
   const command = `${operation}:next`;

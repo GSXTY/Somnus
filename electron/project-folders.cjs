@@ -38,7 +38,10 @@ function nativeRequest(origin, token, endpoint, payload, signal) {
     }, response => {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         response.resume();
-        reject(new Error('本机服务无法验证这个项目文件夹。'));
+        const error = new Error('本机服务无法验证这个项目文件夹。');
+        error.statusCode = response.statusCode;
+        error.scopeInvalid = [400, 401, 403, 404, 409, 410, 422].includes(response.statusCode);
+        reject(error);
         return;
       }
       response.setEncoding('utf8');

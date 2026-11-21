@@ -3,12 +3,14 @@ from __future__ import annotations
 
 READ_ONLY = 'read_only'
 WORKSPACE_WRITE = 'workspace_write'
+WORKSPACE_DIRECT = 'workspace_direct'
 FULL = 'full'
 POWERSHELL = 'run_powershell'
 
 MODES = [
     dict(id=READ_ONLY, label='Read Only', hint='只读：不能写入或执行'),
-    dict(id=WORKSPACE_WRITE, label='Workspace Write', hint='只写工作空间目录'),
+    dict(id=WORKSPACE_WRITE, label='修改前确认', hint='项目修改先生成候选，经审阅后应用'),
+    dict(id=WORKSPACE_DIRECT, label='工作区直接修改', hint='允许兼容 Agent 直接修改当前工作区，工作区外操作仍需授权'),
     dict(id=FULL, label='Full access', hint='完全权限'),
 ]
 
@@ -20,7 +22,7 @@ WRITE_TOOLS = {'create_deep_analysis', 'create_deep_analysis_from_query', 'write
 
 
 def normalize(mode):
-    return mode if mode in (READ_ONLY, WORKSPACE_WRITE, FULL) else READ_ONLY
+    return mode if mode in (READ_ONLY, WORKSPACE_WRITE, WORKSPACE_DIRECT, FULL) else READ_ONLY
 
 
 def category(name, mcp_policy=None):

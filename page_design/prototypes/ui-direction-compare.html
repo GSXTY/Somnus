@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SomnusNext 首页与工具 · 三版设计方向对比</title>
+<style>
+  :root{
+    --bg:#f4f7f6; --paper:#fff; --line:#e1ebe6; --ink:#1e2a26; --muted:#637870;
+    --accent:#176b60; --soft:#eef5f1; --r:14px;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{font:14px/1.6 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei",-apple-system,sans-serif;background:var(--bg);color:var(--ink);padding:34px 22px}
+  .wrap{max-width:1080px;margin:0 auto}
+  .top h1{font-size:24px;font-weight:650;letter-spacing:-.3px}
+  .top p{color:var(--muted);margin-top:6px;max-width:680px}
+  .tag{display:inline-block;font-size:11px;color:var(--accent);background:var(--soft);border:1px solid var(--line);padding:4px 10px;border-radius:999px;margin-top:12px}
+  .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:26px}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:22px;display:flex;flex-direction:column;gap:12px}
+  .card .swatch{display:flex;gap:6px;height:34px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+  .card .swatch i{flex:1}
+  .card h2{font-size:17px;font-weight:650}
+  .card h2 small{display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:2px}
+  .card ul{list-style:none;display:grid;gap:7px;font-size:12.5px;color:var(--muted)}
+  .card ul li{padding-left:16px;position:relative}
+  .card ul li::before{content:"";position:absolute;left:0;top:9px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+  .card .trade{font-size:12px;color:var(--ink);background:var(--bg);border-radius:9px;padding:10px 12px}
+  .card a{margin-top:auto;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line);background:var(--paper);color:var(--accent);border-radius:10px;padding:10px 12px;font:inherit;font-weight:600;text-decoration:none}
+  .card a:hover{background:var(--soft)}
+  .note{margin-top:24px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>首页与项目工具 · 三版设计方向对比</h1>
+    <p>三版原型共用同一组合成数据（昨日活跃 128 人、治疗 342.5 小时、事件 96 次、AHI 4.2，近 7 天趋势），只比较视觉方向与信息层级，不接后台、不读取真实记录。</p>
+    <span class="tag">设计演示 · 未连接后台 · 合成示例数据</span>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <div class="swatch">
+        <i style="background:#f5f8f6"></i><i style="background:#ffffff"></i><i style="background:#eef5f1"></i><i style="background:#176b60"></i><i style="background:#2f9e86"></i>
+      </div>
+      <h2>方向 A · 轻量清爽卡片风<small>保留现有薄荷绿，补层级与卡片质感</small></h2>
+      <ul>
+        <li>柔和底色 + 两档阴影，卡片有悬浮反馈</li>
+        <li>KPI 卡配图标、趋势胶囊与口径脚注</li>
+        <li>工具区分组卡片，diff 面板跟随主题</li>
+        <li>改动集中在 token 与卡片样式，成本最低</li>
+      </ul>
+      <p class="trade">取舍：最稳妥、最接近现有品牌；个性偏弱，属于「把现有页面做精致」而不是换风格。</p>
+      <a href="./ui-a-clean-cards-preview.html" target="_blank">打开方向 A 原型</a>
+    </section>
+
+    <section class="card">
+      <div class="swatch">
+        <i style="background:#f3f6f8"></i><i style="background:#ffffff"></i><i style="background:#e9f2f4"></i><i style="background:#0e7c8c"></i><i style="background:#5b8fc4"></i>
+      </div>
+      <h2>方向 B · 医疗数据仪表盘风<small>规整分区、报告感，偏运营与医生视图</small></h2>
+      <ul>
+        <li>顶部周期筛选 + 分区清晰的 KPI 条</li>
+        <li>细边框、克制阴影，表格与图表对齐严谨</li>
+        <li>指标带环比口径，适合导出日报场景</li>
+        <li>控件更紧凑，信息密度高于 A</li>
+      </ul>
+      <p class="trade">取舍：专业、可信、易读；视觉上偏传统后台，交互活泼感弱一些。</p>
+      <a href="./ui-b-medical-dashboard-preview.html" target="_blank">打开方向 B 原型</a>
+    </section>
+
+    <section class="card">
+      <div class="swatch">
+        <i style="background:#0e1412"></i><i style="background:#18211e"></i><i style="background:#1f2a26"></i><i style="background:#5fd3b0"></i><i style="background:#3ea88f"></i>
+      </div>
+      <h2>方向 C · 深色现代工作台<small>深色玻璃质感，偏 Agent 主交互</small></h2>
+      <ul>
+        <li>深墨绿底 + 玻璃面板，强调色高亮关键数字</li>
+        <li>窄图标轨导航，接近 IDE / 现代工作台观感</li>
+        <li>深色 diff 面板与等宽代码区一体感强</li>
+        <li>可复用项目已有 glass 覆盖层方向</li>
+      </ul>
+      <p class="trade">取舍：辨识度高、适合长时间工作台使用；深色下图表与长文本需要额外对比度校验。</p>
+      <a href="./ui-c-dark-workspace-preview.html" target="_blank">打开方向 C 原型</a>
+    </section>
+  </div>
+
+  <p class="note">说明：原型均为静态视觉演示，未连接后台、不读取真实 CSV/EDF，数字为合成示例，不构成临床风险判断。确认方向后，由页面 agent 在 <code>page_design/frontend</code> 内按选定方向改造；落地前会先过类型检查与现有回归测试。</p>
+</div>
+</body>
+</html>

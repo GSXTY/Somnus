@@ -53,3 +53,27 @@ test('DSH NEXT requires both separate MCP lease tokens and keeps raw tokens out 
   await host.dispose();
   assert.equal(revocations.length, 2);
 });
+
+
+test('native DSH Provider config remains authoritative; data lease adds no model overrides', async t => {
+  const { prepareSomnusHost } = await import('./dsh-next-host-adapter.mjs');
+  const tempRoot = await mkdtemp(join(tmpdir(), 'somnus-native-authority-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const lease = { id: 'a'.repeat(32), provider: { model: 'deepseek-flash', token: 'c'.repeat(64), models: [] },
+    subagents: { maxDepth: 0, maxActiveSubagents: 1 }, data_servers: [
+      { id: 'database', token: 'd'.repeat(64) }, { id: 'text-to-sql', token: 'e'.repeat(64) }] };
+  const host = await prepareSomnusHost({ origin: 'http://127.0.0.1:12345', token: 'b'.repeat(64),
+    importModelsFile: join(tempRoot, 'models.json'), tempRoot, fetcher: async () => Response.json(lease) });
+  t.after(host.dispose);
+  const patch = await readFile(host.patchFile, 'utf8');
+  assert.ok(!patch.includes('agent-default-model'));
+  assert.ok(!patch.includes('llm-pi-ai'));
+  assert.ok(patch.includes('somnus-provider-policy'));
+  const rows = patch.split('\n').filter(line => line.startsWith('- {')).map(line => JSON.parse(line.slice(2)));
+  assert.equal(rows.find(row => row.id === 'llm-deepseek').disabled, true);
+  assert.equal(rows.find(row => row.id === 'llm-deepseek-account').disabled, true);
+  assert.ok(!patch.includes('somnus-provider-sync'));
+  assert.ok(patch.includes('somnus-native-migration'));
+  assert.equal(host.env.SOMNUS_NATIVE_IMPORT_FILE, join(tempRoot, 'models.json'));
+  assert.equal(host.env.DSH_SOMNUS_NEXT_MODEL_TOKEN, undefined);
+});

@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(new URL('../package.json', import.meta.url));
 const ts = require('typescript');
-const source = ts.transpileModule(readFileSync(new URL('../src/SidebarResize.tsx', import.meta.url), 'utf8'), {
+const source = ts.transpileModule(readFileSync(new URL('../src/app/SidebarResize.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 

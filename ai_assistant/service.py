@@ -13,10 +13,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from . import company_runtime, conversation_context, delegation, execution_trace, external_context, external_tools, project_files, project_handoff, provider_transport, token_usage, worktree_binding
+from . import company_runtime, conversation_context, delegation, execution_trace, external_context, external_tools, project_files, project_handoff, provider_transport, token_usage, worktree_binding, runtime_tasks, runtime_sessions, plugin_cards, native_child_links, worktree_shares, fork_history, native_preferences
 from .web_data_mcp import DATA_MCP_NAMES, WebDataMcp, data_available
 from .dsh_next_runtime import DshNextRuntime
-from .models import BUILTIN, REASONING_EFFORTS, ModelError, ModelStore, valid_url
+from .models import (BEDROCK_API, CHAT_API, MESSAGES_API, RESPONSES_API, BUILTIN, REASONING_EFFORTS,
+                     ModelError, ModelStore, bedrock_region, credential, valid_url)
 from .plugin_bundles import PluginBundles
 from .permissions import FULL, POWERSHELL, READ_ONLY, WORKSPACE_WRITE, allowed as permission_allowed
 from .permissions import normalize as normalize_permission
@@ -68,6 +69,9 @@ AUTO_TITLE = object()
 EXTERNAL_TRANSPORT = 'acp'
 NATIVE_DSH_TRANSPORT = 'dsh-native'
 EXTERNAL_REPLY_LIMIT = 100_000
+EXTERNAL_AGENT_ID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}')
+MAX_CONVERSATION_AGENTS = 16
+MAX_PARALLEL_CONVERSATION_AGENTS = 4
 MAX_PROJECT_SOURCES = 8
 MAX_PROJECT_INSTRUCTIONS = 6000
 PROJECT_SOURCE_ARGUMENT = {'type': 'string', 'description': '来源标识，如 source_2。省略时使用主目录。'}
@@ -282,13 +286,14 @@ class AssistantError(Exception):
 
 
 class Config:
-    def __init__(self, base_url=None, model=None, api_key=None, timeout=30, vision_enabled=None, provider_id=None, provider_name=None):
+    def __init__(self, base_url=None, model=None, api_key=None, timeout=30, vision_enabled=None, provider_id=None, provider_name=None, api=CHAT_API):
         self.base_url = (base_url if base_url is not None else os.getenv('AI_ASSISTANT_BASE_URL', '')).strip().rstrip('/')
         self.model = (model if model is not None else os.getenv('AI_ASSISTANT_MODEL', '')).strip()
         self.api_key = (api_key if api_key is not None else os.getenv('AI_ASSISTANT_API_KEY', '')).strip()
         self.provider_id = provider_id or 'deepseek'
         self.provider_name = provider_name or 'DeepSeek'
         self.timeout = timeout
+        self.api = api
         self.vision_enabled = vision_enabled if vision_enabled is not None else os.getenv('AI_ASSISTANT_VISION_ENABLED', '').lower().strip() in ('true','1','yes')
         self.configured = bool(self.model and self.api_key and self.api_key.isascii()
                                and all(ord(char) >= 32 for char in self.api_key) and valid_url(self.base_url))
@@ -309,7 +314,7 @@ class Config:
 
     @classmethod
     def from_provider(cls, entry, *, timeout):
-        return cls(base_url=entry['base_url'], model=entry['model'], api_key=entry['api_key'],
+        return cls(base_url=entry['base_url'], model=entry['model'], api_key=credential(entry), api=entry.get('api', CHAT_API),
                    vision_enabled=entry['vision_enabled'], timeout=timeout,
                    provider_id=entry['id'], provider_name=entry['name'])
 
@@ -322,6 +327,7 @@ class AssistantService:
         self.models = ModelStore(Path(path).parent, self.db)
         self.lock = threading.RLock()
         self.active = {}
+        self.group_turns = {}
         self.turn_messages = {}
         self.turn_tools = {}
         self.mcp_approvals = {}
@@ -331,6 +337,8 @@ class AssistantService:
         self.development_jobs = {}
         self._external_tables = None
         self.model_success = {}
+        self.runtime_epoch = uuid.uuid4().hex
+        self.runtime_receipts = {}
         with self.db() as db:
             db.executescript('''CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,created_at REAL,updated_at REAL);
             CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at REAL);
@@ -389,6 +397,14 @@ class AssistantService:
                 db.execute('ALTER TABLE conversations ADD COLUMN deleted_at REAL')
             if 'auto_title_pending' not in columns:
                 db.execute('ALTER TABLE conversations ADD COLUMN auto_title_pending INTEGER NOT NULL DEFAULT 0')
+            if 'pinned' not in columns:
+                db.execute('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+            if 'archived' not in columns:
+                db.execute('ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0')
+            if 'agent_mode' not in columns:
+                db.execute('ALTER TABLE conversations ADD COLUMN agent_mode TEXT')
+            if 'agent_members' not in columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN agent_members TEXT NOT NULL DEFAULT '[]'")
             message_columns = {row['name'] for row in db.execute('PRAGMA table_info(messages)')}
             if 'attachments' not in message_columns:
                 db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'")
@@ -396,6 +412,14 @@ class AssistantService:
                 db.execute('ALTER TABLE messages ADD COLUMN reply_meta TEXT')
             if 'transport' not in message_columns:
                 db.execute('ALTER TABLE messages ADD COLUMN transport TEXT')
+            db.execute("""CREATE INDEX IF NOT EXISTS assistant_reply_latest
+                          ON messages(conversation_id, created_at DESC)
+                          WHERE role='assistant' AND reply_meta IS NOT NULL""")
+            runtime_tasks.initialize(db)
+            runtime_sessions.initialize(db)
+            worktree_shares.initialize(db)
+            fork_history.initialize(db)
+            native_preferences.initialize(db)
             db.execute("UPDATE messages SET status='error' WHERE status='streaming'")
             execution_trace.initialize(db)
         self.skills = SkillLibrary(self.db)
@@ -473,6 +497,9 @@ class AssistantService:
             return Config.from_provider(builtin, timeout=self.config.timeout), None
         builtin = self.builtin_model()
         provider = self.models.resolve(model_id, builtin)
+        if company_runtime.configured_providers_only() and provider['id'] == BUILTIN:
+            return Config(base_url='', model='', api_key='', vision_enabled=False,
+                          provider_id='unconfigured', provider_name=''), None
         if effort is not None and (effort not in REASONING_EFFORTS or effort not in provider['reasoning_efforts']):
             raise ModelError('invalid_reasoning_effort', '当前模型未配置所选推理强度。')
         return Config.from_provider(provider, timeout=self.config.timeout), effort
@@ -500,15 +527,22 @@ class AssistantService:
         else:
             config = Config.from_provider(provider, timeout=self.config.timeout)
         status = None
-        if not config.configured:
+        if config.api == BEDROCK_API:
+            code, message = 'runtime_test_required', '请使用配置的 Bedrock 模型在聊天中验证 AWS 认证。'
+        elif not config.configured:
             code, message = 'not_configured', '请先填写接口地址、模型 ID 和 API 密钥。'
         else:
-            responses = provider is None and company_runtime.enabled() and config.provider_id == BUILTIN
+            legacy_responses = provider is None and company_runtime.enabled() and config.provider_id == BUILTIN
+            responses = legacy_responses or config.api == RESPONSES_API
             if responses:
                 request = company_runtime.response_http_request(config, dict(
                     model=config.model, stream=True, input='Reply OK.', max_output_tokens=32,
-                    reasoning={'effort': 'none'}, store=False))
+                    **({'reasoning': {'effort': 'none'}} if legacy_responses else {}), store=False))
                 probe = company_runtime.probe_response_stream
+            elif config.api == MESSAGES_API:
+                request = company_runtime.messages_http_request(config, dict(
+                    model=config.model, stream=True, messages=[dict(role='user', content='Reply OK.')], max_tokens=32))
+                probe = company_runtime.probe_messages_stream
             else:
                 token_limit = 'max_completion_tokens' if provider_transport.official_openai(config.endpoint) else 'max_tokens'
                 request = config.request(dict(model=config.model, stream=True, messages=[
@@ -664,7 +698,7 @@ class AssistantService:
                                       s.workspace_id=project_file_proposals.workspace_id
                                       AND s.root_path=project_file_proposals.root_path
                                     AND s.root_identity=project_file_proposals.root_identity)
-                                AND NOT EXISTS (SELECT 1 FROM conversation_worktrees t JOIN workspace_sources s
+                                AND NOT EXISTS (SELECT 1 FROM conversation_worktree_bindings t JOIN workspace_sources s
                                     ON s.workspace_id=t.workspace_id AND s.root_path=t.base_path
                                     AND s.root_identity=t.base_identity
                                     WHERE t.conversation_id=project_file_proposals.conversation_id
@@ -695,12 +729,14 @@ class AssistantService:
 
     @staticmethod
     def _worktree_row(db, cid):
-        return db.execute('SELECT * FROM conversation_worktrees WHERE conversation_id=?', (cid,)).fetchone()
+        return worktree_shares.binding(db,cid)
 
     @staticmethod
     def _public_worktree(row):
         return dict(source=row['source'], branch=row['branch'], label=Path(row['root_path']).name,
-                    commit=row['commit_sha'], created_at=row['created_at'])
+                    commit=row['commit_sha'], created_at=row['created_at'],shared=bool(row.get('shared',False)),
+                    source_conversation_id=row.get('source_conversation_id',row['conversation_id']),
+                    owner_conversation_id=row.get('owner_conversation_id',row['conversation_id']))
 
     def _workspace_roots(self, db, wid):
         return {f'source_{index}': binding for index, binding in enumerate(self._sources(db, wid), 1) if binding[1]}
@@ -712,7 +748,7 @@ class AssistantService:
             return roots
         base = binding['base_path'], binding['base_identity']
         root = binding['root_path'], binding['root_identity']
-        if (binding['workspace_id'] != wid or base not in roots.values()
+        if (binding.get('shared_valid') is False or binding['workspace_id'] != wid or base not in roots.values()
                 or len(project_files.accessible_roots({'base': base, 'worktree': root})) != 2
                 or not worktree_binding.verify(base[0], root[0])):
             return {}
@@ -746,7 +782,7 @@ class AssistantService:
 
     def _worktree_creation_base(self, db, cid, source, root_key=None):
         self._conversation(db, cid)
-        if cid in self.active:
+        if self._conversation_active(cid):
             raise AssistantError('conversation_busy', '请等当前聊天完成后再创建工作树。', 409)
         if db.execute("SELECT 1 FROM project_file_proposals WHERE conversation_id=? AND status='pending' LIMIT 1",
                       (cid,)).fetchone():
@@ -833,7 +869,7 @@ class AssistantService:
 
     def _active_project_roots(self, db, cid, cancel, roots):
         project = self._project_for_conversation(db, cid)
-        if not project or cancel.is_set() or self.active.get(cid) is not cancel:
+        if not project or cancel.is_set() or not self._turn_is_active(cid, cancel):
             raise AssistantError('project_unavailable', '当前会话的项目目录不可用。', 409)
         current = set(self._conversation_roots(db, cid, project['id']).values())
         return {source: root for source, root in roots.items() if root in current}
@@ -940,7 +976,7 @@ class AssistantService:
         if not valid:
             return dict(ok=False, content='项目工具参数无效。请使用工具定义中的参数。', summary='参数错误')
         with self.lock, self.db() as db:
-            if cancel.is_set() or self.active.get(cid) is not cancel:
+            if cancel.is_set() or not self._turn_is_active(cid, cancel):
                 return dict(ok=False, content='项目工具请求已取消。', summary='请求已取消')
             project = self._project_for_conversation(db, cid)
             if not project or not self._active_project_roots(db, cid, cancel, roots):
@@ -1068,7 +1104,7 @@ class AssistantService:
             return self._search_project(cid, cancel, roots, args)
         with self.lock, self.db() as db:
             project = self._project_for_conversation(db, cid)
-            if not project or cancel.is_set() or self.active.get(cid) is not cancel:
+            if not project or cancel.is_set() or not self._turn_is_active(cid, cancel):
                 raise AssistantError('project_unavailable', '当前会话的项目目录不可用。', 409)
             # Keep selectors stable for the turn, but immediately honor removals and rebindings.
             current = set(self._conversation_roots(db, cid, project['id']).values())
@@ -1183,20 +1219,418 @@ class AssistantService:
 
     def set_permission(self, cid, mode):
         mode = normalize_permission(mode)
-        with self.db() as db:
+        with self.lock, self.db() as db:
+            if self.group_turns.get(cid) and mode != self.permission(cid):
+                raise AssistantError('conversation_busy', '请等群聊中的任务结束后再修改权限。', 409)
             db.execute('UPDATE conversations SET permission_mode=?,desktop_full_access_v1=? WHERE id=?',
                        (mode, int(mode == FULL), cid))
         return dict(id=cid, permission_mode=mode)
 
+    def _native_scope(self, db, cid):
+        row = db.execute('SELECT workspace_id FROM conversations WHERE id=? AND deleted_at IS NULL',(cid,)).fetchone()
+        if row is None:
+            raise AssistantError('not_found','会话不存在。',404)
+        project = self._project_for_conversation(db,cid)
+        roots = project_files.accessible_roots(self._conversation_roots(db,cid,project['id'])) if project else {}
+        if project and self._sources(db,project['id']) and not roots:
+            raise runtime_tasks.TaskError('native_scope_unavailable','项目保存目录暂不可用；不会切换到其他目录。')
+        return sha256(json.dumps(dict(workspace_id=row['workspace_id'] or self.DEFAULT_WORKSPACE,roots=roots),sort_keys=True).encode()).hexdigest()
+
+    def _native_mapping(self, db, cid, agent_id):
+        row = db.execute('SELECT * FROM native_sessions WHERE conversation_id=? AND agent_id=?',(cid,agent_id)).fetchone()
+        return row if row and row['scope_fingerprint'] == self._native_scope(db,cid) else None
+
+    def native_history_authorize(self, cid, fields):
+        if not isinstance(fields, dict) or 'turn_id' not in fields or set(fields)-{'turn_id','child_session_id'}:
+            raise runtime_tasks.TaskError('invalid_native_history', '请选择原会话中的任务。', 400)
+        with self.lock, self.db() as db:
+            conversation = self._conversation(db, cid)
+            task = runtime_tasks.row(db, cid, fields['turn_id'])
+            if task['runtime'] != 'dsh-native' or task['parent_task_id']:
+                raise runtime_tasks.TaskError('native_history_unsupported', '此任务没有原生 DSH 会话轨迹。')
+            history = db.execute('SELECT * FROM native_turn_history WHERE turn_id=?', (task['id'],)).fetchone()
+            task_scope = db.execute('SELECT scope_fingerprint FROM native_task_scopes WHERE turn_id=?',(task['id'],)).fetchone()
+            if history and (not task_scope or task_scope['scope_fingerprint'] != self._native_scope(db,cid)):
+                raise runtime_tasks.TaskError('native_history_scope_changed','此历史属于原保存目录；请使用消息分支，新消息将在当前项目中创建独立原生会话。')
+            mapping = self._native_mapping(db,cid,task['agent_id'])
+            project = self._project_for_conversation(db,cid)
+            roots = self._conversation_roots(db,cid,project['id']) if project else {}
+            children = [dict(item) for item in db.execute('SELECT session_id,parent_session_id,source_seq,last_seq FROM native_child_sessions WHERE turn_id=?',(task['id'],))]
+            child_id = fields.get('child_session_id')
+            if child_id is not None and not any(item['session_id']==child_id for item in children):
+                raise runtime_tasks.TaskError('native_child_not_found','此子会话不属于选中的任务。',404)
+            event, _, _ = self._turn_entry(cid, task['id'])
+            return dict(conversation_id=cid, turn_id=task['id'], agent_id=task['agent_id'],runtime=task['runtime'],
+                        workspace_id=project['id'] if project else None,
+                        project_roots=[dict(root_key=alias,path=root[0]) for alias,root in roots.items()],
+                        permission_mode=conversation['permission_mode'],task_status=task['status'],
+                        worktree_shared_allowed=bool(self._worktree_row(db,cid)),
+                        can_stop=bool(event and not event.is_set()),
+                        can_continue=bool(mapping and task['status'] in runtime_tasks.TERMINAL and not self._conversation_active(cid)),
+                        children=children,child_session_id=child_id,
+                        runtime_session_id=history['session_id'] if history else mapping['session_id'] if mapping else None,
+                        local_origin_cid=mapping['local_origin_cid'] if mapping else None,
+                        start_seq=history['start_seq'] if history else None,
+                        last_seq=history['last_seq'] if history else None,
+                        assistant_event_seq=history['assistant_event_seq'] if history else None)
+
+    def bind_native_session(self, cid, fields):
+        if not isinstance(fields,dict):
+            raise runtime_tasks.TaskError('invalid_native_binding','会话绑定格式无效。',400)
+        with self.lock, self.db() as db:
+            self._conversation(db,cid)
+            task = runtime_tasks.row(db,cid,fields.get('turn_id'))
+            if task['runtime'] != 'dsh-native' or task['parent_task_id']:
+                raise runtime_tasks.TaskError('native_history_unsupported','此任务不能绑定原生 DSH 会话。')
+            result = runtime_sessions.bind(db,task,fields,scope_fingerprint=self._native_scope(db,cid))
+            project = self._project_for_conversation(db,cid)
+            roots = self._conversation_roots(db,cid,project['id']) if project else {}
+            if not project_files.accessible_roots(roots):
+                db.execute('UPDATE native_sessions SET local_origin_cid=COALESCE(local_origin_cid,?) WHERE conversation_id=? AND agent_id=? AND session_id=?',(cid,cid,task['agent_id'],fields['session_id']))
+            _, _, context = self._turn_entry(cid,task['id'])
+            if context and context.get('agent_id') == task['agent_id']:
+                route = dict(agentId=task['agent_id'])
+                if context.get('provider_model_id'):
+                    route['providerModelId'] = context['provider_model_id']
+                db.execute('UPDATE native_sessions SET route=? WHERE conversation_id=? AND agent_id=? AND session_id=?', (json.dumps(route),cid,task['agent_id'],fields['session_id']))
+                db.execute('UPDATE native_turn_history SET route=? WHERE turn_id=?',(json.dumps(route),task['id']))
+            return result
+
+    def native_session_mapping(self, cid, agent_id):
+        if not isinstance(agent_id,str) or len(agent_id)>160:
+            raise runtime_tasks.TaskError('invalid_agent_id','Agent 标识无效。',400)
+        with self.lock, self.db() as db:
+            self._conversation(db,cid)
+            mapping = self._native_mapping(db,cid,agent_id)
+            return dict(conversation_id=cid,agent_id=agent_id,runtime_session_id=mapping['session_id'] if mapping else None,
+                        runtime=mapping['runtime'] if mapping else None,
+                        continuation=json.loads(mapping['route']) if mapping else None,
+                        local_origin_cid=mapping['local_origin_cid'] if mapping else None)
+
+    def native_child_conversation(self, cid, turn_id, child_id):
+        with self.lock,self.db() as db:
+            return native_child_links.lookup(self,db,cid,turn_id,child_id)
+
+    def reserve_native_fork(self, cid, fields):
+        if not isinstance(fields,dict) or not {'turn_id','at_seq'}<=set(fields) or set(fields)-{'turn_id','at_seq','child_session_id','worktree_policy'}:
+            raise runtime_tasks.TaskError('invalid_native_fork','分支参数无效。',400)
+        runtime_sessions.sequence(fields['at_seq'])
+        with self.lock, self.db() as db:
+            conversation=self._conversation(db,cid)
+            if conversation['archived']:raise runtime_tasks.TaskError('native_fork_source_archived','请先恢复原会话。')
+            task = runtime_tasks.row(db,cid,fields.get('turn_id'))
+            if task['runtime'] != 'dsh-native' or task['parent_task_id']:
+                raise runtime_tasks.TaskError('native_history_unsupported','此任务不能创建原生 DSH 分支。')
+            worktree=worktree_shares.snapshot(db,cid)
+            if worktree and fields.get('worktree_policy')!='share-current':
+                raise runtime_tasks.TaskError('native_fork_worktree_confirmation','请明确选择共享当前工作树；分支默认只读。')
+            if not worktree and fields.get('worktree_policy') is not None:
+                raise runtime_tasks.TaskError('invalid_native_fork','此会话没有可共享的工作树。',400)
+            if fields.get('child_session_id') is not None:
+                association=native_child_links.lookup(self,db,cid,task['id'],fields['child_session_id'])
+                if association['status']=='linked':
+                    return dict(association,existing=True)
+                if association['status']=='pending':
+                    raise runtime_tasks.TaskError('native_child_fork_pending','此子会话正在创建独立分支，请稍后恢复已有结果。')
+                if association['status']!='none':
+                    raise runtime_tasks.TaskError('native_child_branch_unavailable','已有子会话关联暂不可继续，请查看原关联状态；不会自动创建新分支。')
+                _,child=native_child_links.source_child(db,cid,task['id'],fields['child_session_id'])
+                fields=dict(fields,child_session_id=child['session_id'])
+            project = self._project_for_conversation(db,cid)
+            roots = self._conversation_roots(db,cid,project['id']) if project else {}
+            roots = project_files.accessible_roots(roots)
+            mapping = db.execute('SELECT local_origin_cid FROM native_sessions WHERE conversation_id=? AND agent_id=?',(cid,task['agent_id'])).fetchone()
+            origin = mapping['local_origin_cid'] if mapping else None
+            if not roots and (not origin or not re.fullmatch('[a-f0-9]{32}',origin)):
+                raise runtime_tasks.TaskError('native_fork_workspace_required','此历史还未绑定受控的本地保存目录，请使用消息分支。')
+            task_scope = db.execute('SELECT scope_fingerprint FROM native_task_scopes WHERE turn_id=?',(task['id'],)).fetchone()
+            if not task_scope or task_scope['scope_fingerprint'] != self._native_scope(db,cid):
+                raise runtime_tasks.TaskError('native_history_scope_changed','原保存目录已变更，请使用消息分支。')
+            reservation = runtime_sessions.reserve_fork(db,task,fields)
+            fingerprint = sha256(json.dumps(roots,sort_keys=True).encode()).hexdigest() if roots else 'local:'+origin
+            db.execute('UPDATE native_fork_reservations SET workspace_id=?,root_fingerprint=?,worktree_snapshot=? WHERE id=?', (project['id'] if project else self.DEFAULT_WORKSPACE,fingerprint,json.dumps(worktree,sort_keys=True) if worktree else None,reservation['reservation_id']))
+            if worktree:reservation['worktree']=dict(worktree,shared=True)
+            return reservation
+
+    def commit_native_fork(self, rid, fields):
+        if not isinstance(fields,dict) or not {'session_id','source_session_id','at_seq'} <= set(fields) or set(fields)-{'session_id','source_session_id','at_seq','display_history','history_archive'}:
+            raise runtime_tasks.TaskError('invalid_native_fork','分支结果字段无效。',400)
+        sid = runtime_sessions.session(fields['session_id'])
+        with self.lock, self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            reserved = runtime_sessions.fork_row(db,rid)
+            original = self._conversation(db,reserved['source_conversation_id'])
+            if original['archived']:raise runtime_tasks.TaskError('native_fork_source_archived','原会话已归档，分支未提交。')
+            if reserved['source_session_id'] != fields['source_session_id'] or reserved['at_seq'] != runtime_sessions.sequence(fields['at_seq']) or sid == reserved['source_session_id']:
+                raise runtime_tasks.TaskError('native_fork_conflict','分支原生会话或事件位置不匹配。')
+            if reserved['state'] == 'committed':
+                if reserved['child_session_id'] != sid:
+                    raise runtime_tasks.TaskError('native_fork_conflict','分支已绑定其他原生会话。')
+                mapping = db.execute('SELECT route,local_origin_cid FROM native_sessions WHERE conversation_id=? AND agent_id=?',(reserved['conversation_id'],reserved['agent_id'])).fetchone()
+                return dict(conversation=self._conversation(db,reserved['conversation_id']),runtime_session_id=sid,continuation=json.loads(mapping['route']),local_origin_cid=mapping['local_origin_cid'])
+            if reserved['state'] != 'reserved' or time.time()-fork_history.touch(db,reserved)>300:
+                raise runtime_tasks.TaskError('native_fork_expired','分支预留已取消或过期，请重新创建。')
+            if db.execute('SELECT 1 FROM native_session_owners WHERE runtime=? AND session_id=?',('dsh-native',sid)).fetchone():
+                raise runtime_tasks.TaskError('native_session_conflict','此原生会话已属于另一会话。')
+            project = self._project_for_conversation(db,reserved['source_conversation_id'])
+            roots = project_files.accessible_roots(self._conversation_roots(db,reserved['source_conversation_id'],project['id'])) if project else {}
+            source_mapping = db.execute('SELECT route,local_origin_cid FROM native_sessions WHERE conversation_id=? AND agent_id=?',(reserved['source_conversation_id'],reserved['agent_id'])).fetchone()
+            origin = source_mapping['local_origin_cid'] if source_mapping else None
+            fingerprint = sha256(json.dumps(roots,sort_keys=True).encode()).hexdigest() if roots else 'local:'+str(origin)
+            if (project['id'] if project else self.DEFAULT_WORKSPACE) != reserved['workspace_id'] or fingerprint != reserved['root_fingerprint']:
+                raise runtime_tasks.TaskError('native_fork_workspace_changed','项目保存目录已变更，请重新创建分支。')
+            reply = db.execute('SELECT rowid,created_at FROM messages WHERE id=? AND conversation_id=?',
+                               (reserved['turn_id'],reserved['source_conversation_id'])).fetchone()
+            if reply is None:
+                raise runtime_tasks.TaskError('native_history_missing','分支来源回答不存在。')
+            cid, now = reserved['conversation_id'],time.time()
+            title = original['title'][:74] + '（分支）'
+            db.execute('INSERT INTO conversations(id,title,created_at,updated_at,workspace_id,permission_mode,agent_mode) VALUES(?,?,?,?,?,?,?)',
+                       (cid,title,now,now,original['workspace_id'],READ_ONLY,None))
+            if reserved['worktree_snapshot']:
+                worktree_shares.share(db,cid,reserved['source_conversation_id'],json.loads(reserved['worktree_snapshot']),now)
+            source_history = db.execute('SELECT session_id,route FROM native_turn_history WHERE turn_id=?',(reserved['turn_id'],)).fetchone()
+            child_fork = bool(source_history and source_history['session_id'] != reserved['source_session_id'])
+            display_history = fields.get('display_history',[])
+            archive=fields.get('history_archive',False)
+            if type(archive) is not bool or archive and display_history:raise runtime_tasks.TaskError('invalid_native_fork_history','分片历史不能与旧整包历史混用。',400)
+            if archive:fork_history.commit(db,reserved,cid,now)
+            if (not isinstance(display_history,list) or len(display_history)>100 or len(json.dumps(display_history,ensure_ascii=False).encode())>512*1024
+                    or not child_fork and display_history
+                    or any(not isinstance(item,dict) or set(item)!={'role','content'} or item['role'] not in ('user','assistant') or not isinstance(item['content'],str) or any(0xd800<=ord(char)<=0xdfff for char in item['content']) for item in display_history)):
+                raise runtime_tasks.TaskError('invalid_native_fork_history','子会话展示历史无效。',400)
+            display_keys = ('provider_id','provider_name','model','transport','elapsed_ms','usage','usage_unavailable','context')
+            for row in ([] if child_fork or archive else db.execute('SELECT role,content,status,created_at,attachments,reply_meta,transport FROM messages WHERE conversation_id=? AND (created_at<? OR (created_at=? AND rowid<=?)) ORDER BY created_at,rowid',
+                                  (reserved['source_conversation_id'],reply['created_at'],reply['created_at'],reply['rowid'])).fetchall()):
+                metadata = json.loads(row['reply_meta']) if row['reply_meta'] else {}
+                display = {key:metadata[key] for key in display_keys if key in metadata}
+                db.execute('INSERT INTO messages(id,conversation_id,role,content,status,created_at,attachments,reply_meta,transport) VALUES(?,?,?,?,?,?,?,?,?)',
+                           (uuid.uuid4().hex,cid,row['role'],row['content'],'error' if row['status']=='streaming' else row['status'],row['created_at'],row['attachments'],json.dumps(display,ensure_ascii=False) if display else None,row['transport']))
+            for item in display_history:
+                db.execute('INSERT INTO messages(id,conversation_id,role,content,status,created_at,attachments,transport) VALUES(?,?,?,?,?,?,?,?)',(uuid.uuid4().hex,cid,item['role'],item['content'],'complete',now,'[]',NATIVE_DSH_TRANSPORT))
+            source_mapping = db.execute('SELECT route,local_origin_cid FROM native_sessions WHERE conversation_id=? AND agent_id=?',(reserved['source_conversation_id'],reserved['agent_id'])).fetchone()
+            route = json.loads(source_history['route']) if source_history and source_history['route'] != '{}' else dict(agentId=reserved['agent_id'])
+            db.execute('INSERT INTO native_session_owners VALUES(?,?,?)',('dsh-native',sid,cid))
+            db.execute('INSERT INTO native_sessions(conversation_id,agent_id,session_id,runtime,updated_at,route,local_origin_cid,scope_fingerprint) VALUES(?,?,?,?,?,?,?,?)',(cid,reserved['agent_id'],sid,'dsh-native',now,json.dumps(route),origin if not roots else None,self._native_scope(db,cid)))
+            db.execute("UPDATE native_fork_reservations SET state='committed',child_session_id=?,committed_at=? WHERE id=?",(sid,now,rid))
+            return dict(conversation=self._conversation(db,cid),runtime_session_id=sid,continuation=route,local_origin_cid=origin if not roots else None)
+
+    def append_native_fork_history(self, rid, fields):
+        with self.lock,self.db() as db:
+            reserved=runtime_sessions.fork_row(db,rid)
+            source=self._conversation(db,reserved['source_conversation_id'])
+            if source['archived']:raise runtime_tasks.TaskError('native_fork_source_archived','请先恢复原会话。')
+            scope=db.execute('SELECT scope_fingerprint FROM native_task_scopes WHERE turn_id=?',(reserved['turn_id'],)).fetchone()
+            if not scope or scope['scope_fingerprint']!=self._native_scope(db,reserved['source_conversation_id']):
+                raise runtime_tasks.TaskError('native_fork_workspace_changed','来源保存目录已变更。')
+            if reserved['worktree_snapshot'] and worktree_shares.snapshot(db,reserved['source_conversation_id'])!=json.loads(reserved['worktree_snapshot']):
+                raise runtime_tasks.TaskError('native_fork_worktree_changed','来源工作树绑定已变更。')
+            return fork_history.append(db,rid,fields)
+
+    def native_conversation_preferences(self,cid):
+        with self.lock,self.db() as db:
+            self._conversation(db,cid)
+            return native_preferences.read(db,cid)
+
+    def set_native_conversation_preferences(self,cid,fields):
+        with self.lock,self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            conversation=self._conversation(db,cid)
+            workspace=db.execute('SELECT archived FROM workspaces WHERE id=?',(conversation['workspace_id'],)).fetchone()
+            if conversation['archived'] or workspace and workspace['archived']:
+                raise runtime_tasks.TaskError('conversation_archived','归档会话不能修改选择。')
+            rows,_=company_runtime.configured_roster(self)
+            return native_preferences.write(db,cid,fields,{row['id'] for row in rows},self.skills.states())
+
+    def inherited_native_history(self,cid,after=None,limit=50):
+        with self.lock,self.db() as db:
+            self._conversation(db,cid)
+            return fork_history.read(db,cid,after,limit)
+
+    def abort_native_fork(self, rid, fields):
+        if fields != {}:
+            raise runtime_tasks.TaskError('invalid_native_fork','取消分支参数无效。',400)
+        with self.lock,self.db() as db:
+            reserved = runtime_sessions.fork_row(db,rid)
+            self._conversation(db,reserved['source_conversation_id'])
+            if reserved['state']=='committed':
+                return dict(aborted=False,conversation_id=reserved['conversation_id'])
+            db.execute("UPDATE native_fork_reservations SET state='aborted' WHERE id=?",(rid,))
+            fork_history.abort(db,rid)
+            return dict(aborted=True)
+
+    def runtime_task_snapshot(self, cid=None, after=None, epoch=None):
+        if after is not None and (type(after) is not int or after < 0):
+            raise AssistantError('invalid_runtime_cursor', '任务状态游标无效。')
+        with self.lock, self.db() as db:
+            if cid is not None:
+                self._conversation(db, cid)
+            result = runtime_tasks.snapshot(db, cid, after if epoch in (None, self.runtime_epoch) else None, allow_unchanged=epoch == self.runtime_epoch)
+            result['epoch'] = self.runtime_epoch
+            for task in result['tasks']:
+                event, _, _ = self._turn_entry(task['conversation_id'], task['id'])
+                task['can_cancel'] = task['status'] in runtime_tasks.LIVE and bool(event and not event.is_set())
+            return result
+
+    def publish_runtime_task(self, cid, task_id, fields):
+        with self.lock, self.db() as db:
+            self._conversation(db, cid)
+            current = runtime_tasks.row(db, cid, task_id)
+            if current['status'] in runtime_tasks.TERMINAL:
+                raise runtime_tasks.TaskError('runtime_task_closed', '此任务已结束或无法恢复。', task=runtime_tasks.public(current))
+            event, _, context = self._turn_entry(cid, task_id)
+            if event and event.is_set() and current['status'] == 'cancelling':
+                raise runtime_tasks.TaskError('runtime_task_cancel_requested', '用户已请求停止此任务。', task=runtime_tasks.public(current))
+            if not event or event.is_set() or context.get('agent_id') != current['agent_id']:
+                raise runtime_tasks.TaskError('runtime_task_closed', '任务授权已结束，不能更新运行状态。', task=runtime_tasks.public(current))
+            task, accepted = runtime_tasks.publish(db, cid, task_id, fields)
+            task['can_cancel'] = True
+            key = (task_id, fields['owner_id'])
+            receipt = self.runtime_receipts.get(key)
+            if receipt is None:
+                receipt = uuid.uuid4().hex + uuid.uuid4().hex
+                self.runtime_receipts[key] = receipt
+                runtime_tasks.issue_receipt(db, task_id, self.runtime_epoch, receipt)
+            return dict(task=task, accepted=accepted, epoch=self.runtime_epoch, finish_receipt=receipt)
+
+    def finish_runtime_task(self, cid, task_id, fields):
+        allowed = {'agent_id', 'owner_id', 'finish_receipt', 'content', 'status', 'model', 'execution', 'usage', 'recommendations', 'context', 'interrupted', 'plugin_cards', 'native_history'}
+        if not isinstance(fields, dict) or set(fields) - allowed:
+            raise AssistantError('invalid_external_turn', '任务结果字段无效。')
+        if type(fields.get('interrupted', False)) is not bool or fields.get('interrupted') and fields.get('status') != 'error':
+            raise AssistantError('invalid_external_turn', '中断结果状态无效。')
+        with self.lock:
+            with self.db() as db:
+                self._conversation(db, cid)
+                current = runtime_tasks.check_owner(db, cid, task_id, fields.get('agent_id'), fields.get('owner_id'), fields.get('finish_receipt'))
+                late = current['status'] == 'interrupted'
+            result = self.finish_external_turn(cid, task_id, fields.get('content'), fields.get('status'),
+                                               fields.get('model'), fields.get('execution'), fields.get('usage'),
+                                               fields.get('recommendations'), fields.get('context'), _late=late, _interrupted=fields.get('interrupted', False), _runtime_owner=True, plugin_cards_data=fields.get('plugin_cards'), native_history_data=fields.get('native_history'))
+            with self.db() as db:
+                result['task'] = runtime_tasks.public(runtime_tasks.row(db, cid, task_id))
+            result['epoch'] = self.runtime_epoch
+            return result
+
+    def abandon_runtime_task(self, cid, task_id, fields):
+        if (not isinstance(fields, dict) or set(fields) != {'agent_id', 'owner_id'}
+                or not isinstance(fields['owner_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', fields['owner_id'])):
+            raise AssistantError('invalid_runtime_state', '任务收尾参数无效。')
+        with self.lock:
+            with self.db() as db:
+                self._conversation(db, cid)
+                current = runtime_tasks.row(db, cid, task_id)
+                if current['agent_id'] != fields['agent_id'] or current['owner_id'] not in (None, fields['owner_id']):
+                    raise runtime_tasks.TaskError('runtime_task_owner_conflict', '任务运行时归属不匹配。', task=runtime_tasks.public(current))
+                if current['status'] not in runtime_tasks.TERMINAL and current['started_at'] is not None:
+                    raise runtime_tasks.TaskError('runtime_task_already_started', '任务已开始，不能按未执行收尾。', task=runtime_tasks.public(current))
+            result = self.finish_external_turn(cid, task_id, '连接未能确认，任务没有开始执行。', 'error', _runtime_owner=True)
+            with self.db() as db:
+                result['task'] = runtime_tasks.public(runtime_tasks.row(db, cid, task_id))
+            result['epoch'] = self.runtime_epoch
+            return result
+
+    @staticmethod
+    def valid_agent_mode(mode):
+        if mode is not None and (not isinstance(mode, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}', mode)):
+            raise AssistantError('invalid_agent_mode', '请选择有效的工作模式。')
+        return mode
+
+    def _agent_mode_state(self, db, cid):
+        conversation = self._conversation(db, cid)
+        reason = None
+        if conversation['archived']:
+            reason = '请先恢复归档会话，再选择工作模式。'
+        elif self._conversation_active(cid) or cid in self.mcp_approvals or cid in self.delegations:
+            reason = '请先完成或取消当前会话中的任务和待处理操作。'
+        elif db.execute("SELECT 1 FROM project_file_proposals WHERE conversation_id=? AND status='pending' LIMIT 1", (cid,)).fetchone():
+            reason = '请先应用或拒绝待确认的文件修改。'
+        elif db.execute('SELECT 1 FROM messages WHERE conversation_id=? AND transport=? LIMIT 1',
+                        (cid, NATIVE_DSH_TRANSPORT)).fetchone():
+            reason = 'Somnus 已开始此会话的原生任务。请新建会话选择其他工作模式。'
+        return dict(conversation_id=cid, agent_mode=conversation['agent_mode'], locked=reason is not None,
+                    **({'reason': reason} if reason else {}))
+
+    def agent_mode(self, cid):
+        with self.lock, self.db() as db:
+            return self._agent_mode_state(db, cid)
+
+    def set_agent_mode(self, cid, mode):
+        mode = self.valid_agent_mode(mode)
+        with self.lock, self.db() as db:
+            state = self._agent_mode_state(db, cid)
+            if state['agent_mode'] == mode:
+                return state
+            if state['locked']:
+                raise AssistantError('agent_mode_locked', state['reason'], 409)
+            db.execute('UPDATE conversations SET agent_mode=?,updated_at=? WHERE id=?', (mode, time.time(), cid))
+            return self._agent_mode_state(db, cid)
+
+    CONVERSATION_SUMMARY = """SELECT c.id,c.title,c.created_at,c.updated_at,c.permission_mode,
+                                     c.desktop_full_access_v1,COALESCE(c.workspace_id,'default') AS workspace_id,
+                                     c.pinned,c.archived,c.agent_members,c.agent_mode,
+                                     (SELECT COUNT(*) FROM messages WHERE conversation_id=c.id) AS message_count,
+                                     latest.reply_meta AS last_reply_meta,latest.transport AS last_reply_transport
+                              FROM conversations c LEFT JOIN messages latest ON latest.rowid=(
+                                  SELECT m.rowid FROM messages m
+                                  WHERE m.conversation_id=c.id AND m.role='assistant' AND m.reply_meta IS NOT NULL
+                                  ORDER BY m.created_at DESC,m.rowid DESC LIMIT 1
+                              )"""
+
     def conversations(self, workspace=None):
         with self.db() as db:
-            rows = db.execute('''SELECT c.id,c.title,c.created_at,c.updated_at,c.permission_mode,c.desktop_full_access_v1,
-                                        COUNT(m.id) AS message_count
-                                 FROM conversations c LEFT JOIN messages m ON c.id=m.conversation_id
-                                 WHERE c.deleted_at IS NULL AND COALESCE(c.workspace_id,'default')=?
-                                 GROUP BY c.id ORDER BY c.updated_at DESC LIMIT 200''',
-                              (workspace or self.DEFAULT_WORKSPACE,))
+            rows = db.execute(self.CONVERSATION_SUMMARY + """
+                WHERE c.deleted_at IS NULL AND NOT c.archived AND COALESCE(c.workspace_id,'default')=?
+                ORDER BY c.pinned DESC,c.updated_at DESC,c.id LIMIT 200""",
+                (workspace or self.DEFAULT_WORKSPACE,))
             return [self._public_conversation(db, row) for row in rows]
+
+    def session_index(self):
+        """Lightweight cross-project inventory, excluding projects already archived as a unit."""
+        limit = 500
+        conversations = []
+        truncated = False
+        with self.lock, self.db() as db:
+            for archived in (False, True):
+                rows = db.execute(self.CONVERSATION_SUMMARY + """
+                    WHERE c.deleted_at IS NULL AND c.archived=? AND NOT EXISTS (
+                        SELECT 1 FROM workspaces w WHERE w.id=c.workspace_id AND w.archived
+                    )
+                    ORDER BY c.pinned DESC,c.updated_at DESC,c.id LIMIT ?""",
+                    (int(archived), limit + 1)).fetchall()
+                truncated = truncated or len(rows) > limit
+                conversations.extend(self._public_conversation(db, row) for row in rows[:limit])
+        return dict(conversations=conversations, truncated=truncated)
+
+    @staticmethod
+    def _last_agent(raw, transport):
+        try:
+            metadata = json.loads(raw) if raw else None
+        except (ValueError, RecursionError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+
+        def label(value, size):
+            if isinstance(value, str) and value.strip() and value.isprintable():
+                return value.strip()[:size]
+            return None
+
+        transport = transport or metadata.get('transport') or 'python'
+        native_company = transport == NATIVE_DSH_TRANSPORT and metadata.get('provider_id') == company_runtime.AGENT_ID
+        name = '公司默认' if native_company else label(metadata.get('provider_name'), 120)
+        if not name:
+            return None
+        result = {'name': name}
+        provider_id = metadata.get('provider_id')
+        if isinstance(provider_id, str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', provider_id):
+            result['id'] = provider_id
+        if transport in (NATIVE_DSH_TRANSPORT, EXTERNAL_TRANSPORT, 'python'):
+            result['transport'] = transport
+        model = label(metadata.get('model'), 160)
+        if model and model != 'ACP':
+            result['model'] = model
+        return result
 
     @staticmethod
     def _public_message(row):
@@ -1217,8 +1651,18 @@ class AssistantService:
         return dict(conversation=conversation, messages=messages)
 
     def _public_conversation(self, db, row):
-        result = dict(row, permission_mode=self._effective_permission(row))
+        runtime = runtime_tasks.conversation_summary(db, row['id'])
+        result = dict(row, permission_mode=self._effective_permission(row), pinned=bool(row['pinned']),
+                      archived=bool(row['archived']), running=runtime['active_count'] > 0,
+                      runtime_status=runtime['status'], active_task_count=runtime['active_count'],
+                      attention_count=runtime['attention_count'], pending_action_count=runtime['pending_action_count'])
         result.pop('desktop_full_access_v1')
+        result['agent_members'] = json.loads(row['agent_members'])
+        result['inherited_history']=fork_history.metadata(db,row['id'])
+        result['native_preferences']=native_preferences.read(db,row['id'])
+        last_agent = self._last_agent(result.pop('last_reply_meta'), result.pop('last_reply_transport'))
+        if last_agent:
+            result['last_agent'] = last_agent
         binding = self._worktree_row(db, row['id'])
         if binding:
             result['worktree'] = self._public_worktree(binding)
@@ -1230,9 +1674,7 @@ class AssistantService:
             return execution_trace.conversation(db, cid)
 
     def _conversation(self, db, cid):
-        row = db.execute('''SELECT c.id,c.title,c.created_at,c.updated_at,c.permission_mode,c.desktop_full_access_v1,
-                                   (SELECT COUNT(*) FROM messages WHERE conversation_id=c.id) AS message_count
-                            FROM conversations c WHERE id=? AND deleted_at IS NULL''', (cid,)).fetchone()
+        row = db.execute(self.CONVERSATION_SUMMARY + ' WHERE c.id=? AND c.deleted_at IS NULL', (cid,)).fetchone()
         if row is None:
             raise AssistantError('not_found', '会话不存在。', 404)
         return self._public_conversation(db, row)
@@ -1243,17 +1685,18 @@ class AssistantService:
             raise AssistantError('invalid_title', '会话名称须为1至80个字符。')
         return value.strip()
 
-    def create(self, title=AUTO_TITLE, workspace=None, permission_mode=READ_ONLY):
+    def create(self, title=AUTO_TITLE, workspace=None, permission_mode=READ_ONLY, agent_mode=None):
         mode = normalize_permission(permission_mode)
         if mode != permission_mode:
             raise AssistantError('invalid_permission', '请选择有效的会话权限。')
+        agent_mode = self.valid_agent_mode(agent_mode)
         auto_title_pending = title is AUTO_TITLE
         title = '新会话' if auto_title_pending else self.title(title)
         cid, now = uuid.uuid4().hex, time.time()
         with self.db() as db:
             db.execute('''INSERT INTO conversations(id,title,created_at,updated_at,workspace_id,auto_title_pending,
-                          permission_mode,desktop_full_access_v1) VALUES(?,?,?,?,?,?,?,?)''',
-                       (cid, title, now, now, workspace or self.DEFAULT_WORKSPACE, auto_title_pending, mode, int(mode == FULL)))
+                          permission_mode,desktop_full_access_v1,agent_mode) VALUES(?,?,?,?,?,?,?,?,?)''',
+                       (cid, title, now, now, workspace or self.DEFAULT_WORKSPACE, auto_title_pending, mode, int(mode == FULL), agent_mode))
         return self.get(cid)['conversation']
 
     def branch(self, cid, message_id):
@@ -1274,8 +1717,8 @@ class AssistantService:
             branch_id, now = uuid.uuid4().hex, time.time()
             suffix = '（分支）'
             title = original['title'][:80 - len(suffix)].rstrip() + suffix
-            db.execute('INSERT INTO conversations(id,title,created_at,updated_at,workspace_id) VALUES(?,?,?,?,?)',
-                       (branch_id, title, now, now, workspace or self.DEFAULT_WORKSPACE))
+            db.execute('INSERT INTO conversations(id,title,created_at,updated_at,workspace_id,agent_mode) VALUES(?,?,?,?,?,?)',
+                       (branch_id, title, now, now, workspace or self.DEFAULT_WORKSPACE, original['agent_mode']))
             display_keys = ('provider_id', 'provider_name', 'model', 'transport', 'elapsed_ms', 'usage',
                             'usage_unavailable', 'context')
             for row in history:
@@ -1295,10 +1738,50 @@ class AssistantService:
                 db.execute('UPDATE conversations SET title=?,updated_at=?,auto_title_pending=0 WHERE id=? AND deleted_at IS NULL', (title, time.time(), cid))
             return self.get(cid)['conversation']
 
+    def organize_conversation(self, cid, fields):
+        if not fields or any(key not in ('pinned', 'archived') or type(value) is not bool
+                             for key, value in fields.items()):
+            raise AssistantError('invalid_conversation_organization', '请选择有效的置顶或归档状态。')
+        with self.lock, self.db() as db:
+            current = self._conversation(db, cid)
+            archived = fields.get('archived', current['archived'])
+            pinned = fields.get('pinned', current['pinned'])
+            if archived and fields.get('pinned'):
+                raise AssistantError('conversation_archived', '请先恢复归档会话，再置顶。', 409)
+            if archived and not current['archived']:
+                pending = db.execute("""SELECT 1 FROM project_file_proposals
+                                        WHERE conversation_id=? AND status='pending' LIMIT 1""", (cid,)).fetchone()
+                if self._conversation_active(cid) or current['running'] or pending or cid in self.mcp_approvals or cid in self.delegations:
+                    raise AssistantError('conversation_busy', '请先完成或取消该会话的运行及待处理操作。', 409)
+            db.execute('UPDATE conversations SET pinned=?,archived=? WHERE id=?',
+                       (int(pinned and not archived), int(archived), cid))
+            return self._conversation(db, cid)
+
+    def set_conversation_agent(self, cid, agent_id, added):
+        if (not isinstance(agent_id, str) or not EXTERNAL_AGENT_ID.fullmatch(agent_id)
+                or agent_id == company_runtime.AGENT_ID or type(added) is not bool):
+            raise AssistantError('invalid_external_agent', '请选择有效的外部 Agent。')
+        with self.lock, self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            conversation = self._conversation(db, cid)
+            if conversation['archived']:
+                raise AssistantError('conversation_archived', '请先恢复归档会话，再管理 Agent。', 409)
+            members = conversation['agent_members']
+            if added and agent_id not in members:
+                if len(members) >= MAX_CONVERSATION_AGENTS:
+                    raise AssistantError('conversation_agent_limit', '同一会话最多添加 16 个 Agent。', 409)
+                members.append(agent_id)
+            elif not added and agent_id in members:
+                if any(context['agent_id'] == agent_id for _, _, context in self.group_turns.get(cid, {}).values()):
+                    raise AssistantError('conversation_busy', '请先完成或停止此 Agent 的任务。', 409)
+                members.remove(agent_id)
+            db.execute('UPDATE conversations SET agent_members=? WHERE id=?', (json.dumps(members), cid))
+            return {'agent_members': members}
+
     def delete(self, cid):
         with self.lock:
             self.get(cid)
-            if cid in self.active:
+            if self._conversation_active(cid):
                 raise AssistantError('conversation_busy', '该会话仍在回答，请先停止或等待完成再移除。', 409)
             with self.db() as db:
                 db.execute('UPDATE conversations SET deleted_at=? WHERE id=? AND deleted_at IS NULL', (time.time(), cid))
@@ -1312,6 +1795,11 @@ class AssistantService:
                 event.set()
                 message = self.turn_messages.get(cid)
                 if message:
+                    with self.db() as db:
+                        task = runtime_tasks.row(db, cid, message['id'])
+                        if task['owner_id'] and task['status'] not in runtime_tasks.TERMINAL:
+                            runtime_tasks.transition(db, message['id'], 'cancelling', progress={'title': '正在停止任务'})
+                            return True
                     message['status'] = 'cancelled'
                     if 'usage' not in message['reply_meta']:
                         message['reply_meta']['usage_unavailable'] = True
@@ -1352,6 +1840,8 @@ class AssistantService:
                 raise AssistantError('invalid_content', '问题最多12000个字符。')
             self.get(cid)
             turn_context = dict(tool_context or {})
+            if company_runtime.configured_providers_only() and turn_context.get('project_desktop'):
+                raise AssistantError('dsh_runtime_required', '请在桌面端选择已配置的 Provider，通过 DSH 发送。', 409)
             queue_id = self._queue_user_id(cid, turn_context.pop('queue_id', None))
             config, effort = self._turn_settings(turn_context)
             if not config.configured:
@@ -1383,15 +1873,52 @@ class AssistantService:
             raise AssistantError('invalid_queue_id', '排队消息标识无效。', 409)
         return queue_id
 
-    def _reserve_turn(self, cid, content, attachments, metadata, context, *, transport=None, user_id=None):
-        if cid in self.active:
-            raise AssistantError('conversation_busy', '该会话仍在回答，请先停止或等待完成。', 409)
+    def _conversation_active(self, cid):
+        return cid in self.active or bool(self.group_turns.get(cid))
+
+    def _turn_is_active(self, cid, event):
+        if self.active.get(cid) is event:
+            return True
+        return any(entry[0] is event for entry in self.group_turns.get(cid, {}).values())
+
+    def _turn_entry(self, cid, turn_id):
+        group = self.group_turns.get(cid, {}).get(turn_id)
+        if group is not None:
+            return group
+        assistant = self.turn_messages.get(cid)
+        if assistant and assistant['id'] == turn_id:
+            return self.active.get(cid), assistant, self.turn_tools.get(cid, {})
+        return None, None, {}
+
+    def _check_turn_slot(self, cid, group_agent=None):
+        group = self.group_turns.get(cid, {})
+        if cid in self.active or (group and group_agent is None):
+            raise AssistantError('conversation_busy', '该会话仍有任务运行，请等待完成。', 409)
+        if group_agent is not None:
+            if any(context['agent_id'] == group_agent for _, _, context in group.values()):
+                raise AssistantError('conversation_agent_busy', '此 Agent 仍有任务运行。', 409)
+            if len(group) >= MAX_PARALLEL_CONVERSATION_AGENTS:
+                raise AssistantError('conversation_busy', '此会话的并行任务已达上限。', 409)
+
+    def _reserve_turn(self, cid, content, attachments, metadata, context, *, transport=None, user_id=None,
+                      group_parallel=False):
+        self._check_turn_slot(cid, context['agent_id'] if group_parallel else None)
         cancel = threading.Event()
         user = dict(id=user_id or uuid.uuid4().hex, role='user', content=content.strip(), status='complete',
                     created_at=time.time(), attachments=attachments)
         assistant = dict(id=uuid.uuid4().hex, role='assistant', content='', status='streaming', created_at=time.time(),
                          attachments=[], reply_meta=metadata)
+        if group_parallel:
+            user['reply_meta'] = dict(provider_id=metadata['provider_id'], provider_name=metadata['provider_name'],
+                                      group_turn_id=assistant['id'])
+            metadata['group_turn_id'] = assistant['id']
+            context['excluded_history_replies'] = tuple(self.group_turns.get(cid, {}))
         with self.db() as db:
+            row = db.execute('SELECT archived FROM conversations WHERE id=? AND deleted_at IS NULL', (cid,)).fetchone()
+            if row is None:
+                raise AssistantError('not_found', '会话不存在。', 404)
+            if row['archived']:
+                raise AssistantError('conversation_archived', '请先恢复归档会话，再发送消息。', 409)
             for message in (user, assistant):
                 reply_meta = json.dumps(message['reply_meta'], ensure_ascii=False) if 'reply_meta' in message else None
                 db.execute('''INSERT INTO messages(id,conversation_id,role,content,status,created_at,attachments,reply_meta,transport)
@@ -1402,9 +1929,18 @@ class AssistantService:
                 title = title[:39].rstrip() + '…' if len(title) > 40 else title
                 db.execute('UPDATE conversations SET title=?,auto_title_pending=0 WHERE id=? AND auto_title_pending=1 AND deleted_at IS NULL', (title, cid))
             db.execute('UPDATE conversations SET updated_at=? WHERE id=?', (time.time(), cid))
-        self.active[cid] = cancel
-        self.turn_messages[cid] = assistant
-        self.turn_tools[cid] = context
+            runtime_tasks.reserve(db, cid, assistant['id'], context.get('agent_id') or 'somnus',
+                                  metadata.get('provider_name') if transport == EXTERNAL_TRANSPORT else 'Somnus',
+                                  transport if transport in (EXTERNAL_TRANSPORT, NATIVE_DSH_TRANSPORT) else 'python',
+                                  user_message_id=user['id'], title=runtime_tasks.safe_title(content))
+            if transport in (EXTERNAL_TRANSPORT,NATIVE_DSH_TRANSPORT):
+                db.execute('INSERT INTO native_task_scopes VALUES(?,?)',(assistant['id'],self._native_scope(db,cid)))
+        if group_parallel:
+            self.group_turns.setdefault(cid, {})[assistant['id']] = (cancel, assistant, context)
+        else:
+            self.active[cid] = cancel
+            self.turn_messages[cid] = assistant
+            self.turn_tools[cid] = context
         return user, assistant, cancel
 
     @staticmethod
@@ -1438,8 +1974,8 @@ class AssistantService:
         return documents
 
     def begin_external_turn(self, cid, content, agent_id, agent_name, model=None, *,
-                            company_model=None, reasoning_effort=None,
-                            queue_id=None,
+                            company_model=None, reasoning_effort=None, provider_model_id=None,
+                            queue_id=None, member_only=False, group_parallel=False,
                             attachments=None, file_ids=None, analysis_file_id=None, skill_ids=None, plugin_ids=None,
                             local_tables=None, remote_data=None, mcp_registry=None):
         content = self._external_text(content, 12000)
@@ -1449,18 +1985,39 @@ class AssistantService:
             raise AssistantError('invalid_attachment', str(exc)) from exc
         if not (content.strip() or images or file_ids or analysis_file_id):
             raise AssistantError('invalid_content', '请输入消息或添加文件。')
-        if not isinstance(agent_id, str) or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', agent_id):
+        if not isinstance(agent_id, str) or not EXTERNAL_AGENT_ID.fullmatch(agent_id):
             raise AssistantError('invalid_external_agent', '外部 Agent 标识无效。')
+        if type(member_only) is not bool or type(group_parallel) is not bool:
+            raise AssistantError('invalid_external_turn', 'Agent 任务目标无效。')
+        if group_parallel and (not member_only or agent_id == company_runtime.AGENT_ID):
+            raise AssistantError('invalid_external_turn', '群聊并行仅可指定已添加的外接 Agent。')
         agent_name = self._external_text(agent_name, 120, label=True)
         model = self._external_text(model, 160, label=True) if model is not None else 'ACP'
         company = agent_id == company_runtime.AGENT_ID
         transport = NATIVE_DSH_TRANSPORT if company else EXTERNAL_TRANSPORT
-        if not company and (company_model is not None or reasoning_effort is not None):
-            raise AssistantError('invalid_external_turn', '公司模型选项仅用于公司 DSH 会话。')
+        if not company and (company_model is not None or reasoning_effort is not None or provider_model_id is not None):
+            raise AssistantError('invalid_external_turn', 'Provider 模型选项仅用于托管 DSH 会话。')
         with self.lock:
             queue_id = self._queue_user_id(cid, queue_id)
+            with self.db() as db:
+                conversation = self._conversation(db, cid)
+            if member_only and agent_id not in conversation['agent_members']:
+                raise AssistantError('conversation_agent_missing', '该 Agent 已不在此会话。请重新添加或选择其他 Agent。', 409)
             revision = None
-            if company:
+            configured_provider = company and company_runtime.configured_providers_only()
+            if configured_provider:
+                rows, revision = company_runtime.configured_roster(self)
+                selected = next((row for row in rows if row['id'] == provider_model_id), None)
+                if selected is None or company_model is not None:
+                    raise AssistantError('provider_model_unavailable', '请选择已配置的 Provider 模型。', 409)
+                if reasoning_effort is not None and reasoning_effort not in selected['reasoning_efforts']:
+                    raise AssistantError('invalid_reasoning_effort', '所选模型不支持此推理强度。')
+                if images and not selected['vision_enabled']:
+                    raise AssistantError('provider_vision_unavailable', '此模型未启用图片理解。')
+                agent_name, model = selected['name'], selected['model']
+            elif company:
+                if provider_model_id is not None:
+                    raise AssistantError('provider_model_unavailable', '当前 DSH 未启用个人 Provider。', 409)
                 company_config, revision = self.company_provider()
                 options = company_runtime.info(company_config)
                 if options is None:
@@ -1475,13 +2032,11 @@ class AssistantService:
                     raise AssistantError('company_vision_unavailable',
                                          '此公司模型不支持图片。请移除图片、粘贴截图文字，或切换到支持图片的模型。')
                 agent_name, model = '公司默认', choice['model']
-            metadata = dict(provider_id=agent_id, provider_name=agent_name, model=model, transport=transport)
+            metadata = dict(provider_id=provider_model_id if configured_provider else agent_id,
+                            provider_name=agent_name, model=model, transport=transport)
             if reasoning_effort is not None:
                 metadata['reasoning_effort'] = reasoning_effort
-            with self.db() as db:
-                self._conversation(db, cid)
-            if cid in self.active:
-                raise AssistantError('conversation_busy', '该会话仍在回答，请先停止或等待完成。', 409)
+            self._check_turn_slot(cid, agent_id if group_parallel else None)
             instructions, _, roots = self._project_context(cid, include_private=True)
             documents = self._external_documents([] if file_ids is None else file_ids)
             table = None
@@ -1497,19 +2052,20 @@ class AssistantService:
                            external_documents=documents, external_table=table, external_skills=selected,
                            external_file_id=analysis_file_id, external_local_tables=local_tables,
                            external_remote_data=remote_data, mcp_registry=mcp_registry,
-                           plugin_mcp_ids=plugin_scope, company_revision=revision,
-                           company_model=model if company else None, company_reasoning_effort=reasoning_effort)
+                           plugin_mcp_ids=plugin_scope, selected_plugin_ids=list(plugin_ids or []), company_revision=revision,
+                           company_model=provider_model_id if configured_provider else model if company else None,
+                           provider_model_id=provider_model_id if configured_provider else None,
+                           company_reasoning_effort=reasoning_effort)
             visible = content or ('[已添加文件]' if documents or table else '')
-            user, assistant, _ = self._reserve_turn(cid, visible, images, metadata, context, transport=transport, user_id=queue_id)
+            user, assistant, _ = self._reserve_turn(cid, visible, images, metadata, context, transport=transport,
+                                                    user_id=queue_id, group_parallel=group_parallel)
             with self.db() as db:
                 conversation = self._conversation(db, cid)
         return dict(turn_id=assistant['id'], user_message=user, assistant_message=assistant, conversation=conversation)
 
     def _external_turn(self, cid, turn_id, agent_id):
-        event = self.active.get(cid)
-        context = self.turn_tools.get(cid, {})
-        assistant = self.turn_messages.get(cid)
-        if (not event or event.is_set() or not assistant or assistant['id'] != turn_id
+        event, assistant, context = self._turn_entry(cid, turn_id)
+        if (not event or event.is_set() or not assistant
                 or context.get('agent_id') != agent_id or 'external_started_at' not in context):
             raise AssistantError('external_turn_closed', '外部 Agent 请求已结束或与当前任务不匹配。', 409)
         return event, context
@@ -1557,6 +2113,7 @@ class AssistantService:
         with self.lock:
             event, context = self._external_turn(cid, turn_id, agent_id)
             with self.db() as db:
+                runtime_tasks.transition(db, turn_id, 'connecting', progress={'stage': 'preparing'})
                 project = self._project_for_conversation(db, cid)
                 allowed = set(self._conversation_roots(db, cid, project['id']).values()) if project else set()
             roots = {alias: root for alias, root in context['external_roots'].items() if root in allowed}
@@ -1575,8 +2132,11 @@ class AssistantService:
                 attached=bool(context['external_file_id']))
             chat_context = dict(context, permission_mode=permission)
         with self.db() as db:
-            history_summary, history = conversation_context.build(db, cid, turn_id, text_only=True)
-            history_predecessor = conversation_context.previous_completed_reply(db, cid, turn_id)
+            excluded = context.get('excluded_history_replies', ())
+            history_summary, history = conversation_context.build(db, cid, turn_id, text_only=True,
+                                                                   excluded_replies=excluded, include_ids=True)
+            history_predecessor = conversation_context.previous_completed_reply(db, cid, turn_id,
+                                                                                excluded_replies=excluded)
         # Discovery may start configured servers and must not block cancellation.
         specs = chat_tool_specs(chat_context, {})
         with self.lock, self.db() as db:
@@ -1602,25 +2162,54 @@ class AssistantService:
             tools = external_tools.schemas(current, data_tools, specs,
                                            mcp_policy=lambda name: _mcp_policy(current_context, name),
                                            project_search=search_schema)
+            trusted_owners = plugin_cards.tool_owners(db,context.get('selected_plugin_ids',()),context.get('mcp_registry'))
+            active_context['trusted_plugin_tools'] = trusted_owners
+            for tool in tools:
+                if tool['name'] in trusted_owners:
+                    tool['trusted_plugin_id'] = trusted_owners[tool['name']]
             active_context['external_advertised_tools'] = {item['name'] for item in tools}
+            native_mapping = self._native_mapping(db,cid,agent_id)
             return dict(text=text, images=images, project=project, permission_mode=current, tools=tools,
+                        runtime_session_id=native_mapping['session_id'] if native_mapping else None,
+                        local_origin_cid=native_mapping['local_origin_cid'] if native_mapping else None,
+                        agent_mode=self._conversation(db, cid)['agent_mode'],
                         history=history, history_summary=history_summary, history_predecessor=history_predecessor,
                         **(dict(company_revision=context['company_revision'], company_model=context['company_model'],
-                                company_reasoning_effort=context['company_reasoning_effort'])
+                                company_reasoning_effort=context['company_reasoning_effort'],
+                                **({'provider_model_id': context['provider_model_id']}
+                                   if context.get('provider_model_id') else {}))
                            if context.get('company_revision') else {}),
                         **development)
 
     def start_company_web_runtime(self, remote_data=None):
         with self.lock:
-            config, revision = self.company_provider()
-            options = company_runtime.info(config)
-            if options is None:
-                raise AssistantError('company_model_unavailable', '请先在配置中心填写公司分配的 API 密钥。', 503)
             settings = self.delegation_settings()
             depth = settings['dsh_max_depth'] if settings['enabled'] else 0
-            options['subagents'] = dict(maxDepth=depth, maxActiveSubagents=settings['dsh_max_active'])
+            subagents = dict(maxDepth=depth, maxActiveSubagents=settings['dsh_max_active'])
+            personal = company_runtime.configured_providers_only()
+            if personal:
+                rows, revision = company_runtime.configured_roster(self)
+                if not rows:
+                    raise AssistantError('provider_model_unavailable', '请先配置可用的 Provider。', 503)
+                options = dict(model=rows[0]['id'], vision=rows[0]['vision_enabled'])
+                models = [dict(model=row['id'], display_model=row['model'], vision=row['vision_enabled'],
+                               reasoning_efforts=row['reasoning_efforts'], api=row['api'], retry_policy=row['retry_policy'],
+                               **{field: row.get(field) for field in ('context_window', 'max_output_tokens',
+                                   'supports_developer_role', 'supports_long_cache_retention', 'cache_retention')},
+                               **(dict(region=bedrock_region(row), base_url=row['base_url'],
+                                       native_bedrock_token=credential(row)) if row['api'] == BEDROCK_API else {}))
+                          for row in rows]
+                lease = company_runtime.ProviderRosterLease(
+                    rows, lambda row: Config.from_provider(row, timeout=self.config.timeout), subagents)
+                lease.revision = revision
+            else:
+                config, revision = self.company_provider()
+                options = company_runtime.info(config)
+                if options is None:
+                    raise AssistantError('company_model_unavailable', '请先在配置中心填写公司分配的 API 密钥。', 503)
+                models = company_runtime.catalog(config)
+                lease = company_runtime.ModelLease(config, dict(options, subagents=subagents))
             ident, cancel = uuid.uuid4().hex, threading.Event()
-            lease = company_runtime.ModelLease(config, options)
             runtimes = {}
             if data_available(remote_data):
                 running = threading.BoundedSemaphore(4)
@@ -1631,7 +2220,8 @@ class AssistantService:
                 previous[1].set()
             self.company_web_runtime = (ident, cancel, lease, runtimes)
         return dict(id=ident, token=lease.token, model=options['model'], vision=options['vision'],
-                    revision=revision, subagents=options['subagents'], models=company_runtime.catalog(config),
+                    revision=revision, subagents=subagents, models=models,
+                    **({'api': 'openai-completions'} if personal else {}),
                     data_servers=[{'id': server_id, 'token': runtimes[server_id].token}
                                   for server_id in DATA_MCP_NAMES if server_id in runtimes],
                     **({'data': {'token': runtimes[None].token, 'available': True}} if runtimes else {}))
@@ -1660,11 +2250,18 @@ class AssistantService:
         return self._open_company_host_stream(*provider, token, body, responses)
 
     def _open_company_host_stream(self, lease, cancel, token, body, responses):
+        configured = None
         with self.lock:
+            if isinstance(lease, company_runtime.ProviderRosterLease):
+                if company_runtime.configured_roster(self)[1] != lease.revision:
+                    raise AssistantError('provider_model_changed', 'Provider 配置已变更，请重新发送。', 409)
             payload = None if cancel.is_set() else lease.authorize(token, body, responses)
             if payload is None:
                 raise AssistantError('invalid_company_relay', '公司模型请求无效或超出并发额度。', 403)
-        response, error_status = company_runtime.open_response(urlopen, lease, payload, responses)
+            if isinstance(lease, company_runtime.ProviderRosterLease):
+                configured, payload = payload
+        options = {'configured': configured} if configured is not None else {}
+        response, error_status = company_runtime.open_response(urlopen, lease, payload, responses, **options)
         if response is None:
             lease.release()
             raise AssistantError('company_model_request_failed', '公司模型请求失败。', error_status)
@@ -1717,7 +2314,14 @@ class AssistantService:
                 dispatch['project_tool'] = lambda route, args: self.project_tool(cid, event, context['external_roots'], route, args)
             if name == external_tools.PROJECT_SEARCH or name.startswith('mcp__'):
                 result = run_chat_tool(name, json.dumps(arguments, ensure_ascii=False), dispatch, confirmed=confirmed is True)
-                return external_tools.response(result['content'], error=not result['ok'])
+                response = external_tools.response(result['content'], error=not result['ok'])
+                trusted = context.get('trusted_plugin_tools',{}).get(name)
+                if result['ok'] and trusted and isinstance(result.get('somnus_ui'),dict):
+                    try:
+                        response['somnus_ui'] = dict(plugin_id=trusted,document=plugin_cards.document(result['somnus_ui'].get('document'),trusted))
+                    except (ValueError,TypeError,UnicodeError):
+                        pass
+                return response
             if name not in external_tools.DATA_NAMES:
                 return external_tools.failure('此工具不在当前回合授权范围内。')
             with self.db() as db:
@@ -1775,7 +2379,7 @@ class AssistantService:
             raise AssistantError('invalid_file_action', '项目文件操作无效。')
 
     def finish_external_turn(self, cid, turn_id, content, status, model=None, execution=None, usage=None,
-                             recommendations=None, context_usage=None):
+                             recommendations=None, context_usage=None, *, _late=False, _interrupted=False, _runtime_owner=False, plugin_cards_data=None, native_history_data=None):
         content = self._external_text(content, EXTERNAL_REPLY_LIMIT)
         if status not in ('complete', 'cancelled', 'error'):
             raise AssistantError('invalid_external_turn', '外部 Agent 消息状态无效。')
@@ -1806,16 +2410,38 @@ class AssistantService:
                     raise AssistantError('not_found', '外部 Agent 会话轮次不存在。', 404)
                 message = self._public_message(row)
             execution = self._external_execution(execution, native_dsh=row['transport'] == NATIVE_DSH_TRANSPORT)
-            if message['status'] != 'streaming':
+            if native_history_data is not None:
+                if not _runtime_owner or row['transport'] != NATIVE_DSH_TRANSPORT or not isinstance(native_history_data,dict) or set(native_history_data)-{'session_id','start_seq','last_seq','assistant_event_seq','children'}:
+                    raise AssistantError('invalid_native_history','原生轨迹记录无效。')
+            if message['status'] != 'streaming' and not _late:
+                if native_history_data is not None:
+                    with self.db() as db:
+                        task = runtime_tasks.row(db,cid,turn_id)
+                        runtime_sessions.bind(db,task,dict(native_history_data,turn_id=turn_id,owner_id=task['owner_id']),scope_fingerprint=self._native_scope(db,cid))
                 return dict(message=message, conversation=conversation)
-            event = self.active.get(cid)
-            context = self.turn_tools.get(cid, {})
-            if not event or self.turn_messages[cid]['id'] != turn_id or 'external_started_at' not in context:
+            with self.db() as db:
+                task = runtime_tasks.row(db, cid, turn_id)
+            if task['owner_id'] and not _runtime_owner and not _late:
+                return dict(message=message, conversation=conversation, persistence_pending=True)
+            event, assistant, context = self._turn_entry(cid, turn_id)
+            if not _late and (not event or not assistant or 'external_started_at' not in context):
                 raise AssistantError('external_turn_closed', '外部 Agent 会话已结束。', 409)
             message.update(content=content, status=status)
-            message['reply_meta']['elapsed_ms'] = round((time.monotonic() - context['external_started_at']) * 1000)
-            if model is not None:
+            if _interrupted:
+                message['reply_meta']['runtime_interrupted'] = True
+            if _late:
+                message['reply_meta']['received_late'] = True
+            else:
+                message['reply_meta']['elapsed_ms'] = round((time.monotonic() - context['external_started_at']) * 1000)
+            if model is not None and not context.get('provider_model_id'):
                 message['reply_meta']['model'] = model
+            if plugin_cards_data is not None:
+                if not _runtime_owner:
+                    raise AssistantError('invalid_plugin_cards','插件卡片需要可信运行时归属。',403)
+                try:
+                    message['reply_meta']['plugin_cards'] = plugin_cards.cards(plugin_cards_data)
+                except (ValueError,TypeError,UnicodeError):
+                    raise AssistantError('invalid_plugin_cards','插件卡片格式无效。') from None
             if execution:
                 message['reply_meta']['execution'] = execution
             if recommendations and status == 'complete':
@@ -1824,11 +2450,28 @@ class AssistantService:
                                interrupted=status != 'complete' or bool(usage and usage.get('partial')))
             if context_usage is not None:
                 message['reply_meta']['context'] = context_usage
-            self.save(cid, message)
-            self.release(cid, event)
+            self.save(cid, message, native_history=native_history_data, native_owner=task['owner_id'])
+            if not _late:
+                self.release(cid, event)
             with self.db() as db:
                 conversation = self._conversation(db, cid)
         return dict(message=message, conversation=conversation)
+
+    def cancel_group_turn(self, cid, turn_id, agent_id):
+        with self.lock:
+            entry = self.group_turns.get(cid, {}).get(turn_id)
+            if entry is None:
+                return {'cancelled': False}
+            event, message, context = entry
+            if context['agent_id'] != agent_id:
+                raise AssistantError('external_turn_closed', 'Agent 与此任务不匹配。', 409)
+            event.set()
+            with self.db() as db:
+                task = runtime_tasks.row(db, cid, turn_id)
+                if task['owner_id'] and task['status'] not in runtime_tasks.TERMINAL:
+                    runtime_tasks.transition(db, turn_id, 'cancelling', progress={'title': '正在停止任务'})
+            result = self.finish_external_turn(cid, turn_id, message['content'], 'cancelled')
+            return dict(cancelled=True, **result)
 
     def _external_recommendations(self, value):
         if value is None:
@@ -1899,6 +2542,14 @@ class AssistantService:
 
     def release(self, cid, cancel):
         with self.lock:
+            group = self.group_turns.get(cid)
+            if group:
+                turn_id = next((key for key, entry in group.items() if entry[0] is cancel), None)
+                if turn_id is not None:
+                    del group[turn_id]
+                    if not group:
+                        del self.group_turns[cid]
+                    return
             if self.active.get(cid) is cancel:
                 del self.active[cid]
                 self.turn_messages.pop(cid, None)
@@ -1934,7 +2585,7 @@ class AssistantService:
     def _mcp_approval(self, cid, cancel, name, arguments, context):
         public = dict(id=uuid.uuid4().hex, tool_name=name, arguments_preview=_mcp_arguments_preview(arguments), status='pending')
         with self.lock:
-            if self.active.get(cid) is not cancel or cancel.is_set():
+            if not self._turn_is_active(cid, cancel) or cancel.is_set():
                 return False
             pending = dict(public=public, cancel=cancel, context=context, ready=threading.Event(),
                            deadline=time.monotonic() + MCP_APPROVAL_SECONDS)
@@ -1942,6 +2593,8 @@ class AssistantService:
                 execution_trace.start(db, cid, self.turn_messages[cid]['id'], 'approval',
                                       execution_trace.APPROVAL_KINDS['mcp'], event_id=public['id'])
             self.mcp_approvals[cid] = pending
+            with self.db() as db:
+                runtime_tasks.transition(db, self.turn_messages[cid]['id'], 'waiting_approval', progress={'title': '等待工具授权'})
         try:
             yield 'mcp_approval', dict(public)
             while not cancel.is_set() and time.monotonic() < pending['deadline']:
@@ -1961,6 +2614,10 @@ class AssistantService:
                     execution_trace.finish(db, public['id'], 'closed' if cancel.is_set() else 'expired')
                 if self.mcp_approvals.get(cid) is pending:
                     self.mcp_approvals.pop(cid, None)
+                message = self.turn_messages.get(cid)
+                if message and not cancel.is_set():
+                    with self.db() as db:
+                        runtime_tasks.transition(db, message['id'], 'running', progress={'stage': 'working'})
 
     def complete_delegation(self, cid, request_id, data):
         status = data.get('status')
@@ -1994,7 +2651,7 @@ class AssistantService:
         pending = dict(id=request_id, cancel=cancel, request=request, agents=agents,
                        ready=threading.Event(), deadline=time.monotonic() + delegation.TIMEOUT_SECONDS)
         with self.lock:
-            if self.active.get(cid) is not cancel or cancel.is_set():
+            if not self._turn_is_active(cid, cancel) or cancel.is_set():
                 return dict(ok=False, summary='委派已取消', content='委派已取消。')
             self.delegations[cid] = pending
         labels = {'complete': '委派已完成', 'declined': '用户拒绝委派', 'error': '子 Agent 执行失败', 'expired': '委派等待超时'}
@@ -2045,6 +2702,8 @@ class AssistantService:
                 terminal_saved = True
 
         try:
+            with self.db() as db:
+                runtime_tasks.transition(db, assistant['id'], 'running', progress={'stage': 'working'})
             start = dict(conversation_id=cid, user_message=user, assistant_message={
                 **assistant, 'reply_meta': assistant['reply_meta'].copy()})
             with self.lock:
@@ -2364,9 +3023,17 @@ class AssistantService:
             finally:
                 self.release(cid, cancel)
 
-    def save(self, cid, message):
+    def save(self, cid, message, *, native_history=None, native_owner=None):
         with self.db() as db:
             metadata = json.dumps(message['reply_meta'], ensure_ascii=False) if 'reply_meta' in message else None
             db.execute('UPDATE messages SET content=?,status=?,reply_meta=? WHERE id=?',
                        (message['content'], message['status'], metadata, message['id']))
             db.execute('UPDATE conversations SET updated_at=? WHERE id=?', (time.time(), cid))
+            if native_history is not None:
+                task = runtime_tasks.row(db,cid,message['id'])
+                runtime_sessions.bind(db,task,dict(native_history,turn_id=message['id'],owner_id=native_owner),scope_fingerprint=self._native_scope(db,cid))
+            runtime_tasks.message_finished(db, cid, message)
+        if message.get('status') in ('complete', 'error', 'cancelled'):
+            for key in list(self.runtime_receipts):
+                if key[0] == message['id']:
+                    self.runtime_receipts.pop(key, None)

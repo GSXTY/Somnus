@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateDataQuality } from '../src/logic.mjs';
+import { validateDataQuality } from '../src/shared/logic.mjs';
 
 const quality = (expected, received, rate) => ({ expected_records: expected, received_records: received, lost_records: expected - received, loss_rate: rate, unit: 'records', basis: '缺失上报量 / 应上报量 × 100%；所选型号合成记录计数' });
 
@@ -25,7 +25,7 @@ test('unknown, observed zero loss, empty denominator and total loss remain disti
 
 test('donut contains received/lost records; unavailable ratios never become a zero-loss segment', async () => {
   globalThis.window = { matchMedia: () => ({ matches: true }) };
-  const { dataLossOption } = await import('../src/chartOptions.ts');
+  const { dataLossOption } = await import('../src/analysis/chartOptions.ts');
   const known = dataLossOption(quality(100, 98, 2));
   assert.deepEqual(known.series[0].data, [{ name: '已接收', value: 98 }, { name: '数据丢失', value: 2 }]);
   for (const input of [undefined, quality(0, 0, null)]) {

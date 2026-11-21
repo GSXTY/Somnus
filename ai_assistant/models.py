@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 
@@ -17,8 +19,18 @@ MAX_MODELS = 64
 MAX_SETTINGS_BYTES = 512 * 1024
 MODEL_ID = re.compile(r'm_[0-9a-f]{10,32}')
 GROUP_ID = re.compile(r'g_[0-9a-f]{32}')
-GROUP_FIELDS = {'name', 'base_url', 'api_key'}
-MODEL_FIELDS = {'model', 'vision_enabled', 'reasoning_efforts'}
+CHAT_API = 'openai-completions'
+RESPONSES_API = 'openai-responses'
+MESSAGES_API = 'anthropic-messages'
+BEDROCK_API = 'bedrock-converse-stream'
+PROVIDER_APIS = (CHAT_API, RESPONSES_API, MESSAGES_API, BEDROCK_API)
+BEDROCK_ENV = 'AWS_BEARER_TOKEN_BEDROCK'
+AUTH_ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}')
+AWS_REGION = re.compile(r'[a-z]{2}(?:-[a-z0-9]+){1,4}-[0-9]')
+GROUP_FIELDS = {'name', 'base_url', 'api_key', 'api', 'auth_env', 'retry_policy', 'region'}
+CAPABILITY_FIELDS = {'context_window', 'max_output_tokens', 'supports_developer_role',
+                     'supports_long_cache_retention', 'cache_retention'}
+MODEL_FIELDS = {'model', 'vision_enabled', 'reasoning_efforts'} | CAPABILITY_FIELDS
 FIELDS = GROUP_FIELDS | MODEL_FIELDS
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,14 +62,98 @@ def valid_url(base_url):
         return False
 
 
+def retry_policy(value):
+    if value is None:
+        return None
+    error = ModelError('invalid_retry_policy', '重试策略或退避参数无效。')
+    if not isinstance(value, dict) or value.get('mode') not in ('normal', 'always'):
+        raise error
+    allowed = {'mode', 'backoff'} | ({'maxRetries', 'retryableCodes'} if value['mode'] == 'normal' else set())
+    if set(value) - allowed:
+        raise error
+    if 'maxRetries' in value and (type(value['maxRetries']) is not int or not 0 <= value['maxRetries'] <= 9_007_199_254_740_991):
+        raise error
+    if 'retryableCodes' in value:
+        codes = value['retryableCodes']
+        if (not isinstance(codes, list) or not 1 <= len(codes) <= 64
+                or not all(isinstance(code, str) and 0 < len(code) <= 100 and code.isprintable() for code in codes)
+                or len(set(codes)) != len(codes)):
+            raise error
+    if 'backoff' in value:
+        backoff = value['backoff']
+        if (not isinstance(backoff, dict) or set(backoff) - {'initialDelayMs', 'maxDelayMs', 'jitterRatio'}):
+            raise error
+        initial, maximum, jitter = (backoff.get('initialDelayMs', 500), backoff.get('maxDelayMs', 10000),
+                                    backoff.get('jitterRatio', 0.1))
+        if (type(initial) not in (int, float) or type(maximum) not in (int, float) or type(jitter) not in (int, float)
+                or not 0 < initial <= maximum <= 2_147_483_647 or not 0 <= jitter <= 1):
+            raise error
+    return value
+
+
+def model_capabilities(fields):
+    result = {field: fields.get(field) for field in CAPABILITY_FIELDS}
+    context, output = result['context_window'], result['max_output_tokens']
+    default_context = 1_000_000 if fields.get('model') in ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro') else 64_000
+    if context is not None and (type(context) is not int or not 1024 <= context <= 10_000_000):
+        raise ModelError('invalid_model_capability', '上下文长度须为 1024 至 10000000 的整数。')
+    if output is not None and (type(output) is not int or not 1 <= output <= 1_000_000
+                               or output > (context if context is not None else default_context) - min(8192, (context if context is not None else default_context) // 2)):
+        raise ModelError('invalid_model_capability', '输出上限须为 1 至 1000000 的整数，并为输入至少预留上下文的一半（最多预留 8192）；自定义大窗口请先填写上下文长度。')
+    for field in ('supports_developer_role', 'supports_long_cache_retention'):
+        if result[field] is not None and type(result[field]) is not bool:
+            raise ModelError('invalid_model_capability', '模型兼容能力须为自动、支持或不支持。')
+    if result['cache_retention'] not in (None, 'none', 'short', 'long'):
+        raise ModelError('invalid_model_capability', '缓存保留策略无效。')
+    if result['cache_retention'] == 'long' and result['supports_long_cache_retention'] is not True:
+        raise ModelError('invalid_model_capability', '长期缓存须先明确声明服务支持长期缓存。')
+    if fields.get('api') in (MESSAGES_API, BEDROCK_API) and result['supports_developer_role'] is True:
+        raise ModelError('invalid_model_capability', '此原生接口不使用 developer 角色。')
+    if fields.get('api') == BEDROCK_API and result['supports_long_cache_retention'] is True:
+        raise ModelError('invalid_model_capability', '当前 Bedrock 适配器未提供长期缓存兼容开关。')
+    return result
+
+
+def auth_environment(entry, environment=None):
+    env = os.environ if environment is None else environment
+    name = entry.get('auth_env') or (BEDROCK_ENV if entry.get('api') == BEDROCK_API else '')
+    value = env.get(name, '').strip() if name else ''
+    return value if len(value) <= 4096 and value.isascii() and value.isprintable() else ''
+
+
+def credential(entry):
+    return entry['api_key'] or auth_environment(entry)
+
+
+def bedrock_region(entry):
+    region = entry.get('region') or os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION') or ''
+    return region if AWS_REGION.fullmatch(region) else ''
+
+
+def connection_configured(entry):
+    if entry.get('api') == BEDROCK_API:
+        # AWS SDK owns credential discovery, including profile, SSO and roles.
+        return bool(entry['model'] and bedrock_region(entry))
+    return bool(entry['model'] and credential(entry) and valid_url(entry['base_url']))
+
+
 def _validate(fields):
     name = _clean_text(fields.get('name'), 80)
     model = _clean_text(fields.get('model'), 160)
-    base_url = _clean_text(fields.get('base_url'), 2048).rstrip('/')
+    api = fields.get('api', CHAT_API)
+    if api not in PROVIDER_APIS:
+        raise ModelError('invalid_model_protocol', '不支持的模型接口协议。')
+    base_url = _clean_text(fields.get('base_url', ''), 2048, required=api != BEDROCK_API).rstrip('/')
+    auth_env = _clean_text(fields.get('auth_env', ''), 128, required=False)
+    if auth_env and not AUTH_ENV.fullmatch(auth_env):
+        raise ModelError('invalid_model_auth_env', '环境变量名称无效。')
+    region = _clean_text(fields.get('region', ''), 64, required=False)
+    if region and (api != BEDROCK_API or not AWS_REGION.fullmatch(region)):
+        raise ModelError('invalid_model_region', '请填写有效的 AWS Region。')
     api_key = _clean_text(fields.get('api_key', ''), 4096, required=False)
-    if not valid_url(base_url):
+    if (base_url or api != BEDROCK_API) and not valid_url(base_url):
         raise ModelError('invalid_model_url', '请填写不含凭据、查询参数或片段的 HTTP 或 HTTPS 接口地址。')
-    if not api_key.isascii():
+    if api_key and (not api_key.isascii() or not api_key.isprintable()):
         raise ModelError('invalid_model_key', 'API 密钥包含无效字符。')
     vision = fields.get('vision_enabled', False)
     efforts = fields.get('reasoning_efforts', [])
@@ -68,7 +164,8 @@ def _validate(fields):
             or len(set(efforts)) != len(efforts)):
         raise ModelError('invalid_reasoning_effort', '推理强度仅支持已配置的 low、medium 或 high。')
     return dict(name=name, base_url=base_url, api_key=api_key, model=model,
-                vision_enabled=vision, reasoning_efforts=efforts)
+                vision_enabled=vision, reasoning_efforts=efforts, api=api, auth_env=auth_env, region=region,
+                retry_policy=retry_policy(fields.get('retry_policy')), **model_capabilities(dict(fields, api=api)))
 
 
 class ModelStore:
@@ -106,7 +203,7 @@ class ModelStore:
                 created = entry.get('created_at', 0)
                 timestamp = created if type(created) in (float, int) and 0 <= created < 1e12 else 0
                 config = _validate(entry)
-                shared = tuple(config[field] for field in ('name', 'base_url', 'api_key'))
+                shared = tuple(config[field] for field in sorted(GROUP_FIELDS))
                 group_id = entry.get('group_id')
                 if group_id is None:
                     # Only group legacy models that already share the same credentials.
@@ -179,6 +276,8 @@ class ModelStore:
                       ON CONFLICT(singleton) DO UPDATE SET model_id=excluded.model_id''', (model_id,))
 
     def _write(self, data):
+        if len({entry['group_id'] for entry in data['providers'] if entry['api'] == BEDROCK_API}) > 1:
+            raise ModelError('bedrock_provider_limit', '当前可配置一个 Amazon Bedrock 连接。', 409)
         encoded = (json.dumps(data, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
         if len(encoded) > MAX_SETTINGS_BYTES:
             raise ModelError('model_store_limit', '本机模型配置超过大小限制。', 409)
@@ -209,9 +308,12 @@ class ModelStore:
     @staticmethod
     def _public(entry, *, builtin=False):
         result = {key: entry[key] for key in ('id', 'name', 'base_url', 'model', 'vision_enabled', 'reasoning_efforts')}
-        key = entry['api_key']
-        configured = bool(key and key.isascii() and all(ord(char) >= 32 for char in key)
-                          and entry['model'] and valid_url(entry['base_url']))
+        configured = connection_configured(entry)
+        if not builtin:
+            result.update({field: entry[field] for field in ('api', 'auth_env', 'region', 'retry_policy')})
+            result.update({field: entry.get(field) for field in CAPABILITY_FIELDS})
+            result['auth_env_present'] = bool(auth_environment(entry))
+            result['has_api_key'] = bool(entry['api_key'])
         if builtin and not valid_url(result['base_url']):
             result['base_url'] = ''
         return dict(result, builtin=builtin, configured=configured,
@@ -224,6 +326,12 @@ class ModelStore:
             data = self._load()
         items = [self._public(builtin, builtin=True), *(self._public(entry) for entry in data['providers'])]
         return dict(active=data['active'], providers=items)
+
+    def configured_snapshot(self):
+        with self.lock:
+            data = self._load()
+        active = data['active'] if data['active'] != BUILTIN else ''
+        return active, data['providers']
 
     def resolve(self, model_id, builtin):
         if model_id == BUILTIN:
@@ -245,7 +353,7 @@ class ModelStore:
                 raise ModelError('invalid_model', '请为服务商填写模型标识。')
         else:
             self._validate_fields(fields)
-        if model_id is None and group_id is None and not {'name', 'base_url', 'model'} <= set(fields):
+        if model_id is None and group_id is None and not {'name', 'model'} <= set(fields):
             raise ModelError('invalid_model', '请填写服务商名称、接口地址和模型标识。')
         with self.lock:
             data = self._load()
@@ -281,6 +389,86 @@ class ModelStore:
         if not rows:
             raise ModelError('provider_not_found', '服务商不存在，请重新选择。', 404)
         return rows
+
+    def _discovery_config(self, fields):
+        allowed = GROUP_FIELDS | {'group_id'}
+        if set(fields) - allowed:
+            raise ModelError('invalid_provider', '服务商配置字段无效。')
+        shared = dict(fields)
+        group_id = shared.pop('group_id', None)
+        if group_id is not None:
+            if shared:
+                raise ModelError('invalid_provider', '请使用已保存的供应商连接。')
+            shared = self._group(self._load(), group_id)[0]
+        return _validate(dict(shared, model='model-discovery'))
+
+    def discover(self, fields):
+        with self.lock:
+            config = self._discovery_config(fields)
+        if config['api'] == BEDROCK_API:
+            raise ModelError('model_discovery_unavailable', 'Bedrock 请手工添加可用的模型 ID。')
+        key = credential(config)
+        if not key:
+            raise ModelError('model_discovery_key_required', '请先填写或保存供应商的 API Key。')
+        messages = config['api'] == MESSAGES_API
+        base = config['base_url'].removesuffix('/chat/completions').removesuffix('/responses').removesuffix('/messages')
+        if messages and not base.endswith('/v1'):
+            base += '/v1'
+        headers = {'x-api-key': key, 'anthropic-version': '2023-06-01'} if messages else {'Authorization': 'Bearer ' + key}
+        request = Request(base + '/models', headers={'Accept': 'application/json', **headers})
+
+        class NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, request, fp, code, msg, headers, newurl):
+                return None
+
+        size_limit = 2 * 1024 * 1024
+        try:
+            with build_opener(NoRedirect()).open(request, timeout=10) as response:
+                raw = response.read(size_limit + 1)
+            if len(raw) > size_limit:
+                raise ValueError('model catalog too large')
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+                raise ValueError('unexpected model catalog')
+        except HTTPError as exc:
+            raise ModelError('model_discovery_failed',
+                             f'供应商模型列表接口返回 HTTP {exc.code}。请检查地址或手工添加模型。', 502) from None
+        except (URLError, OSError, ValueError, RecursionError):
+            raise ModelError('model_discovery_failed',
+                             '无法读取供应商模型列表。请检查连接或手工添加模型。', 502) from None
+        ids = {}
+        for item in payload['data']:
+            identifier = item.get('id') if isinstance(item, dict) else None
+            if isinstance(identifier, str) and 0 < len(identifier) <= 160 and identifier.isprintable():
+                identifier = identifier.strip()
+                if identifier:
+                    ids[identifier] = None
+            if len(ids) >= 2000:
+                break
+        return list(ids)
+
+    def add_discovered(self, fields):
+        fields = dict(fields)
+        identifiers = fields.pop('models', None)
+        if not isinstance(identifiers, list) or not 1 <= len(identifiers) <= MAX_MODELS:
+            raise ModelError('invalid_model', f'请选择 1 至 {MAX_MODELS} 个模型。')
+        identifiers = list(dict.fromkeys(_clean_text(model, 160) for model in identifiers))
+        with self.lock:
+            data = self._load()
+            config = self._discovery_config(fields)
+            group_id = fields.get('group_id') or ('g_' + uuid.uuid4().hex)
+            existing = {row['model']: row for row in data['providers'] if row['group_id'] == group_id}
+            missing = [model for model in identifiers if model not in existing]
+            if len(data['providers']) + len(missing) > MAX_MODELS:
+                raise ModelError('model_store_limit', f'最多可添加 {MAX_MODELS} 个本机模型。', 409)
+            for model in missing:
+                entry = dict(config, model=model, id='m_' + uuid.uuid4().hex,
+                             group_id=group_id, created_at=time.time())
+                data['providers'].append(entry)
+                existing[model] = entry
+            if missing:
+                self._write(data)
+            return [self._public(existing[model]) for model in identifiers]
 
     def update_group(self, group_id, fields):
         if not fields or set(fields) - GROUP_FIELDS:

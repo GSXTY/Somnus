@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-21",
+  "removed": [
+    {
+      "path": "__pycache__",
+      "files": 1,
+      "bytes": 1793,
+      "reason": "regenerable Python bytecode cache"
+    },
+    {
+      "path": "batch_analysis_trial/viewer.stderr.log",
+      "files": 1,
+      "bytes": 0,
+      "reason": "empty trial log"
+    },
+    {
+      "path": "batch_analysis_trial/viewer.stdout.log",
+      "files": 1,
+      "bytes": 0,
+      "reason": "empty trial log"
+    },
+    {
+      "path": ".github/workflows/electron.yml",
+      "reason": "obsolete packaging workflow replaced by source-only CI; no package built"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "reason": "obsolete packaging workflow replaced by source-only CI; no package built"
+    }
+  ],
+  "local_only_preserved": [
+    "app/",
+    "node_modules/",
+    "desktop/dsh_next/upstream/app.asar",
+    ".env",
+    "mcp.json",
+    "batch_analysis_trial/runs/",
+    "batch_analysis_trial/docker_runs/",
+    "batch_analysis_trial/local_output_check/",
+    "docs/images/",
+    "somnus-waveform-layout.png"
+  ],
+  "preserved_source": [
+    "legacy compatibility code still imported by runtime or tests",
+    "design prototypes and research documents",
+    "fonts, icons and third-party licenses"
+  ],
+  "git": "Independent .somnus-git; original read-only gitfile unchanged; normal-terminal repair documented in CONTRIBUTING.md",
+  "packaged": false
+}

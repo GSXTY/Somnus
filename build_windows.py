@@ -7,6 +7,7 @@ import shutil
 import hashlib
 import importlib.metadata
 from app_version import APP_VERSION
+from storage_paths import artifact_path, cache_path
 
 ROOT=Path(__file__).resolve().parent
 def main():
@@ -15,11 +16,11 @@ def main():
     if not (web/'index.html').is_file():
         raise SystemExit('Build the workbench first: cd page_design/frontend; pnpm install; pnpm build')
     env=os.environ.copy()
-    env['PYINSTALLER_CONFIG_DIR']=str(ROOT/'build'/'pyinstaller-cache')
-    if (ROOT/'.build-deps').exists():env['PYTHONPATH']=str(ROOT/'.build-deps')
+    env['PYINSTALLER_CONFIG_DIR']=str(artifact_path('build')/'pyinstaller-cache')
+    if (cache_path('build-deps')).exists():env['PYTHONPATH']=str(cache_path('build-deps'))
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--noconsole','--name','Somnus',
-             '--distpath',str(ROOT/'dist'),'--workpath',str(ROOT/'build'),
-             '--specpath',str(ROOT/'build'),'--exclude-module','matplotlib','--exclude-module','scipy',
+             '--distpath',str(artifact_path('dist')),'--workpath',str(artifact_path('build')),
+             '--specpath',str(artifact_path('build')),'--exclude-module','matplotlib','--exclude-module','scipy',
              '--exclude-module','IPython','--exclude-module','pytest','--exclude-module','torch',
              '--exclude-module','tkinter']
     try:
@@ -47,7 +48,7 @@ def main():
             if item.is_file() and '__pycache__' not in item.parts:
                 command+=['--add-data',f'{item}:plugins/{item.relative_to(plugin_root).parent.as_posix()}']
     subprocess.run(command+[str(ROOT/'launcher.py')],cwd=ROOT,env=env,check=True)
-    bundle=ROOT/'dist'/'Somnus'
+    bundle=artifact_path('dist')/'Somnus'
     shutil.copyfile(ROOT/'USER_GUIDE.md',bundle/'使用说明.txt')
     licenses=bundle/'THIRD_PARTY_LICENSES';licenses.mkdir(exist_ok=True)
     for package in ('react','react-dom','antd','@ant-design/icons','echarts','zrender'):
@@ -57,7 +58,7 @@ def main():
                 target=licenses/'frontend'/package
                 target.mkdir(parents=True,exist_ok=True)
                 shutil.copyfile(source/name,target/name)
-    distributions={d.metadata['Name'].lower():d for d in importlib.metadata.distributions(path=[str(ROOT/'.build-deps'),*sys.path]) if d.metadata.get('Name')}
+    distributions={d.metadata['Name'].lower():d for d in importlib.metadata.distributions(path=[str(cache_path('build-deps')),*sys.path]) if d.metadata.get('Name')}
     for name in ('numpy','pandas','python-dateutil','six','tzdata','pyinstaller'):
         distribution=distributions.get(name)
         if distribution is None:continue
@@ -73,8 +74,8 @@ def main():
     for name in ('LICENSE.txt','LICENSE'):
         source=Path(sys.base_prefix)/name
         if source.is_file():shutil.copyfile(source,licenses/('Python-'+name))
-    output=ROOT/'release';output.mkdir(exist_ok=True)
-    path=Path(shutil.make_archive(str(output/f'Somnus-{APP_VERSION}-windows-x64'),'zip',ROOT/'dist','Somnus'))
+    output=artifact_path('release');output.mkdir(parents=True,exist_ok=True)
+    path=Path(shutil.make_archive(str(output/f'Somnus-{APP_VERSION}-windows-x64'),'zip',artifact_path('dist'),'Somnus'))
     (output/(path.name+'.sha256')).write_text(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n',encoding='ascii')
     print(path)
 if __name__=='__main__':main()

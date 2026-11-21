@@ -13,7 +13,8 @@ const isOpenMa = args.includes('--openma');
 const isDsh = args.includes('--dsh');
 const usesBrowser = args.includes('--openma-browser');
 const legacyModels = args.includes('--legacy-models');
-const modernModels = args.includes('--modern-models');
+const dshAccount = args.includes('--dsh-account');
+const modernModels = args.includes('--modern-models') || dshAccount;
 const supportsReasoning = args.includes('--reasoning');
 let model = 'mock-default';
 let effort = 'low';
@@ -21,6 +22,7 @@ let browserAuthRequest;
 const models = [
   { modelId: 'mock-default', name: 'Mock Default' },
   { modelId: 'mock-selectable', name: 'Mock Selectable' },
+  ...(dshAccount ? [{ modelId: JSON.stringify(['deepseek-account', 'deepseek-flash']), name: 'Account Flash' }, { modelId: JSON.stringify(['deepseek-account', 'deepseek-pro']), name: 'Account Pro' }] : []),
 ];
 const configOptions = () => [{
   type: 'select',
@@ -119,7 +121,7 @@ input.on('line', line => {
     case 'session/set_config_option':
       assert.equal(modernModels, true);
       if (params.configId === 'backend-model') {
-        assert.equal(params.value, 'mock-selectable');
+        assert.ok(params.value === 'mock-selectable' || (dshAccount && models.some(m => m.modelId === params.value)));
         model = params.value;
         effort = '';
       } else {
@@ -139,6 +141,7 @@ input.on('line', line => {
       break;
     case 'session/prompt': {
       assert.equal(params.sessionId, 'local-test');
+      if (dshAccount) assert.equal(JSON.parse(model)[0], 'deepseek-account');
       assert.equal(params.prompt[0].type, 'text');
       activePrompt = id;
       const text = params.prompt[0].text;

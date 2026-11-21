@@ -1,3 +1,4 @@
+import { componentSourceUrl } from './source-paths.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -24,16 +25,17 @@ function harness(file, name, props, api = {}, projectBridge) {
   const antd = { Alert: 'Alert', Button: 'Button', Dropdown: 'Dropdown', Input: 'Input', Modal: 'Modal', Space: 'Space', Tag: 'Tag',
     message: { useMessage: () => [{ error() {} }, null] } };
   const imports = {
+    './uiPreferences':{useUiPreferences:()=>[{detail:'full',collapse:'never',collapsedReply:'full'},()=>{}]},
     react, antd, './assistantApi': api, '@ant-design/icons': new Proxy({}, { get: (_icons, name) => name }),
     './fileProposalDiff': { lineCounts: () => ({ added: 1, removed: 0 }) },
     './documentLibraryBridge': {}, './errors.mjs': { describeError: error => error.message },
     'react/jsx-runtime': { jsx, jsxs: jsx },
   };
-  const content = readFileSync(new URL('../src/' + file + '.tsx', import.meta.url), 'utf8');
+  const content = readFileSync(componentSourceUrl(file), 'utf8');
   const compiled = ts.transpileModule(content, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  vm.runInNewContext(compiled, { exports, window: { vvmanProjects: projectBridge }, require: id => imports[id] });
+  vm.runInNewContext(compiled, { exports, window: { vvmanProjects: projectBridge }, require: id => (imports[id] ?? (id.startsWith('.') ? Object.entries(imports).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === id.split('/').at(-1))?.[1] : undefined)) });
   return (type, match = () => true) => {
     cursor = 0;
     return nodes(exports[name](props)).find(node => node.type === type && match(node.props));

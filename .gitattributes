@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.ico -text
+*.icns -text
+*.otf -text
+*.woff2 -text

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseBlocks, parseInline } from '../src/markdown.mjs';
-import { highlightCode } from '../src/codeHighlight.mjs';
+import { parseBlocks, parseInline } from '../src/shared/markdown.mjs';
+import { highlightCode } from '../src/shared/codeHighlight.mjs';
 
 test('local code highlighting preserves exact text and separates strings from comments', () => {
   const code = 'const url = "https://example.com"; // note\nreturn 42;';

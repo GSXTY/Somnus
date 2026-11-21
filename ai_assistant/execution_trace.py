@@ -13,7 +13,7 @@ TOOL_KINDS = {
     'search': '搜索', 'execute': '执行命令', 'think': '分析', 'fetch': '获取内容',
     'switch_mode': '切换模式',
 }
-APPROVAL_KINDS = {'mcp': 'MCP 工具确认', 'edit': '文件编辑确认', 'test': '项目测试确认'}
+APPROVAL_KINDS = {'mcp': 'MCP 工具确认', 'edit': '文件编辑确认', 'test': '项目测试确认', 'powershell': 'PowerShell 操作确认', 'native_tool': '原生工具确认'}
 TOOL_FAILURES = {
     '参数错误': '工具参数无效。',
     '权限不足': '当前会话权限不足。',

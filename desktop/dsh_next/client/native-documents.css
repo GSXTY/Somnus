@@ -1,0 +1,58 @@
+.somnus-native-documents {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  padding-inline-start: max(24px, var(--dsh-frame-leading-clearance, 0px));
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+.somnus-native-documents h1 { margin: 0; font-size: 24px; font-weight: 600; }
+.somnus-document-browser { min-width: 0; padding: 18px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+.somnus-document-browser > header, .somnus-document-dialog > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.somnus-document-browser h2, .somnus-document-dialog h2 { margin: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.somnus-document-browser p { color: var(--dsw-alias-label-secondary); }
+.somnus-document-browser small { margin-left: 10px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.somnus-document-actions, .somnus-document-path, .somnus-document-dialog footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.somnus-document-path { margin: 14px 0; overflow-wrap: anywhere; }
+.somnus-document-path span { min-width: 0; }
+.somnus-native-documents button, .somnus-document-dialog button {
+  min-height: 30px; padding: 4px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px;
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.somnus-native-documents button:hover, .somnus-document-dialog button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.somnus-native-documents button:disabled, .somnus-document-dialog button:disabled { opacity: .5; cursor: default; }
+.somnus-native-documents :focus-visible, .somnus-document-dialog :focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.somnus-document-entries { list-style: none; margin: 0; padding: 0; }
+.somnus-document-entries li { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 0; }
+.somnus-document-entries li + li { border-top: 1px solid var(--dsw-alias-border-l1); }
+.somnus-native-documents .somnus-document-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; flex: 1; min-width: 0; text-align: start; border: 0; }
+.somnus-document-row > span { overflow-wrap: anywhere; }
+.somnus-document-row > span:last-child { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.somnus-document-error { color: var(--dsw-alias-state-error-primary) !important; overflow-wrap: anywhere; }
+.somnus-document-dialog {
+  box-sizing: border-box; width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: auto;
+  border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; padding: 20px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit;
+}
+.somnus-document-dialog::backdrop { background: var(--dsw-alias-modal-mask, rgb(0 0 0 / 40%)); }
+.somnus-document-dialog header { margin-bottom: 18px; }
+.somnus-document-dialog form, .somnus-document-dialog label { display: grid; gap: 10px; }
+.somnus-document-dialog input, .somnus-document-dialog textarea {
+  box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px;
+  background: var(--dsw-alias-bg-base); color: inherit; font: inherit;
+}
+.somnus-document-dialog textarea { resize: vertical; }
+.somnus-document-dialog footer { justify-content: flex-end; margin-top: 18px; }
+.somnus-document-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 13px; }
+.somnus-document-preview img { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; margin: auto; }
+.somnus-document-preview object { display: block; width: 100%; height: 60vh; }
+@media (width <= 480px) {
+  .somnus-native-documents { padding: 16px; }
+  .somnus-document-browser { padding: 12px; }
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { comparison, createLatestGate, criticalAlerts, filterUsers, formatNumber, knownMean, reportText, validateDashboard, scenarioDistribution, candidateAreas } from '../src/logic.mjs';
+import { comparison, createLatestGate, criticalAlerts, filterUsers, formatNumber, knownMean, reportText, validateDashboard, scenarioDistribution, candidateAreas } from '../src/shared/logic.mjs';
 
 test('unknown values stay unknown and observed zero is retained', () => {
   assert.equal(formatNumber(null), '—'); assert.equal(formatNumber(undefined), '—'); assert.equal(formatNumber(0), '0');

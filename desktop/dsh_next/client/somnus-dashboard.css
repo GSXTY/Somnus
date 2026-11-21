@@ -1,0 +1,43 @@
+.somnus-dash { display: grid; gap: 18px; min-width: 0; }
+.somnus-dash-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.somnus-dash-source { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.somnus-dash-source strong { color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 600; }
+.somnus-dash-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary); }
+.somnus-dash-dot.live { background: var(--dsw-alias-state-success-primary); }
+.somnus-dash-actions { display: flex; gap: 6px; }
+.somnus-dash-actions button {
+  appearance: none; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+  cursor: pointer; font: inherit; font-size: 12px; padding: 6px 11px;
+}
+.somnus-dash-actions button.active { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.somnus-dash-actions button:disabled { opacity: .6; cursor: default; }
+.somnus-dash-notice {
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; padding: 12px 14px;
+  background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.7;
+}
+.somnus-dash-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.somnus-dash-metric {
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 14px 16px;
+  background: var(--dsw-alias-bg-layer-1); min-width: 0;
+}
+.somnus-dash-metric h3 { margin: 0 0 8px; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
+.somnus-dash-metric strong { font-size: clamp(18px, 2vw, 24px); font-weight: 600; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
+.somnus-dash-trends { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.somnus-dash-trend {
+  border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 14px 16px;
+  background: var(--dsw-alias-bg-layer-1); min-width: 0;
+}
+@media (max-width: 1080px) {
+  .somnus-dash-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .somnus-dash-trends { grid-template-columns: minmax(0, 1fr); }
+}
+.somnus-dash-trend header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.somnus-dash-trend h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.somnus-dash-trend header span { font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.somnus-dash-chart svg { display: block; width: 100%; height: auto; }
+.somnus-dash-axis { stroke: var(--dsw-alias-border-l1); stroke-width: 1; }
+.somnus-dash-chart-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--dsw-alias-label-secondary); margin-top: 4px; }
+.somnus-dash-empty { color: var(--dsw-alias-label-secondary); font-size: 12px; margin: 0; }

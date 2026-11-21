@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import vm from 'node:vm';
-import * as widthPolicy from '../src/workspacePanelWidth.mjs';
+import * as widthPolicy from '../src/app/workspacePanelWidth.mjs';
 
 const ts = createRequire(import.meta.url)('typescript');
-const source = readFileSync(new URL('../src/ChatWorkspacePanel.tsx', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../src/chat/ChatWorkspacePanel.tsx', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -39,7 +39,7 @@ function harness() {
     react, 'react/jsx-runtime': { jsx, jsxs: jsx }, antd: { Button: 'Button', Input: { Search: 'Search' } },
     './workspacePanelWidth.mjs': widthPolicy, './WorkspaceTerminal': { WorkspaceTerminal: 'WorkspaceTerminal' },
   };
-  vm.runInNewContext(compiled, { exports, window, require: id => modules[id] ?? {},
+  vm.runInNewContext(compiled, { exports, window, require: id => (modules[id] ?? (id.startsWith('.') ? Object.entries(modules).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === id.split('/').at(-1))?.[1] : undefined)) ?? {},
     localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
     ResizeObserver: class { constructor(callback) { observer = callback; } observe() {} disconnect() {} },
   });

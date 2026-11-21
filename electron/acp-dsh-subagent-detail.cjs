@@ -183,7 +183,7 @@ function isToolEvent(event) {
 }
 
 async function findToolEvent(call, range, throughSeq, predicate, pages) {
-  const address = { kind: 'subagent', parentSessionId: range.parentId, childSessionId: range.sessionId, mode: range.mode };
+  const address = range.root === true ? { kind: 'session', sessionId: range.sessionId } : { kind: 'subagent', parentSessionId: range.parentId, childSessionId: range.sessionId, mode: range.mode };
   let beforeSeq;
   for (let index = 0; index < pages; index++) {
     const page = await call('events', { address, throughSeq, maxMessages: 30,

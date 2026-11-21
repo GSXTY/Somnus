@@ -1,3 +1,4 @@
+const { pluginContract, pluginContractView } = require('./runtime/plugin-contract.cjs');
 const { lstat, mkdir, realpath, readFile, writeFile, rename, unlink } = require('node:fs/promises');
 const { createHash, randomUUID } = require('node:crypto');
 const { isIP } = require('node:net');
@@ -606,6 +607,7 @@ class DshCommunityMarket {
         installed: Boolean(current && installedProfile.bundles.includes(item.name)),
         available: Boolean(installer && version),
         compatibility,
+        ...(current ? { contract: pluginContractView(current, this.market.appVersion) } : {}),
         versions: versions.slice(0, 30).map(entry => entry.version),
         ...(Number.isInteger(offered.publishTimestamp) ? { updatedAt: new Date(offered.publishTimestamp * 1_000).toISOString() } : {}),
         canUpdate: Boolean(installer && version && current && semver.gt(version.version, current.version)),
@@ -834,6 +836,7 @@ class DshCommunityMarket {
   }
 
   async validateBundle(metadata) {
+    pluginContract(metadata, this.market.appVersion);
     const appBoot = await this.market.runtimeFile('@deepseek-ai/dsh-app-boot', 'lib/index.js');
     if (!appBoot) throw new Error('DSH 运行时缺少插件验证组件。');
     const api = await import(pathToFileURL(appBoot).href);

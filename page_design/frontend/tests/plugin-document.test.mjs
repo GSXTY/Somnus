@@ -1,0 +1,6 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {safePluginDocument} from '../src/plugins/pluginDocument.mjs';
+test('plugin documents retain plain text without executing markup or commands',()=>{const document={version:1,title:'Sample',blocks:[{type:'text',text:'<script>never()</script>'},{type:'metrics',items:[{label:'Records',value:'3'}]}],actions:[{type:'insertDraft',label:'Use',text:'Read synthetic.txt'}]};assert.equal(safePluginDocument(document),document);});
+test('plugin documents reject executable types, unknown fields and oversized documents',()=>{assert.equal(safePluginDocument({version:1,blocks:[{type:'html',text:'<b>x</b>'}]}),null);assert.equal(safePluginDocument({version:1,blocks:[],onClick:'run()'}),null);assert.equal(safePluginDocument({version:1,blocks:[{type:'text',text:'x'.repeat(33000)}]}),null);});
+test('plugin actions cannot call arbitrary APIs, URLs or other plugin settings',()=>{for(const action of [{type:'fetch',label:'x',url:'https://example.com'},{type:'read-own-settings',label:'x',pluginId:'another'},{type:'open-own-page',label:'x',pageId:'x',script:'run()'}])assert.equal(safePluginDocument({version:1,blocks:[],actions:[action]}),null);});

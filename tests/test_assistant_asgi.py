@@ -10,6 +10,51 @@ from ai_assistant.asgi import create_router
 from ai_assistant.service import AssistantService, Config
 
 class AssistantASGITests(unittest.TestCase):
+    def test_session_management_keeps_archived_history_and_tracks_the_actual_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'assistant.sqlite3'
+            service = AssistantService(path, Config('http://127.0.0.1:1/v1', 'test-model', 'synthetic'))
+            project = service.create_workspace('测试项目')
+            first = service.create('外部会话', project['id'])['id']
+            second = service.create('更新的会话', project['id'])['id']
+            agent = 'a1a8fda3-6332-4734-9e9d-a21e3c243ca9'
+            turn = service.begin_external_turn(first, '合成问题', agent, 'Codex', 'test-external')
+            app = FastAPI()
+            app.state.assistant_service = service
+            app.include_router(create_router())
+            with TestClient(app) as client:
+                base = '/api/assistant'
+                conversation_url = f'{base}/conversations/{first}'
+                organize = conversation_url + '/organize'
+                self.assertEqual(client.post(organize, json={'archived': True}).status_code, 409)
+                sessions = client.get(base + '/session-index').json()['conversations']
+                current = next(row for row in sessions if row['id'] == first)
+                self.assertTrue(current['running'])
+                self.assertEqual(current['last_agent'], dict(name='Codex', id=agent, model='test-external', transport='acp'))
+                self.assertEqual(current['workspace_id'], project['id'])
+                service.finish_external_turn(first, turn['turn_id'], '合成回答', 'complete')
+                self.assertEqual(client.post(organize, json={'pinned': 1}).status_code, 400)
+                self.assertTrue(client.post(organize, json={'pinned': True}).json()['conversation']['pinned'])
+                listing = client.get(base + '/conversations', params={'workspace': project['id']}).json()['conversations']
+                self.assertEqual([row['id'] for row in listing], [first, second])
+                archived = client.post(organize, json={'archived': True}).json()['conversation']
+                self.assertTrue(archived['archived'])
+                self.assertFalse(archived['pinned'])
+                self.assertFalse(archived['running'])
+                listing = client.get(base + '/conversations', params={'workspace': project['id']}).json()['conversations']
+                self.assertEqual([row['id'] for row in listing], [second])
+                history = client.get(conversation_url).json()
+                self.assertEqual([message['content'] for message in history['messages']], ['合成问题', '合成回答'])
+                rejected = client.post(conversation_url + '/messages', json={'content': '归档期间禁止新一轮'})
+                self.assertEqual(rejected.status_code, 409)
+                self.assertEqual(rejected.json()['error']['code'], 'conversation_archived')
+                app.state.assistant_service = AssistantService(path, Config('http://127.0.0.1:1/v1', 'test-model', 'synthetic'))
+                sessions = client.get(base + '/session-index').json()['conversations']
+                self.assertTrue(next(row for row in sessions if row['id'] == first)['archived'])
+                self.assertFalse(client.post(organize, json={'archived': False}).json()['conversation']['archived'])
+                listing = client.get(base + '/conversations', params={'workspace': project['id']}).json()['conversations']
+                self.assertEqual({row['id'] for row in listing}, {first, second})
+
     def test_branch_copies_history_through_completed_reply_without_permissions_or_actions(self):
         with tempfile.TemporaryDirectory() as directory:
             app = FastAPI()

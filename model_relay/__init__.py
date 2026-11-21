@@ -1,1 +1,0 @@
-"""Standalone Somnus model relay."""

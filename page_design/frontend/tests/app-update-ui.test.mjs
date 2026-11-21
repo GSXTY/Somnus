@@ -5,7 +5,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const ts = createRequire(import.meta.url)('typescript');
-const compiled = ts.transpileModule(readFileSync(new URL('../src/AppUpdateSettings.tsx', import.meta.url), 'utf8'), {
+const compiled = ts.transpileModule(readFileSync(new URL('../src/configuration/AppUpdateSettings.tsx', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
@@ -37,7 +37,7 @@ function harness(bridge) {
     antd: { Alert: 'Alert', Button: 'Button', Progress: 'Progress' },
     './errors.mjs': { describeError: (error, fallback) => error.message || fallback },
   };
-  vm.runInNewContext(compiled, { exports, window: { somnusUpdater: bridge }, require: name => imports[name] });
+  vm.runInNewContext(compiled, { exports, window: { somnusUpdater: bridge }, require: name => (imports[name] ?? (name.startsWith('.') ? Object.entries(imports).find(([key]) => key.startsWith('.') && key.split('/').at(-1) === name.split('/').at(-1))?.[1] : undefined)) });
   function render() { index = 0; return exports.AppUpdateSettings(); }
   render();
   const cleanup = effects[0]?.();

@@ -9,7 +9,7 @@ assets = {
     'event_detection': ('index.html', 'viewer.js', 'annotation-model.js'),
     'page_design': (
         'dashboard.html', 'dashboard.js', 'dashboard.css', 'events.css',
-        'vendor/bootstrap.min.css', 'vendor/bootstrap.LICENSE', 'web/index.html',
+        'vendor/bootstrap.min.css', 'vendor/bootstrap.LICENSE', 'web/index.html', 'web/embed.html', 'web/build-manifest.json',
     ),
     'plugins/respiratory': ('plugin.json', 'tools.py'),
     'skills/project-handoff': ('SKILL.md',),

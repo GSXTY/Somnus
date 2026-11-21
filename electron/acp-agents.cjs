@@ -1,4 +1,5 @@
 const { randomBytes, randomUUID } = require('node:crypto');
+const { readinessStore } = require('./acp-agent-readiness.cjs');
 const { mkdir, mkdtemp, readFile, realpath, rename, rmdir, stat, unlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,15 +12,21 @@ const { SessionMcp, toolCatalog, catalogSignature } = require('./acp-mcp.cjs');
 const { DEFAULT_EXECUTION_SETTINGS } = require('./acp-execution-settings.cjs');
 const { AcpLive, permissionOptions, priorTranscript, APPROVAL_QUEUE_LIMIT } = require('./acp-live.cjs');
 const { AcpDeadline } = require('./acp-deadline.cjs');
+const { policy: taskPolicy } = require('./runtime/task-monitor.cjs');
+const { selectDshAccount } = require('./acp-dsh-account-route.cjs');
+const { groupHistory, rememberReply } = require('./acp-group-history.cjs');
 const { TEST_TOOL, DIFF_TOOL, POWERSHELL_TOOL } = require('./acp-project-workflow.cjs');
 const { DshRecommendation, RECOMMENDATIONS } = require('./acp-dsh-recommendations.cjs');
 const { AGENT_ID: COMPANY_AGENT_ID, companyProfile, removeCompanyProfile } = require('./acp-company.cjs');
 
-const STARTUP_TIMEOUT = 20_000;
+// Each group lane keeps its own runtime and MCP clients. Cold startup may include
+// model discovery; keep it separate from settings and task limits.
+const STARTUP_TIMEOUT = 60_000;
+const SETTINGS_TIMEOUT = 20_000;
 const BROWSER_LOGIN_TIMEOUT = 5 * 60_000;
-const IDLE_TIMEOUT = 10 * 60_000;
+const IDLE_TIMEOUT = 30 * 60_000;
 const MAX_REPLY = 1024 * 1024;
-const MAX_CONVERSATIONS = 8;
+const MAX_CONVERSATIONS = 32;
 const MAX_CONCURRENT_TURNS = 4;
 const DELEGATION_TIMEOUT = 55_000;
 const MAX_DELEGATION_REPLY = 12_000;
@@ -99,6 +106,7 @@ class AcpAgents {
   constructor(profileFile, version, resourcesPath = process.resourcesPath, openAuthUrl, projectClient, workflow, dshMarket,
     executionSettings) {
     this.file = profileFile;
+    this.readiness = readinessStore(profileFile);
     this.version = version;
     this.resourcesPath = resourcesPath;
     this.openAuthUrl = openAuthUrl;
@@ -112,7 +120,11 @@ class AcpAgents {
     this.turns = new Map();
     this.accountOperation = null;
     this.discoveries = new Map();
+    this.discoveryOperations = new Set();
     this.discoveryQueue = Promise.resolve();
+    this.warming = new Map();
+    this.warmRunning = new Set();
+    this.connectionRecords = new Map();
   }
 
   async readProfiles() {
@@ -131,6 +143,8 @@ class AcpAgents {
   list() {
     return this.queue.then(() => this.readProfiles());
   }
+
+  async readinessStates() { return this.readiness.list(await this.list()); }
 
   async listDelegationAgents() {
     const [profiles, codex, dsh] = await Promise.all([
@@ -190,6 +204,7 @@ class AcpAgents {
         throw new AcpError('请等当前请求完成后再移除代理。');
       }
       profiles.splice(index, 1);
+      this.readiness.remove(id);
       this.closeAgentSessions(id);
     });
   }
@@ -246,16 +261,17 @@ class AcpAgents {
         throw error;
       }
     }
-    const current = { agentId: profile.id, conversationId: owner.conversationId, cwd, sessionId: null, idle: null,
-      projectAccess, workspaceWrite, managedCodex: isManaged, managedDsh: isManagedDsh,
+    const current = { agentId: profile.id, conversationId: owner.conversationId, turnKey: owner.turnKey,
+      cwd, sessionId: null, idle: null, groupMember: owner.groupMember,
+      projectAccess, workspaceWrite, managedCodex: isManaged, managedDsh: isManagedDsh, dshAccount: isManagedDsh && !isCompany,
       dshRecommendations: (company?.bundles ?? dshProfile?.bundles)?.includes(RECOMMENDATIONS) === true };
     current.connection = new AcpStdio(profile.executable, profile.args, cwd, params => this.update(current, params), () => {
       current.mcp?.close();
       if (this.active === current) this.active = null;
-      if (this.conversations.get(current.conversationId) === current) {
-        this.conversations.delete(current.conversationId);
-      }
+      const key = current.turnKey ?? current.conversationId;
+      if (this.conversations.get(key) === current) this.conversations.delete(key);
       clearTimeout(current.idle);
+      if (!this.conversations.has(key) || this.conversations.get(key) === current) this.recordConnection(current, 'disconnected');
     }, {
       codexHome, codeBuddyHome,
       dshHome: company?.home ?? (isManagedDsh ? this.dshMarket.home : undefined),
@@ -327,7 +343,7 @@ class AcpAgents {
         if (FILE_TOOLS.has(params.name)) return turn.project.mcpFile(params.name, params.arguments, signal);
         if (DEVELOPMENT_TOOLS.has(params.name)) return this.workflow.tool(turn, this.projectClient, params, signal);
         return this.projectClient.tool(turn, params, signal);
-      }, openingTurn.signal);
+      });
       current.mcp = mcp;
       await mcp.listen();
       // Codex can prefer a same-named server from its own config. Scope the
@@ -343,17 +359,28 @@ class AcpAgents {
     current.sessionId = reply.sessionId;
     current.modelSelection = sessionModels(reply);
     updateSessionConfig(current, reply.configOptions);
+    if (current.dshAccount) await selectDshAccount(current, SETTINGS_TIMEOUT);
+  }
+
+  async accountReadiness(current, connection) {
+    if (connection.accountCheck !== 'unverified' || !current.dshAccount || !this.dshMarket?.accountStatus) {
+      return connection.accountCheck;
+    }
+    const account = await this.dshMarket.accountStatus(() => {});
+    return account.state === 'signed-in' ? 'ready' : 'unverified';
   }
 
   async checkAccount(id, authenticate, expectedLaunch, discovery) {
-    if (this.closed || this.turns.size || this.accountOperation || this.changingDshPlugins) {
+    if (this.closed || (!discovery && (this.turns.size || this.discoveryOperations.size)) ||
+        this.accountOperation || this.changingDshPlugins) {
       throw new AcpError('已有外部 Agent 请求正在运行。');
     }
     const operation = { cancelled: false, interactive: Boolean(authenticate) };
-    this.accountOperation = operation;
-    let current;
+    if (discovery) this.discoveryOperations.add(operation);
+    else this.accountOperation = operation;
+    let current, checkedProfile;
     try {
-      const profile = await this.profile(id);
+      const profile = checkedProfile = await this.profile(id);
       if (expectedLaunch && !matchesLaunch(profile, expectedLaunch)) {
         throw new AcpError('Codex 启动配置已变更，请重新连接。');
       }
@@ -362,24 +389,32 @@ class AcpAgents {
       if (operation.cancelled) throw new AcpError('已取消外部 Agent 登录或检查。');
       if (discovery) {
         await this.startSession(current);
-        await setSessionModel(current, discovery.modelId, STARTUP_TIMEOUT);
+        if (current.dshAccount) await selectDshAccount(current, SETTINGS_TIMEOUT, discovery.modelId);
+        else await setSessionModel(current, discovery.modelId, SETTINGS_TIMEOUT);
         const { modelId, models } = current.modelSelection;
+        this.readiness.set(profile, await this.accountReadiness(current, connection), models);
         return { agentId: id, modelId, models, ...reasoningCatalog(current) };
       }
       if (authenticate) await authenticate(current, connection.info);
       if (operation.cancelled) throw new AcpError('已取消外部 Agent 登录或检查。');
       try {
         await this.startSession(current);
-        return { ...connection.info, authentication: connection.accountCheck };
+        const authentication = await this.accountReadiness(current, connection);
+        this.readiness.set(profile, authentication, current.modelSelection?.models);
+        return { ...connection.info, authentication };
       } catch (error) {
         if (error.code !== -32000 || operation.cancelled) throw error;
+        this.readiness.set(profile, 'required');
         return { ...connection.info, authentication: 'required' };
       }
     } catch (error) {
+      if (checkedProfile) this.readiness.set(checkedProfile, 'error');
+      else this.readiness.remove(id);
       if (operation.cancelled) throw new AcpError('已取消外部 Agent 登录或检查。');
       throw error;
     } finally {
       current?.connection.stop();
+      this.discoveryOperations.delete(operation);
       if (this.accountOperation === operation) this.accountOperation = null;
     }
   }
@@ -428,8 +463,19 @@ class AcpAgents {
   }
 
   activeTurn(current) {
-    const turn = this.turns.get(current.conversationId);
+    const turn = this.turns.get(current.turnKey ?? current.conversationId);
     return turn?.current === current ? turn : undefined;
+  }
+
+  conversationTurns(conversationId) {
+    return [...this.turns.values()].filter(turn => turn.conversationId === conversationId);
+  }
+
+  findConversationTurn(conversationId, turnId) {
+    if (!validId(conversationId)) return undefined;
+    if (turnId === undefined) return this.turns.get(conversationId);
+    if (!validId(turnId)) return undefined;
+    return this.conversationTurns(conversationId).find(turn => turn.turnId === turnId);
   }
 
   update(current, params) {
@@ -569,8 +615,8 @@ class AcpAgents {
     }
   }
 
-  respondPermission(conversationId, requestId, optionId) {
-    const turn = this.turns.get(conversationId);
+  respondPermission(conversationId, requestId, optionId, turnId) {
+    const turn = this.findConversationTurn(conversationId, turnId);
     if (!turn?.promptActive || !turn.live) {
       throw new AcpError('这个 Agent 授权请求已结束。');
     }
@@ -586,7 +632,7 @@ class AcpAgents {
       throw new AcpError('委派请求无效。');
     }
     if (process.platform !== 'win32' || this.closed || this.accountOperation || this.changingDshPlugins ||
-        this.turns.has(undefined) || this.turns.has(conversationId) || this.turns.size >= MAX_CONCURRENT_TURNS) {
+        this.turns.has(undefined) || this.conversationTurns(conversationId).length || this.turns.size >= MAX_CONCURRENT_TURNS) {
       throw new AcpError('当前无法启动子 Agent。');
     }
     const abort = new AbortController();
@@ -649,7 +695,10 @@ class AcpAgents {
   }
 
   promptConversation(input, onUpdate) {
-    const { agentId, conversationId, modelId, reasoningEffort, text, turnId } = input || {};
+    const { agentId, conversationId, modelId, reasoningEffort, text, turnId, groupMember = false } = input || {};
+    if (typeof groupMember !== 'boolean' || (groupMember && (!turnId || agentId === COMPANY_AGENT_ID || !this.projectClient))) {
+      throw new AcpError('群聊任务需要已授权的外部 Agent。');
+    }
     if (!validId(agentId) || !validId(conversationId) || (modelId != null && !validId(modelId)) ||
         (turnId != null && !validId(turnId))) {
       throw new AcpError('无效的外部 Agent 会话或模型。');
@@ -659,10 +708,96 @@ class AcpAgents {
     if (agentId === COMPANY_AGENT_ID && (!turnId || modelId != null)) {
       throw new AcpError('公司 Agent 使用管理员配置的模型。');
     }
-    return this.runPrompt(agentId, text, onUpdate, conversationId, modelId, turnId, reasoningEffort);
+    return this.runPrompt(agentId, text, onUpdate, conversationId, modelId, turnId, reasoningEffort, groupMember);
+  }
+
+  recordConnection(current, state, error) {
+    if (!current?.conversationId || !current.agentId || current.agentId === COMPANY_AGENT_ID) return;
+    const key = current.conversationId + '\0' + current.agentId;
+    this.connectionRecords.delete(key);
+    this.connectionRecords.set(key, { conversationId: current.conversationId, agentId: current.agentId,
+      state, updatedAt: new Date().toISOString(), ...(error ? { error } : {}) });
+    while (this.connectionRecords.size > 128) this.connectionRecords.delete(this.connectionRecords.keys().next().value);
+  }
+
+  armIdle(current) {
+    clearTimeout(current.idle);
+    current.idle = setTimeout(() => current.connection.stop(), IDLE_TIMEOUT);
+    current.idle.unref();
+  }
+
+  connectionStates(input) {
+    const conversationId = input?.conversationId;
+    if (!validId(conversationId)) throw new AcpError('无效的会话。');
+    const records = new Map([...this.connectionRecords.values()].filter(row => row.conversationId === conversationId)
+      .map(row => [row.agentId, { ...row }]));
+    for (const turn of this.conversationTurns(conversationId)) {
+      if (turn.agentId === COMPANY_AGENT_ID) continue;
+      const permission = turn.live?.permission || turn.wirePermissions?.size;
+      records.set(turn.agentId, { conversationId, agentId: turn.agentId,
+        state: permission ? 'approval' : turn.promptActive ? 'running' : 'connecting', updatedAt: new Date().toISOString() });
+    }
+    return [...records.values()];
+  }
+
+  async warmConversation(input) {
+    const { conversationId, agentIds } = input || {};
+    if (!validId(conversationId) || !Array.isArray(agentIds) || agentIds.length > 16 ||
+        agentIds.some(id => !validId(id) || id === COMPANY_AGENT_ID)) throw new AcpError('无效的会话成员。');
+    if (this.closed || this.accountOperation || this.changingDshPlugins) throw new AcpError('请稍后再连接 Agent。');
+    this.warmOwners ??= new Map();
+    await Promise.all([...new Set(agentIds)].map(async agentId => {
+      const turnKey = conversationId + '\0' + agentId;
+      const existing = this.conversations.get(turnKey);
+      if (this.turns.has(turnKey) || (existing && !existing.connection.failure)) return;
+      if (this.warming.has(turnKey)) return this.warming.get(turnKey);
+      const owner = { agentId, conversationId, turnKey, groupMember: true, cancelled: false };
+      this.warmOwners.set(turnKey, owner);
+      this.recordConnection(owner, 'connecting');
+      const operation = (async () => {
+        let releaseSlot, slot;
+        try {
+          while (this.warmRunning.size >= MAX_CONCURRENT_TURNS) await Promise.race(this.warmRunning);
+          if (owner.cancelled || this.closed) return;
+          slot = new Promise(resolve => { releaseSlot = resolve; });
+          this.warmRunning.add(slot);
+          const profile = await this.profile(agentId);
+          if (owner.cancelled) return;
+          const { current } = await this.connect(profile, owner);
+          if (owner.cancelled || this.closed) { current.connection.stop(); return; }
+          this.keepSession(turnKey, current);
+          this.recordConnection(current, 'ready');
+          this.armIdle(current);
+        } catch (error) {
+          owner.current?.connection.stop();
+          if (!owner.cancelled) this.recordConnection(owner, 'error', error instanceof AcpError ? error.message : '无法连接外部 Agent，请检查运行时和登录状态。');
+        } finally {
+          if (slot) { this.warmRunning.delete(slot); releaseSlot(); }
+          this.warming.delete(turnKey);
+          this.warmOwners.delete(turnKey);
+        }
+      })();
+      this.warming.set(turnKey, operation);
+      return operation;
+    }));
+    return this.connectionStates({ conversationId });
+  }
+
+  releaseConversationAgent(input) {
+    const { conversationId, agentId } = input || {};
+    if (!validId(conversationId) || !validId(agentId) || agentId === COMPANY_AGENT_ID) throw new AcpError('无效的会话成员。');
+    const key = conversationId + '\0' + agentId;
+    const owner = this.warmOwners?.get(key);
+    if (owner) { owner.cancelled = true; owner.current?.connection.stop(); }
+    this.cancelTurn(key);
+    this.conversations.get(key)?.connection.stop();
+    this.connectionRecords.delete(key);
   }
 
   closeAgentSessions(agentId) {
+    for (const owner of this.warmOwners?.values() || []) {
+      if (owner.agentId === agentId) { owner.cancelled = true; owner.current?.connection.stop(); }
+    }
     if (this.active?.agentId === agentId) this.active.connection.stop();
     for (const session of this.conversations.values()) {
       if (session.agentId === agentId) session.connection.stop();
@@ -699,13 +834,13 @@ class AcpAgents {
     }
   }
 
-  keepSession(conversationId, current) {
-    if (!conversationId) {
+  keepSession(key, current) {
+    if (!key) {
       this.active = current;
       return;
     }
-    this.conversations.delete(conversationId);
-    this.conversations.set(conversationId, current);
+    this.conversations.delete(key);
+    this.conversations.set(key, current);
     if (this.conversations.size <= MAX_CONVERSATIONS) return;
     for (const [id, session] of this.conversations) {
       if (this.turns.has(id)) continue;
@@ -714,7 +849,7 @@ class AcpAgents {
     }
   }
 
-  async runPrompt(id, text, onUpdate, conversationId, modelId, turnId, reasoningEffort) {
+  async runPrompt(id, text, onUpdate, conversationId, modelId, turnId, reasoningEffort, groupMember = false, reconnectAttempt = 0) {
     if (id === COMPANY_AGENT_ID && (!conversationId || !turnId)) throw new AcpError('公司 Agent 仅用于已授权的会话。');
     if (!turnId && (typeof text !== 'string' || !text.trim() || text.length > 16_000)) {
       throw new AcpError('请输入 1 至 16000 字的消息。');
@@ -723,11 +858,19 @@ class AcpAgents {
         (!conversationId && this.turns.size)) {
       throw new AcpError('已有外部 Agent 请求正在运行。');
     }
-    if (this.turns.has(conversationId)) throw new AcpError('此聊天已有外部 Agent 请求在运行。');
-    if (this.turns.size >= MAX_CONCURRENT_TURNS) throw new AcpError('最多同时运行 4 条外部 Agent 聊天。');
+    // IDs sent over IPC cannot contain NUL, so a group lane cannot collide with a legacy conversation key.
+    const turnKey = groupMember ? conversationId + '\0' + id : conversationId;
+    const concurrent = this.conversationTurns(conversationId);
+    if (concurrent.some(turn => !groupMember || !turn.groupMember || turn.agentId === id || turn.turnId === turnId)) {
+      throw new AcpError('此聊天已有冲突的外部 Agent 任务。');
+    }
+    if (this.turns.size >= MAX_CONCURRENT_TURNS) throw new AcpError('最多同时运行 4 条外部 Agent 任务。');
     const abort = new AbortController();
-    const turn = { agentId: id, conversationId, turnId, text: '', onUpdate, cancelled: false, current: null, abort, signal: abort.signal };
+    const turn = { agentId: id, conversationId, turnId, turnKey, groupMember, text: '',
+      onUpdate: groupMember ? update => onUpdate({ ...update, turnId }) : onUpdate,
+      cancelled: false, current: null, abort, signal: abort.signal };
     turn.executionSettings = this.executionSettings?.get() ?? DEFAULT_EXECUTION_SETTINGS;
+    turn.taskPolicy = taskPolicy(this.dshMarket?.runtimePolicy?.get?.()).tasks;
     if (conversationId && turnId) turn.live = new AcpLive(turn, turn.executionSettings.loop.maxCalls);
     let promptUsage;
     const resultWith = (stopReason, model = { modelId: null, modelName: null }) => ({
@@ -737,12 +880,18 @@ class AcpAgents {
       ...(turn.project?.proposals.length ? { projectProposals: turn.project.proposals } : {}),
       ...(stopReason === 'end_turn' && turn.recommendation?.card ? { recommendations: [turn.recommendation.card] } : {}),
     });
-    let current = conversationId ? this.conversations.get(conversationId) : this.active;
+    let current = conversationId ? this.conversations.get(turnKey) : this.active;
     turn.current = current || null;
-    this.turns.set(conversationId, turn);
+    this.turns.set(turnKey, turn);
+    if (groupMember && this.warming.has(turnKey)) {
+      await this.warming.get(turnKey);
+      current = this.conversations.get(turnKey);
+      turn.current = current || null;
+    }
     clearTimeout(current?.idle);
     let ready = Boolean(current);
     let sent = false;
+    let retryConnection = false;
     try {
       turn.live?.setStage('preparing');
       if (turnId) {
@@ -764,41 +913,44 @@ class AcpAgents {
       // latest transcript. A fresh session receives the bounded persisted history.
       if (current && (current.connection.failure || current.projectAccess !== projectAccess ||
           current.workspaceWrite !== (projectAccess && mayPropose(turn.project.prepared)) ||
-          current.toolSignature !== toolSignature ||
-          (prepared?.history_predecessor !== undefined && prepared.history_predecessor !== current.lastCompletedTurnId))) {
+          (current.sessionId && current.toolSignature !== toolSignature) ||
+          (!groupMember && prepared?.history_predecessor !== undefined && prepared.history_predecessor !== current.lastCompletedTurnId))) {
         current.connection.stop();
         current = null;
         turn.current = null;
         ready = false;
       }
-      if (!current || current.agentId !== id) {
+      if (!current || current.agentId !== id || !current.sessionId) {
         turn.live?.setStage('connecting');
-        current?.connection.stop();
-        current = null;
-        turn.current = null;
+        if (current?.agentId !== id) { current?.connection.stop(); current = null; }
+        turn.current = current;
         ready = false;
-        const profile = await this.profile(id);
-        if (turn.cancelled) return resultWith('cancelled');
-        const connected = await this.connect(profile, turn);
-        current = connected.current;
+        if (!current) {
+          const profile = await this.profile(id);
+          if (turn.cancelled) return resultWith('cancelled');
+          const connected = await this.connect(profile, turn);
+          current = connected.current;
+        }
         if (turn.cancelled) return resultWith('cancelled');
         await this.startSession(current, turn);
         if (turn.cancelled) return resultWith('cancelled');
         current.toolSignature = toolSignature;
       }
-      this.keepSession(conversationId, current);
+      this.keepSession(turnKey, current);
       ready = true;
       turn.settingConfig = Boolean(modelId && modelId !== current.modelSelection.modelId) ||
         (reasoningEffort != null && reasoningEffort !== current.reasoningSelection?.value);
       try {
-        await setSessionModel(current, modelId, STARTUP_TIMEOUT);
-        if (!turn.cancelled && reasoningEffort != null) await setSessionReasoning(current, reasoningEffort, STARTUP_TIMEOUT);
+        if (current.dshAccount) await selectDshAccount(current, SETTINGS_TIMEOUT, modelId);
+        else await setSessionModel(current, modelId, SETTINGS_TIMEOUT);
+        if (!turn.cancelled && reasoningEffort != null) await setSessionReasoning(current, reasoningEffort, SETTINGS_TIMEOUT);
       } finally {
         turn.settingConfig = false;
       }
       if (turn.cancelled) return resultWith('cancelled');
       const prompt = turn.project ? promptBlocks(turn.project.prepared, current.promptCapabilities) : [{ type: 'text', text }];
       if (turn.project) prompt[0].text += await turn.project.stage(current.cwd);
+      if (groupMember && current.hasPrompted) prompt[0].text += '\n\n本轮项目视图和工具授权已刷新，上一轮临时文件路径已失效。以本轮授权上下文和工具返回为准。';
       if (turn.tools.length) prompt[0].text += `\n\n本轮获授权的 Somnus 工具由 ${current.mcpName} MCP 提供。需要数据或分析时，请实际调用相应工具。`;
       if (turn.live) prompt[0].text += EXTERNAL_WORKSPACE_POLICY;
       if (turn.tools.some(tool => tool.name === TEST_TOOL)) {
@@ -823,13 +975,14 @@ class AcpAgents {
       if (turn.tools.some(tool => tool.name === CREATE_FILE)) {
         prompt[0].text += `\n\n新建真实项目文件时，使用 ${current.mcpName} 的 propose_project_file_create。选择已授权的来源、其现有目录下的相对路径和完整文本，勿在临时目录创建交付文件。工具返回 pending 时，请说明新建候选已提交，等待用户在 Somnus 审批，文件尚未写入。请勿提供临时路径作为成品链接。`;
       }
-      if (!current.hasPrompted) {
+      if (groupMember || !current.hasPrompted) {
         const prepared = turn.project?.prepared;
-        const history = priorTranscript(prepared?.history, prepared?.history_summary);
+        const history = groupMember ? groupHistory(current, prepared) : priorTranscript(prepared?.history, prepared?.history_summary);
         if (history) prompt[0].text = history + '\n\n本轮请求及获授权上下文：\n' + prompt[0].text;
       }
       if (turn.cancelled) return resultWith('cancelled');
       const model = modelSummary(current);
+      this.recordConnection(current, 'running');
       sent = true;
       if (conversationId && current.dshRecommendations) turn.recommendation = new DshRecommendation();
       turn.promptActive = true;
@@ -837,10 +990,10 @@ class AcpAgents {
       turn.toolsReady = true;
       turn.deadline = new AcpDeadline(reason => {
         turn.live?.close();
-        current.connection.stop(new AcpError(reason === 'hard'
-          ? '外部 Agent 已达到本轮最长处理时间。'
-          : '外部 Agent 长时间没有有效进度，已结束本轮。'));
-      });
+        current.connection.stop(new AcpError('外部 Agent 已达到你设置的本轮最长处理时间；不会自动重新执行。'));
+      }, { hardMs: turn.taskPolicy.maxDurationMinutes * 60_000,
+        idleMs: turn.taskPolicy.idleWarningSeconds * 1000,
+        onIdle: diagnostic => turn.onUpdate({ agentId: turn.agentId, conversationId: turn.conversationId, text: '', acpDiagnostic: diagnostic }) });
       turn.live?.setStage('working');
       const response = await current.connection.request('session/prompt', {
         sessionId: current.sessionId,
@@ -848,6 +1001,7 @@ class AcpAgents {
       });
       turn.deadline.close();
       current.hasPrompted = true;
+      if (groupMember && response?.stopReason === 'end_turn') rememberReply(current, turnId);
       turn.promptActive = false;
       turn.live?.close();
       turn.projectRequestsReady = false;
@@ -862,9 +1016,12 @@ class AcpAgents {
       }
       return resultWith(turn.cancelled ? 'cancelled' : response.stopReason.slice(0, 100), model);
     } catch (error) {
-      if (!ready || sent) current?.connection.stop();
+      const broken = current || turn.current;
+      const transportFailed = !sent && broken?.connection.failure === error;
+      if (!ready || sent) broken?.connection.stop();
       if (turn.cancelled) return resultWith('cancelled');
-      throw error;
+      if (groupMember && transportFailed && reconnectAttempt < 1) retryConnection = true;
+      else throw error;
     } finally {
       clearTimeout(turn.cancelTimer);
       turn.deadline?.close();
@@ -877,24 +1034,26 @@ class AcpAgents {
       if (current) {
         if (id === COMPANY_AGENT_ID || current.refreshAccountAfterTurn) current.connection.stop();
         else if (ready && !current.connection.failure) {
-          current.idle = setTimeout(() => current.connection.stop(), IDLE_TIMEOUT);
-          current.idle.unref();
+          this.recordConnection(current, 'ready');
+          this.armIdle(current);
         } else if (!ready) current.connection.stop();
       }
-      if (this.turns.get(conversationId) === turn) this.turns.delete(conversationId);
+      if (this.turns.get(turnKey) === turn) this.turns.delete(turnKey);
     }
+    if (retryConnection) return this.runPrompt(id, text, onUpdate, conversationId, modelId, turnId, reasoningEffort, groupMember, reconnectAttempt + 1);
   }
 
   cancel() {
     this.cancelTurn();
   }
 
-  cancelConversation(conversationId) {
-    if (validId(conversationId)) this.cancelTurn(conversationId);
+  cancelConversation(conversationId, turnId) {
+    const turn = this.findConversationTurn(conversationId, turnId);
+    if (turn) this.cancelTurn(turn.turnKey ?? conversationId);
   }
 
-  cancelTurn(conversationId) {
-    const turn = this.turns.get(conversationId);
+  cancelTurn(key) {
+    const turn = this.turns.get(key);
     if (!turn || turn.cancelled) return;
     turn.cancelled = true;
     turn.abort.abort();
@@ -905,15 +1064,20 @@ class AcpAgents {
     }
     active.connection.send({ method: 'session/cancel', params: { sessionId: active.sessionId } });
     turn.cancelTimer = setTimeout(() => {
-      if (this.turns.get(conversationId) === turn) active.connection.stop();
+      if (this.turns.get(key) === turn) active.connection.stop();
     }, 2500);
     turn.cancelTimer.unref();
   }
 
   resetConversation(conversationId) {
     if (!validId(conversationId)) return;
-    this.cancelConversation(conversationId);
-    this.conversations.get(conversationId)?.connection.stop();
+    for (const owner of this.warmOwners?.values() || []) {
+      if (owner.conversationId === conversationId) { owner.cancelled = true; owner.current?.connection.stop(); }
+    }
+    for (const turn of this.conversationTurns(conversationId)) this.cancelTurn(turn.turnKey ?? conversationId);
+    for (const session of this.conversations.values()) {
+      if (session.conversationId === conversationId) session.connection.stop();
+    }
   }
 
   close() {
@@ -932,8 +1096,13 @@ class AcpAgents {
       this.accountOperation.cancelled = true;
       this.accountOperation.current?.connection.stop();
     }
+    for (const operation of this.discoveryOperations) {
+      operation.cancelled = true;
+      operation.current?.connection.stop();
+    }
     this.active?.connection.stop();
     for (const session of this.conversations.values()) session.connection.stop();
+    for (const operation of this.warmOwners?.values() || []) { operation.cancelled = true; operation.current?.connection.stop(); }
   }
 }
 

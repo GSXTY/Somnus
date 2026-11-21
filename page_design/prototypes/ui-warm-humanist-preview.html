@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>品牌绿对齐版 · 右半边原型 · SomnusNext</title>
+<style>
+  :root{
+    /* 与左栏同源的冷调薄荷底 + 品牌 teal */
+    --bg:#f4f8f6; --paper:#fbfdfc; --paper-2:#eef5f1; --paper-3:#e7f0eb;
+    --line:#d7e6df; --line-soft:#e6f0eb;
+    --ink:#202a28; --muted:#526762; --faint:#8aa096;
+    --sage:#176b60; --sage-deep:#11564c; --sage-soft:#e4f1ec;
+    --clay:#c0563f; --clay-soft:#fbeee9; --sand:#9fc4b6; --dusty:#7fa8b8;
+    --up:#00866d; --down:#c0563f;
+    --shadow:0 1px 2px rgba(23,60,50,.05),0 10px 28px rgba(23,60,50,.07);
+    --shadow-hover:0 2px 4px rgba(23,60,50,.07),0 16px 36px rgba(23,60,50,.11);
+    --r-card:18px; --r-ctrl:12px;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{font:14px/1.6 "PingFang SC","Microsoft YaHei UI","Segoe UI","Microsoft YaHei",-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
+  .shell{display:grid;grid-template-columns:272px minmax(0,1fr);min-height:100vh}
+
+  /* ================= 侧栏：保持现状复刻 ================= */
+  .side{background:#ecf1ee;border-inline-end:1px solid #dde7e2;display:flex;flex-direction:column;padding:16px 12px;gap:4px}
+  .brand{display:flex;align-items:center;gap:10px;padding:2px 8px 14px}
+  .brand-mark{width:30px;height:30px;border-radius:10px;background:linear-gradient(135deg,#176b60,#2f9e86);color:#fff;display:grid;place-items:center;font-weight:800;font-size:15px}
+  .brand b{font-size:16px;color:#1c3b33}
+  .new-chat{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;border:1px solid #d8e4dd;background:#fff;border-radius:12px;padding:10px;font:inherit;color:var(--ink);cursor:pointer;margin:0 2px 10px}
+  .new-chat:hover{background:#e3ece8}
+  .new-chat svg{width:15px;height:15px}
+  .nav{display:grid;gap:2px}
+  .nav button{display:flex;align-items:center;gap:10px;border:0;background:transparent;border-radius:10px;padding:9px 10px;font:inherit;color:#3d524a;cursor:pointer;text-align:left}
+  .nav button svg{width:17px;height:17px;flex:none}
+  .nav button:hover{background:#e3ece8}
+  .nav button[aria-pressed=true]{background:#dbebe3;color:#176b60;font-weight:600}
+  .side-section{margin-top:16px}
+  .side-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px 6px;color:var(--muted);font-size:12.5px}
+  .side-head .acts{display:flex;gap:2px}
+  .side-head .acts button{border:0;background:transparent;color:var(--muted);width:26px;height:26px;border-radius:8px;display:grid;place-items:center;cursor:pointer}
+  .side-head .acts button:hover{background:#e3ece8}
+  .side-head .acts svg{width:15px;height:15px}
+  .side-row{display:flex;align-items:center;gap:10px;border:0;background:transparent;border-radius:10px;padding:8px 10px;font:inherit;color:#3d524a;cursor:pointer;text-align:left;width:100%}
+  .side-row svg{width:16px;height:16px;flex:none}
+  .side-row small{margin-left:auto;color:var(--faint);font-size:11px}
+  .side-row:hover{background:#e3ece8}
+  .side-footer{margin-top:auto}
+  .side-footer button{display:flex;align-items:center;gap:10px;border:0;background:transparent;border-radius:10px;padding:9px 10px;font:inherit;color:#3d524a;cursor:pointer;width:100%}
+  .side-footer button svg{width:17px;height:17px}
+
+  /* ================= 右半边：温暖人文 ================= */
+  .main{min-width:0;padding:26px 30px 34px;display:flex;flex-direction:column;gap:18px;
+    background:
+      radial-gradient(620px 300px at 88% -6%, rgba(227,238,228,.55), transparent 60%),
+      radial-gradient(520px 280px at -6% 22%, rgba(246,230,218,.5), transparent 55%),
+      var(--bg)}
+  .main-top{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  .page-title h1{font-size:24px;font-weight:650;letter-spacing:-.2px}
+  .page-title p{font-size:13px;color:var(--muted);margin-top:4px}
+  .eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--sage-deep);font-weight:600;margin-bottom:6px}
+  .eyebrow i{width:7px;height:7px;border-radius:50%;background:var(--sage)}
+  .controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .select{border:1px solid var(--line);background:var(--paper);border-radius:var(--r-ctrl);padding:9px 12px;font:inherit;color:var(--ink)}
+  /* 主题化下拉浮层 */
+  .tselect{position:relative}
+  .tselect-trigger{display:flex;align-items:center;gap:8px;cursor:pointer;font:inherit;color:var(--ink)}
+  .tselect-trigger .tselect-label{flex:1;text-align:left;white-space:nowrap}
+  .tselect-trigger .chev{width:15px;height:15px;color:var(--muted);transition:transform .15s ease}
+  .tselect-trigger[aria-expanded=true] .chev{transform:rotate(180deg)}
+  .tselect-pop{position:absolute;top:calc(100% + 6px);left:0;min-width:190px;background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-hover);padding:6px;z-index:30;display:grid;gap:2px}
+  .tselect-pop[hidden]{display:none}
+  .tselect-option{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;border-radius:10px;padding:9px 12px;font:inherit;color:var(--ink);cursor:pointer;text-align:left;white-space:nowrap}
+  .tselect-option:hover{background:var(--sage-soft)}
+  .tselect-option[aria-selected=true]{background:var(--sage-soft);color:var(--sage-deep);font-weight:600}
+  .tselect-option .check{margin-left:auto;opacity:0;color:var(--sage-deep)}
+  .tselect-option[aria-selected=true] .check{opacity:1}
+  .tselect-option .check svg{width:15px;height:15px}
+  .switch{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .switch i{width:36px;height:21px;border-radius:999px;background:var(--sage);position:relative;display:inline-block;cursor:pointer}
+  .switch i::after{content:"";position:absolute;top:3px;left:19px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  .btn{border:1px solid var(--line);background:var(--paper);border-radius:var(--r-ctrl);padding:9px 14px;font:inherit;color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{background:var(--paper-2)}
+  .btn svg{width:15px;height:15px}
+  .btn.primary{background:linear-gradient(135deg,var(--sage),var(--sage-deep));border-color:transparent;color:#fff;font-weight:600;box-shadow:0 5px 14px rgba(23,107,96,.28)}
+  .btn.primary:hover{filter:brightness(1.05)}
+  .btn.ghost{border-color:transparent;background:transparent}
+  .demo-tag{font-size:11.5px;color:var(--sage-deep);background:var(--sage-soft);border:1px solid #d5e6d8;padding:5px 11px;border-radius:999px}
+
+  /* 提示条 */
+  .notice{display:flex;align-items:center;gap:11px;border:1px solid var(--line);background:var(--paper-2);color:var(--muted);border-radius:var(--r-card);padding:14px 16px;font-size:12.5px}
+  .notice svg{width:18px;height:18px;flex:none;color:var(--sage)}
+  .notice a{color:var(--sage-deep);font-weight:600;text-decoration:none;margin-left:auto}
+
+  /* KPI */
+  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+  .kpi{background:var(--paper);border:1px solid var(--line);border-radius:var(--r-card);padding:20px;box-shadow:var(--shadow);transition:box-shadow .18s ease,transform .18s ease;display:flex;flex-direction:column;gap:11px}
+  .kpi:hover{box-shadow:var(--shadow-hover);transform:translateY(-2px)}
+  .kpi-top{display:flex;align-items:center;gap:10px}
+  .kpi-icon{width:38px;height:38px;border-radius:13px;background:var(--sage-soft);color:var(--sage-deep);display:grid;place-items:center;flex:none}
+  .kpi-icon.clay{background:var(--paper-3);color:#2f9e86}
+  .kpi-icon svg{width:19px;height:19px}
+  .kpi-label{font-size:12.5px;color:var(--muted);font-weight:500}
+  .trend{margin-left:auto;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px}
+  .trend.up{color:var(--up);background:var(--sage-soft)}
+  .trend.down{color:var(--down);background:var(--clay-soft)}
+  .kpi-value{display:flex;align-items:baseline;gap:6px}
+  .kpi-value strong{font-size:31px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+  .kpi-value small{font-size:12.5px;color:var(--muted)}
+  .spark{width:100%;height:36px;display:block}
+  .kpi-foot{font-size:11.5px;color:var(--muted);padding-top:11px;border-top:1px solid var(--line-soft)}
+
+  /* 面板 */
+  .panels{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:16px}
+  .panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--r-card);padding:20px;box-shadow:var(--shadow)}
+  .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:13px}
+  .panel-head h3{font-size:15px;font-weight:600}
+  .panel-sub{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:4px;margin-right:6px}
+  .seg{display:inline-flex;gap:3px;background:var(--paper-3);border-radius:11px;padding:3px}
+  .seg button{border:0;background:transparent;border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;color:var(--muted);cursor:pointer}
+  .seg button[aria-pressed=true]{background:var(--paper);color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
+  .chart{width:100%;height:220px;display:block}
+  .chart .grid{stroke:var(--line-soft);stroke-width:1}
+  .chart .axis{fill:var(--faint);font-size:11px}
+  .chart .bar{fill:var(--sage)}
+  .chart .bar.clay{fill:#2f9e86;opacity:.82}
+  .chart .bar.dusty{fill:var(--dusty);opacity:.85}
+
+  /* ===== 工具 / 波形分析 ===== */
+  .tool-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  .tool-title{display:flex;gap:14px;align-items:flex-start}
+  .tool-title .kpi-icon{width:46px;height:46px;border-radius:15px}
+  .tool-title h1{font-size:21px;font-weight:650;letter-spacing:-.2px}
+  .tool-title p{font-size:12px;color:var(--muted);margin-top:3px}
+  .tool-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start}
+  .tool-col{display:grid;gap:16px;min-width:0}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r-card);padding:18px;box-shadow:var(--shadow);display:grid;gap:14px}
+  .card-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card-row .spacer{margin-left:auto}
+  .icon-btns{display:flex;gap:6px}
+  .icon-btns button{width:34px;height:34px;border:1px solid var(--line);background:var(--paper);border-radius:10px;display:grid;place-items:center;cursor:pointer;color:var(--ink)}
+  .icon-btns button:hover{background:var(--paper-2)}
+  .icon-btns svg{width:15px;height:15px}
+  .field-label{font-size:13px;font-weight:600}
+  .collapsible{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;background:transparent;border:0;padding:4px 0}
+  .collapsible svg{width:13px;height:13px}
+  .wave-area{border:1.5px dashed #c9ddd3;border-radius:15px;background:linear-gradient(180deg,#f6faf7,#eef5f1);min-height:224px;display:grid;place-items:center;position:relative;overflow:hidden}
+  .wave-area svg{position:absolute;inset:0;width:100%;height:100%}
+  .wave-hint{position:relative;text-align:center;color:var(--faint);font-size:12.5px;padding:0 16px}
+  .wave-hint .halo{width:58px;height:58px;border-radius:50%;background:var(--paper);border:1px solid var(--line);display:grid;place-items:center;margin:0 auto 12px;color:var(--sand);box-shadow:var(--shadow)}
+  .wave-hint .halo svg{width:26px;height:26px}
+  .wave-hint strong{display:block;color:var(--muted);font-size:13px;margin-bottom:3px}
+  .help{font-size:11.5px;color:var(--faint);line-height:1.7}
+  .result-count{font-size:12px;color:var(--muted);margin-top:2px}
+  .result-block{border-top:1px solid var(--line-soft);padding-top:13px;display:grid;gap:8px}
+  .result-block h4{font-size:12.5px;font-weight:600;color:var(--sage-deep)}
+  .result-block p{font-size:11.5px;color:var(--muted)}
+  .empty-state{border:1px dashed #c9ddd3;border-radius:15px;padding:32px 18px;text-align:center;color:var(--faint);font-size:12.5px;background:#f6faf7}
+
+  .caveat{font-size:11px;color:var(--faint);border-top:1px solid var(--line-soft);padding-top:14px}
+  @media(max-width:1080px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.panels,.tool-grid{grid-template-columns:minmax(0,1fr)}}
+  @media(max-width:760px){.shell{grid-template-columns:minmax(0,1fr)}.side{display:none}.kpis{grid-template-columns:minmax(0,1fr)}.main{padding:16px}}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ============ 侧栏：保持现状复刻 ============ -->
+  <aside class="side" aria-label="主导航（本次不改）">
+    <div class="brand"><span class="brand-mark">S</span><b>Somnus</b></div>
+    <button class="new-chat" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新会话
+    </button>
+    <nav class="nav" aria-label="导航">
+      <button type="button" aria-pressed="true" data-nav="home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>主页
+      </button>
+      <button type="button" aria-pressed="false" data-nav="documents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg>文档
+      </button>
+      <button type="button" aria-pressed="false" data-nav="tools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-2.7-2.7 3-3z"/></svg>工具
+      </button>
+      <button type="button" aria-pressed="false" data-nav="plugins">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6v4l3 3h4v6h-4l-3 3H9l-3-3H2v-6h4l3-3z"/></svg>插件
+      </button>
+      <button type="button" aria-pressed="false" data-nav="automation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>自动化任务
+      </button>
+      <button type="button" aria-pressed="false" data-nav="more">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>更多
+      </button>
+    </nav>
+
+    <div class="side-section">
+      <div class="side-head">
+        <span>工作区</span>
+        <span class="acts">
+          <button type="button" aria-label="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>
+          <button type="button" aria-label="排序"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 4v16M7 4L4 7M7 4l3 3M17 20V4M17 20l3-3M17 20l-3-3"/></svg></button>
+          <button type="button" aria-label="新建"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+        </span>
+      </div>
+      <button class="side-row" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>默认工作区
+      </button>
+      <button class="side-row" type="button">Greeting<small>37 分钟</small></button>
+    </div>
+
+    <div class="side-section">
+      <div class="side-head"><span>最近</span><button type="button" aria-label="展开" style="border:0;background:transparent;color:var(--muted)">⌄</button></div>
+      <button class="side-row" type="button">Greeting</button>
+    </div>
+
+    <div class="side-footer">
+      <button type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>设置
+      </button>
+    </div>
+  </aside>
+
+  <!-- ============ 右半边 ============ -->
+  <main class="main">
+
+    <!-- ===== 主页 ===== -->
+    <section id="view-home">
+      <div class="main-top">
+        <div class="page-title">
+          <span class="eyebrow"><i></i>每日概览</span>
+          <h1>今天的治疗情况，一眼看清</h1>
+          <p>昨日设备上报汇总 · 近 7 天趋势，以下数字均为合成示例</p>
+        </div>
+        <div class="controls">
+          <span class="demo-tag">设计演示 · 未连接后台</span>
+          <div class="tselect" data-select>
+            <button type="button" class="select tselect-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="设备型号">
+              <span class="tselect-label">全部设备型号</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="tselect-pop" role="listbox">
+              <button type="button" class="tselect-option" role="option" aria-selected="true" data-label="全部设备型号">全部设备型号<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+              <button type="button" class="tselect-option" role="option" aria-selected="false" data-label="YA70A20">YA70A20<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+              <button type="button" class="tselect-option" role="option" aria-selected="false" data-label="YA70B25">YA70B25<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+            </div>
+          </div>
+          <span class="switch"><i role="switch" aria-checked="true"></i>每小时自动更新</span>
+          <button class="btn primary" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"/></svg>立即更新
+          </button>
+        </div>
+      </div>
+
+      <div class="notice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5h.01"/></svg>
+        <span>当前为演示数据；接入真实后台前，不会自动绑定本机 CSV 或演示用户。</span>
+        <a href="javascript:void(0)">前往配置中心</a>
+      </div>
+
+      <div class="kpis">
+        <section class="kpi">
+          <div class="kpi-top">
+            <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 15.5c2.6.3 4.3 1.9 5 4.5"/></svg></span>
+            <span class="kpi-label">活跃用户</span>
+            <span class="trend up">+10</span>
+          </div>
+          <div class="kpi-value"><strong>128</strong><small>人</small></div>
+          <svg class="spark" data-spark="active" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="kpi-foot">近 7 天日均 99 人 · 口径为昨日有上报记录</div>
+        </section>
+
+        <section class="kpi">
+          <div class="kpi-top">
+            <span class="kpi-icon clay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+            <span class="kpi-label">治疗时长</span>
+            <span class="trend up">+3.1%</span>
+          </div>
+          <div class="kpi-value"><strong>342.5</strong><small>小时</small></div>
+          <svg class="spark" data-spark="hours" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="kpi-foot">仅汇总已上报时长，缺失记录不补零</div>
+        </section>
+
+        <section class="kpi">
+          <div class="kpi-top">
+            <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+            <span class="kpi-label">上报事件</span>
+            <span class="trend down">+6</span>
+          </div>
+          <div class="kpi-value"><strong>96</strong><small>次</small></div>
+          <svg class="spark" data-spark="events" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="kpi-foot">暂停 58 · 低通气 38，已上报小计</div>
+        </section>
+
+        <section class="kpi">
+          <div class="kpi-top">
+            <span class="kpi-icon clay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-8-8"/><path d="M12 8v4l2.5 2.5"/></svg></span>
+            <span class="kpi-label">平均 AHI</span>
+            <span class="trend up">-0.3</span>
+          </div>
+          <div class="kpi-value"><strong>4.2</strong><small>次/时</small></div>
+          <svg class="spark" data-spark="ahi" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="kpi-foot">中枢事件不并入暂停，分项保留原值</div>
+        </section>
+      </div>
+
+      <div class="panels">
+        <section class="panel">
+          <header class="panel-head">
+            <div><h3>近 7 天 · 活跃度与治疗趋势</h3><p class="panel-sub">合成示例数据，点击分段切换指标</p></div>
+            <div class="seg" role="group" aria-label="趋势指标">
+              <button type="button" aria-pressed="true" data-series="active">活跃人数</button>
+              <button type="button" aria-pressed="false" data-series="hours">治疗时长</button>
+            </div>
+          </header>
+          <svg class="chart" id="chart-trend" viewBox="0 0 560 220" role="img" aria-label="近7天趋势图"></svg>
+        </section>
+        <section class="panel">
+          <header class="panel-head">
+            <div><h3>近 7 天 · 设备上报事件</h3><p class="panel-sub">每日暂停与低通气合计次数</p></div>
+            <div class="legend"><span><i style="background:var(--dusty)"></i>上报事件</span></div>
+          </header>
+          <svg class="chart" id="chart-events" viewBox="0 0 560 220" role="img" aria-label="近7天事件图"></svg>
+        </section>
+      </div>
+    </section>
+
+    <!-- ===== 工具 / 波形分析 ===== -->
+    <section id="view-tools" hidden>
+      <div class="main-top" style="justify-content:flex-end">
+        <button class="btn ghost" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>返回工具列表
+        </button>
+      </div>
+
+      <div class="tool-head">
+        <div class="tool-title">
+          <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+          <div><h1>波形分析</h1><p>版本 0.3.0-beta.9 · 本机运行 · 研发试用</p></div>
+        </div>
+        <button class="btn primary" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>打开 CSV
+        </button>
+      </div>
+
+      <div class="notice" style="background:var(--sage-soft);border-color:#d5e6d8;color:var(--sage-deep)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--sage)"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span>尚未加载文件 · 请点击右上角「打开 CSV」选择本机记录；演示用户不会自动绑定真实 CSV。</span>
+      </div>
+
+      <div class="tool-grid">
+        <div class="tool-col">
+          <section class="card">
+            <div class="card-row">
+              <span class="seg">
+                <button type="button" aria-pressed="true">整段</button>
+              </span>
+              <span class="icon-btns">
+                <button type="button" aria-label="放大"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button type="button" aria-label="缩小"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></button>
+                <button type="button" aria-label="上一段"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+                <button type="button" aria-label="下一段"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
+              </span>
+              <div class="tselect spacer" data-select>
+                <button type="button" class="select tselect-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="波形设置">
+                  <span class="tselect-label">波形设置</span>
+                  <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="tselect-pop" role="listbox">
+                  <button type="button" class="tselect-option" role="option" aria-selected="true" data-label="波形设置">波形设置<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+                  <button type="button" class="tselect-option" role="option" aria-selected="false" data-label="8 秒窗口">8 秒窗口<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+                  <button type="button" class="tselect-option" role="option" aria-selected="false" data-label="10 秒最短持续">10 秒最短持续<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-row">
+              <span class="field-label">事件筛查</span>
+              <div class="tselect" data-select>
+                <button type="button" class="select tselect-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="基线方案">
+                  <span class="tselect-label">动态基线</span>
+                  <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="tselect-pop" role="listbox">
+                  <button type="button" class="tselect-option" role="option" aria-selected="true" data-label="动态基线">动态基线<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+                  <button type="button" class="tselect-option" role="option" aria-selected="false" data-label="固定阈值">固定阈值<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg></button>
+                </div>
+              </div>
+              <span class="spacer"></span>
+              <button class="btn primary" type="button">筛查整份</button>
+              <button class="btn" type="button">筛查当前区间</button>
+            </div>
+            <button class="collapsible" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              筛查参数 · 全检测（4 类）
+            </button>
+          </section>
+
+          <section class="card">
+            <div class="panel-head" style="margin-bottom:0">
+              <div><h3>整段概览</h3><p class="panel-sub">拖动选择查看区间 · 波形按极值抽取，分析使用原始数据</p></div>
+            </div>
+            <div class="wave-area">
+              <svg viewBox="0 0 600 224" preserveAspectRatio="none" aria-hidden="true">
+                <line x1="0" y1="112" x2="600" y2="112" stroke="#d3e6dc" stroke-width="1"/>
+                <path d="M0 112 L40 110 L70 118 L110 102 L150 124 L190 98 L230 120 L270 106 L310 128 L350 100 L390 116 L430 104 L470 122 L510 108 L550 118 L600 112" fill="none" stroke="#9fc4b6" stroke-width="1.8"/>
+              </svg>
+              <div class="wave-hint">
+                <span class="halo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+                <strong>尚未加载文件</strong>打开 CSV 后，这里展示整段波形与可选区间
+              </div>
+            </div>
+            <button class="collapsible" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>外部事件
+            </button>
+            <p class="help">波形区：滚轮横向平移，Ctrl + 滚轮缩放，左键或右键拖动，双击查看整段；鼠标悬停显示原始数值和样本序号。筛查结果为工程候选，不代表临床判断。</p>
+          </section>
+        </div>
+
+        <div class="tool-col">
+          <section class="card">
+            <div class="panel-head" style="margin-bottom:0">
+              <div><h3>筛查结果</h3><p class="result-count">显示 0 / 共 0 条</p></div>
+              <button class="collapsible" type="button" style="margin:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
+            </div>
+            <div class="result-block">
+              <h4>动态基线</h4>
+              <p>去背景绝对值均值 · 8 秒窗口 · 最短持续 10 秒</p>
+            </div>
+            <button class="collapsible" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              显示哪些事件 · 本页全部类型
+            </button>
+            <div class="empty-state">打开 CSV 后可开始筛查<br>候选事件将在这里逐条列出并供人工复核</div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <p class="caveat">说明：本原型仅重做右半边内容区，左侧导航按现有页面复刻、不改；未连接后台、不读取真实 CSV/EDF，图表与计数为合成示例，不构成临床风险判断。确认方向后由页面 agent 在 page_design/frontend 内落地。</p>
+  </main>
+</div>
+
+<script>
+(() => {
+  const days = ['11/03','11/04','11/05','11/06','11/07','11/08','11/09'];
+  const series = { active: [86,92,78,104,97,118,128], hours: [301,318,286,335,322,339,342.5] };
+  const events = [64,71,58,83,77,90,96];
+  const sparks = { active: series.active, hours: series.hours, events, ahi: [5.1,4.8,5.4,4.6,4.9,4.5,4.2] };
+  const NS = 'http://www.w3.org/2000/svg';
+
+  function mk(tag, attrs, text) {
+    const n = document.createElementNS(NS, tag);
+    Object.entries(attrs||{}).forEach(([k,v]) => n.setAttribute(k, v));
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function bars(svgId, values, cls) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    svg.replaceChildren();
+    const W = 560, H = 220, padL = 36, padR = 12, padT = 18, padB = 30;
+    const max = Math.max(...values) * 1.15;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    [0, .25, .5, .75, 1].forEach(f => {
+      const y = padT + ih * (1 - f);
+      svg.append(mk('line', {x1:padL, y1:y, x2:W-padR, y2:y, class:'grid'}));
+      svg.append(mk('text', {x:padL-7, y:y+4, 'text-anchor':'end', class:'axis'}, Math.round(max*f)));
+    });
+    const slot = iw / values.length, bw = Math.min(32, slot * .46);
+    values.forEach((v, i) => {
+      const x = padL + slot*i + (slot-bw)/2;
+      const h = ih * (v / max);
+      const y = padT + ih - h;
+      svg.append(mk('rect', {x, y, width:bw, height:Math.max(h,2), rx:6, class:cls || 'bar'}));
+      svg.append(mk('text', {x:x+bw/2, y:y-6, 'text-anchor':'middle', class:'axis'}, v));
+      svg.append(mk('text', {x:x+bw/2, y:H-9, 'text-anchor':'middle', class:'axis'}, days[i]));
+    });
+  }
+
+  function sparkline() {
+    document.querySelectorAll('[data-spark]').forEach(svg => {
+      const values = sparks[svg.dataset.spark] || [];
+      const max = Math.max(...values), min = Math.min(...values);
+      const W = 120, H = 36;
+      const pts = values.map((v, i) => {
+        const x = 5 + i * (W-10) / (values.length-1);
+        const y = H - 6 - (max === min ? 0 : (v-min) / (max-min) * (H-12));
+        return [x, y];
+      });
+      const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+      const color = svg.dataset.spark === 'hours' || svg.dataset.spark === 'ahi' ? '#2f9e86' : '#176b60';
+      svg.append(mk('path', {d: line, fill:'none', stroke:color, 'stroke-width':1.8, 'stroke-linejoin':'round', 'stroke-linecap':'round'}));
+      pts.forEach(p => svg.append(mk('circle', {cx:p[0], cy:p[1], r:2, fill:color})));
+    });
+  }
+
+  let current = 'active';
+  function renderTrend() { bars('chart-trend', series[current], current === 'hours' ? 'bar clay' : 'bar'); }
+  renderTrend();
+  bars('chart-events', events, 'bar dusty');
+  sparkline();
+
+  document.querySelectorAll('[data-series]').forEach(btn => btn.addEventListener('click', () => {
+    current = btn.dataset.series;
+    document.querySelectorAll('[data-series]').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+    renderTrend();
+  }));
+
+  // 主题化下拉浮层
+  function closeAllSelects() {
+    document.querySelectorAll('.tselect-pop').forEach(p => p.hidden = true);
+    document.querySelectorAll('.tselect-trigger').forEach(t => t.setAttribute('aria-expanded', 'false'));
+  }
+  document.querySelectorAll('[data-select]').forEach(root => {
+    const trigger = root.querySelector('.tselect-trigger');
+    const pop = root.querySelector('.tselect-pop');
+    const label = root.querySelector('.tselect-label');
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllSelects();
+      pop.hidden = !willOpen;
+      trigger.setAttribute('aria-expanded', String(willOpen));
+    });
+    pop.querySelectorAll('.tselect-option').forEach(opt => opt.addEventListener('click', () => {
+      pop.querySelectorAll('.tselect-option').forEach(o => o.setAttribute('aria-selected', String(o === opt)));
+      label.textContent = opt.dataset.label || opt.textContent.trim();
+      closeAllSelects();
+    }));
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.tselect')) closeAllSelects();
+  });
+
+  const views = { home: document.getElementById('view-home'), tools: document.getElementById('view-tools') };
+  function show(view) {
+    Object.entries(views).forEach(([k, el]) => el.hidden = k !== view);
+    document.querySelectorAll('[data-nav]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.nav === view)));
+  }
+  document.querySelectorAll('[data-nav]').forEach(b => b.addEventListener('click', () => {
+    const target = b.dataset.nav === 'tools' ? 'tools' : 'home';
+    show(target);
+  }));
+})();
+</script>
+</body>
+</html>

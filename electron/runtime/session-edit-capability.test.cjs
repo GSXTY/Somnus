@@ -1,0 +1,2 @@
+const test=require('node:test');const assert=require('node:assert/strict');const {capabilities}=require('./contracts.cjs');
+test('pinned native runtime does not claim upstream-only same-session edit or infer ACP support',()=>{assert.equal(capabilities({runtime:'dsh-native'}).capabilities.sameSessionEdit,'unsupported');assert.equal(capabilities({runtime:'acp'}).capabilities.sameSessionEdit,'unknown');});

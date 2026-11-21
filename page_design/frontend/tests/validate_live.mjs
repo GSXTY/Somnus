@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { validateDashboard } from '../src/logic.mjs';
+import { validateDashboard } from '../src/shared/logic.mjs';
 
 const raw = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 try {

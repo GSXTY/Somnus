@@ -2,12 +2,15 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { cachePath } from '../storage-paths.mjs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { replaceExact } from './overlay.mjs';
+import { buildInstalledClientOverlay } from './client/overlay.mjs';
+import { buildNativeDeepSeekReasoningOverlay } from './host/native-deepseek-reasoning.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const release = JSON.parse(await readFile(new URL('next-release.json', import.meta.url), 'utf8'));
@@ -21,7 +24,7 @@ const asar = requireBuilderLib('@electron/asar');
 const { Pickle } = requireAsar('./pickle');
 const { getFileIntegrity } = requireAsar('./integrity');
 const hostRoot = 'dsh/node_modules/@deepseek-ai';
-const appId = 'com.vvfly.respiratoryviewer';
+const appId = 'com.vvfly.somnusnext';
 const packageName = 'somnus-next-desktop';
 
 function patch(file, read, replacements) {
@@ -37,7 +40,7 @@ function standaloneMain(read) {
   return Buffer.from(parts[0] + `
 import { startSomnus } from './standalone-main.mjs';
 startSomnus({ DesktopHostProcess, DesktopBackendController, DesktopProjectManager,
-  resolveDesktopPaths, desktopClientVersion });
+  resolveDesktopPaths, desktopClientVersion, readDeviceInfo, resolveDesktopLocale });
 `);
 }
 
@@ -54,24 +57,34 @@ async function createChanges(read) {
   const profile = `${hostRoot}/dsh/lib/profile-boot-QhDEDXsF.js`;
   const appBoot = `${hostRoot}/dsh-app-boot/lib/index.js`;
   const { dshNext, ...baseManifest } = manifest;
-  return new Map([
+  const changes = new Map([
+    ...buildNativeDeepSeekReasoningOverlay(read),
     ['package.json', Buffer.from(JSON.stringify({ ...baseManifest, name: packageName,
       version: somnusPackage.version, description: somnusPackage.description, author: somnusPackage.author,
       productName: branding.appName, dshDesktopAppId: appId, somnusDistribution: { upstream: release } }, null, 2))],
     ['lib/somnus-desktop.mjs', Buffer.from(helperJs)],
+    ['lib/product-profile.mjs', await readFile(new URL('host/product-profile.mjs', import.meta.url))],
     ['lib/standalone-main.mjs', await readFile(new URL('host/standalone-main.mjs', import.meta.url))],
+    ['lib/acp-host.mjs', await readFile(new URL('host/acp-host.mjs', import.meta.url))],
     ['lib/main.js', standaloneMain(read)],
+    ['lib/somnus-preload.cjs', Buffer.from(read('lib/preload-app.cjs').toString('utf8')
+      .replace('location.protocol === `dsh-app:` && location.hostname === "app" && process.isMainFrame ? createProductApi() : { protocolVersion: 1 }',
+        '(location.protocol === `dsh-app:` && location.hostname === "app" || location.protocol === "http:" && location.hostname === "127.0.0.1") && process.isMainFrame ? createProductApi() : { protocolVersion: 1 }')
+      + '\nif (location.protocol === "http:" && location.hostname === "127.0.0.1" && process.isMainFrame) syncWindowsAppearance();\n'
+      + ';(() => {\n' + (await readFile(join(root, 'electron', 'dsh-somnus-preload.cjs'), 'utf8')) + '\n})();\n')],
     ['lib/next-cli-entry.js', Buffer.from('export {};\n')],
     [desktopHost, patch(desktopHost, read, [
       ['\tconst application = runProfile({', `\tconst origin = process.env.DSH_SOMNUS_BRIDGE_ORIGIN;
   const token = process.env.DSH_SOMNUS_BRIDGE_TOKEN;
   const legacyProfileDir = process.env.DSH_SOMNUS_LEGACY_PROFILE;
+  const importModelsFile = process.env.DSH_SOMNUS_IMPORT_MODELS;
   delete process.env.DSH_SOMNUS_BRIDGE_ORIGIN;
   delete process.env.DSH_SOMNUS_BRIDGE_TOKEN;
   delete process.env.DSH_SOMNUS_LEGACY_PROFILE;
+  delete process.env.DSH_SOMNUS_IMPORT_MODELS;
   if (!origin || !token) throw new Error("Incomplete Somnus Desktop Host bootstrap");
   const { prepareSomnusHost } = await import("./somnus-host-adapter.mjs");
-  const somnus = await prepareSomnusHost({ origin, token, legacyProfileDir });
+  const somnus = await prepareSomnusHost({ origin, token, legacyProfileDir, importModelsFile });
   Object.assign(process.env, somnus.env);
 \tconst application = runProfile({`],
       ['\t\tpatchFiles: [],', '\t\tpatchFiles: [somnus.patchFile],\n\t\tprotectApplicationPatches: somnus.protectDataPatches,'],
@@ -79,6 +92,8 @@ async function createChanges(read) {
       ['\t\tawait running?.shutdown.shutdown(0);', '\t\ttry { await running?.shutdown.shutdown(0); }\n\t\tfinally { await somnus.dispose(); }'],
     ])],
     [`${hostRoot}/dsh-desktop-host/lib/somnus-host-adapter.mjs`, await readFile(join(root, 'electron', 'dsh-next-host-adapter.mjs'))],
+    [`${hostRoot}/dsh-desktop-host/lib/somnus-native-migration.mjs`, await readFile(join(root, 'electron', 'somnus-native-migration.mjs'))],
+    [`${hostRoot}/dsh-desktop-host/lib/somnus-provider-policy.mjs`, await readFile(join(root, 'electron', 'somnus-provider-policy.mjs'))],
     [profile, patch(profile, read, [
       ['\t\t\toverlays: composed.overlays,', '\t\t\toverlays: composed.overlays,\n\t\t\tprotectApplicationPatches: options.protectApplicationPatches,'],
     ])],
@@ -87,6 +102,39 @@ async function createChanges(read) {
        '\t\t...loadOptionalPatches(binName, join(context.home, "cordis.patch.yml")) ?? [],\n\t]);\n\tconst userPatches = context.protectApplicationPatches?.(patches) ?? patches;\n\tpatches.splice(0, patches.length, ...userPatches, ...structuredClone(context.overlays));'],
     ])],
   ]);
+  const webIndexFile = `${hostRoot}/dsh-web-frontend/dist/index.html`;
+  const webIndex = read(webIndexFile).toString('utf8');
+  const scriptMatch = /src="\.\/assets\/(index-[^"]+\.js)"/.exec(webIndex);
+  if (!scriptMatch) throw new Error('Expected the pinned DSH web frontend entry script.');
+  const bootFile = `${hostRoot}/dsh-web-frontend/dist/assets/${scriptMatch[1]}`;
+  const bootWordmark = 'this.wordmark=$r(br.wordmark,"HARNESS")';
+  const bootHint = 'this.hint=$r(br.hint,"Loading plugins…")';
+  let bootSource = read(bootFile).toString('utf8');
+  if (!bootSource.includes(bootWordmark) || !bootSource.includes(bootHint)) {
+    throw new Error('Expected the pinned DSH boot screen.');
+  }
+  bootSource = bootSource
+    .replace(bootWordmark, 'this.wordmark=$r(br.wordmark,"Somnus")')
+    .replace(bootHint, 'this.hint=$r(br.hint,"正在启动 Somnus…")');
+  changes.set(bootFile, Buffer.from(bootSource));
+  changes.set(webIndexFile, Buffer.from(webIndex
+    .replace('<title>DSH Local Build</title>', '<title>Somnus</title>')
+    .replace('</head>', '<style>[data-dsh-boot]{display:none!important;}</style></head>')));
+  const systemPromptFile = `${hostRoot}/dsh-system-prompt/lib/index.js`;
+  let systemPrompt = read(systemPromptFile).toString('utf8');
+  const identity = 'You are an AI agent powered by DeepSeek Harness.';
+  if (!systemPrompt.includes(identity)) throw new Error('Expected the pinned DSH system identity.');
+  systemPrompt = systemPrompt.replaceAll(identity, 'You are Somnus, an AI coding assistant.');
+  changes.set(systemPromptFile, Buffer.from(systemPrompt));
+  if (process.env.SOMNUS_DSH_CLIENT !== '0') {
+    try {
+      const client = await buildInstalledClientOverlay(read, branding, file => readFile(join(root, file)), 'dsh/node_modules');
+      for (const [file, contents] of client) changes.set(file, contents);
+    } catch (error) {
+      throw new Error(`Somnus client overlay failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return changes;
 }
 
 /** Preserve all unmodified packed offsets, links, and unpacked file records. */
@@ -179,7 +227,7 @@ async function stage(installation, backend, installer) {
   const service = await realpath(backend);
   if (!(await stat(join(service, 'SomnusBackend.exe'))).isFile()) throw new Error('Build the Somnus launcher backend first.');
   const changes = await createChanges(name => asar.extractFile(original, normalize(name)));
-  const scratch = join(root, '.tmp');
+  const scratch = cachePath(root, 'tmp');
   await mkdir(scratch, { recursive: true });
   const preview = await mkdtemp(join(scratch, 'somnus-next-stage-'));
   const app = join(preview, 'win-unpacked');
@@ -192,11 +240,10 @@ async function stage(installation, backend, installer) {
   const support = join(app, 'resources', 'somnus');
   await mkdir(support);
   const legacy = join(root, 'electron');
-  const workbenchModules = (await readdir(legacy)).filter(file =>
-    file.endsWith('.cjs') && !file.endsWith('.test.cjs') && file !== 'acp-dot-relay-client.cjs');
-  await Promise.all(workbenchModules.map(file => cp(join(legacy, file), join(support, file))));
+  const { copyHostFiles } = requireElectron('./runtime/resources.cjs');
+  await copyHostFiles(legacy, support);
   await cp(join(root, 'desktop', 'dsh_next', 'oar'), join(support, 'dsh-oar'), { recursive: true });
-  const legacyResources = join(root, 'dist', 'electron', 'win-unpacked', 'resources');
+  const legacyResources = join(root, 'app', 'resources');
   for (const packageRoot of [join(legacyResources, 'somnus'), join(legacyResources, 'app.asar.unpacked')]) {
     const terminalSource = join(packageRoot, 'node_modules', 'node-pty');
     if (!(await stat(terminalSource).then(info => info.isDirectory(), () => false))) continue;

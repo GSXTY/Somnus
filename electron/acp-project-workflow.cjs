@@ -448,14 +448,14 @@ class ProjectWorkflow {
 
   async checkTarget(target, workspaceId) {
     if (target?.workspace_id !== workspaceId || !ROOT_KEY.test(target.root_key) || !SOURCE.test(target.source)) {
-      throw new Error('项目来源已变更或不可用，请重新选择。');
+      throw Object.assign(new Error('项目来源已变更或不可用，请重新选择。'), { scopeInvalid: true });
     }
     const root = await localEntry(target.root_path, 'directory');
-    if (!root) throw new Error('项目文件夹已移走或无法访问，请重新绑定。');
+    if (!root) throw Object.assign(new Error('项目文件夹已移走或无法访问，请重新绑定。'), { scopeInvalid: true });
     if (target.base_root_path !== undefined || target.base_root_key !== undefined) {
       const baseRoot = await localEntry(target.base_root_path, 'directory');
       if (!baseRoot || !ROOT_KEY.test(target.base_root_key) || samePath(root, baseRoot)) {
-        throw new Error('聊天工作树与原项目的关联已失效。');
+        throw Object.assign(new Error('聊天工作树与原项目的关联已失效。'), { scopeInvalid: true });
       }
       return { root, rootKey: target.root_key, source: target.source, baseRoot, baseRootKey: target.base_root_key };
     }

@@ -1,0 +1,26 @@
+const { pathToFileURL } = require('node:url');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const {spawn} = require('node:child_process');
+const {createRequire}=require('node:module');
+(async()=>{const {cachePath}=await import(pathToFileURL(require('node:path').join(__dirname,'../desktop/storage-paths.mjs')).href);
+ const root=path.resolve(__dirname,'..'),base=cachePath(root,'tmp'),fixture=path.join(base,'appearance-electron-fixture');
+ await fs.mkdir(fixture,{recursive:true});
+ const resolved=await fs.realpath(fixture),allowed=await fs.realpath(base);
+ if(path.dirname(resolved).toLowerCase()!==allowed.toLowerCase())throw Error('Fixture path is outside verified external scratch');
+ const source=path.join(root,'dist/electron/win-unpacked');
+ for(const entry of await fs.readdir(source,{withFileTypes:true}))if(entry.isFile()&&/\.(exe|dll|pak|dat|bin)$/i.test(entry.name))await fs.copyFile(path.join(source,entry.name),path.join(resolved,entry.name==='Somnus.exe'?'Somnus-Theme-Test.exe':entry.name));
+ const appDir=path.join(resolved,'resources','app');await fs.mkdir(appDir,{recursive:true});
+ await fs.writeFile(path.join(appDir,'package.json'),JSON.stringify({name:'somnus-appearance-acceptance',version:'1.0.0',main:'main.cjs'}));
+ await fs.copyFile(path.join(root,'tools','appearance_electron_main.cjs'),path.join(appDir,'main.cjs'));
+ const requireElectron=createRequire(path.join(root,'electron/package.json')),requireBuilder=createRequire(requireElectron.resolve('electron-builder')),requireBuilderLib=createRequire(requireBuilder.resolve('app-builder-lib'));
+ await requireBuilderLib('@electron/asar').createPackage(appDir,path.join(resolved,'resources','app.asar'));
+ await fs.mkdir(path.join(resolved,'locales'),{recursive:true});await fs.copyFile(path.join(source,'locales','en-US.pak'),path.join(resolved,'locales','en-US.pak'));
+ const env={PATH:process.env.PATH,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,TEMP:resolved,TMP:resolved,SOMNUS_THEME_FIXTURE_ROOT:root,SOMNUS_THEME_FIXTURE_DIR:resolved};
+ const child=spawn(path.join(resolved,'Somnus-Theme-Test.exe'),[],{cwd:resolved,windowsHide:true,env,stdio:['ignore','pipe','pipe']});
+ let output='';child.stderr.on('data',bytes=>{output+=bytes.toString();});const timeout=setTimeout(()=>child.kill(),60000);timeout.unref();
+ const status=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+ clearTimeout(timeout);
+ if(status!==0){const failed=await fs.readFile(path.join(resolved,'appearance-report.json'),'utf8').then(JSON.parse).catch(()=>null);throw Error('Isolated Electron acceptance failed: '+(failed?.error||output.slice(-1200)));}
+ const report=JSON.parse(await fs.readFile(path.join(resolved,'appearance-report.json'),'utf8'));if(!report.passed)throw Error(report.error||'Appearance acceptance failed');console.log(JSON.stringify(report));
+})().catch(error=>{console.error(error.message);process.exitCode=1;});
