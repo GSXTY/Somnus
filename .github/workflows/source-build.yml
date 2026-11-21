@@ -48,6 +48,8 @@ jobs:
         run: |
           $buildStorage = Join-Path $env:RUNNER_TEMP 'somnus-source-validation'
           "SOMNUS_DEV_STORAGE=$buildStorage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare the actual upstream source snapshot
+        run: node desktop/dsh_next/source-build.mjs --prepare --storage $env:SOMNUS_DEV_STORAGE
       - name: Install Somnus UI and desktop support dependencies
         run: |
           pnpm --dir page_design/frontend install --frozen-lockfile
