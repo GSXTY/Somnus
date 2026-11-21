@@ -105,4 +105,94 @@ jobs:
             ${{ env.SOMNUS_SOURCE_WORKSPACE }}/apps/desktop/.desktop-build/packaging-runs/*/*.jsonl
           if-no-files-found: ignore
 
-# Only reports are uploaded. No installer, application archive, tag, or Release is published.
+      - name: Validate the requested local application delivery
+        if: >-
+          success() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.head_ref == 'build/local-source-update'
+        env:
+          SOMNUS_DELIVERY_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          source_commit = '31d232e27b12fded71b51c5a59687dc44aebf750'
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+          pull = event['pull_request']
+          if (os.environ['GITHUB_EVENT_NAME'] != 'pull_request'
+              or pull['head']['repo']['full_name'] != os.environ['GITHUB_REPOSITORY']
+              or pull['head']['ref'] != 'build/local-source-update'
+              or pull['base']['sha'] != source_commit):
+              raise RuntimeError('Application delivery is restricted to the requested source baseline and branch')
+
+          workspace = Path(os.environ['SOMNUS_SOURCE_WORKSPACE']).resolve(strict=True)
+          application = (workspace / 'apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/win-unpacked').resolve(strict=True)
+          if not application.is_relative_to(workspace):
+              raise RuntimeError('Application output is outside the fresh source workspace')
+          report = json.loads(Path(os.environ['SOMNUS_SOURCE_REPORT']).read_text(encoding='utf-8'))
+          required = {'ok': True, 'applicationReady': True, 'terminalSmoke': True,
+                      'uiAccepted': False, 'originalAsarRequired': False, 'installerCreated': False}
+          if any(report.get(name) is not value for name, value in required.items()):
+              raise RuntimeError('The source compilation report does not qualify this application for local delivery')
+          if Path(report['application']).resolve(strict=True) != application:
+              raise RuntimeError('The source compilation report identifies a different application')
+          lock = json.loads(Path('desktop/dsh_next/source-lock.json').read_text(encoding='utf-8'))
+          if report['commit'] != lock['commit']:
+              raise RuntimeError('Application upstream commit differs from the source lock')
+          for name in ['Somnus.exe', 'resources/app.asar', 'resources/backend/SomnusBackend.exe']:
+              if not (application / name).is_file():
+                  raise RuntimeError('Required application file is missing: ' + name)
+
+          files = []
+          for directory, directories, names in os.walk(application, followlinks=False):
+              for name in directories + names:
+                  path = Path(directory) / name
+                  if path.is_symlink() or path.is_junction():
+                      raise RuntimeError('Application delivery must contain regular files and directories only')
+              for name in sorted(names):
+                  path = Path(directory) / name
+                  relative = path.relative_to(application).as_posix()
+                  if relative == 'delivery-manifest.json':
+                      continue
+                  if name in {'.env', 'mcp.json'} or any(part in {'.git', '.somnus-git'} for part in path.relative_to(application).parts):
+                      raise RuntimeError('Local-only configuration was found in the fresh application tree')
+                  with path.open('rb') as stream:
+                      digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                  files.append({'path': relative, 'bytes': path.stat().st_size, 'sha256': digest})
+          files.sort(key=lambda row: row['path'])
+          manifest = {
+              'schemaVersion': 1, 'producer': 'SomnusNext source CI local delivery',
+              'sourceCommit': source_commit,
+              'buildHead': os.environ['SOMNUS_DELIVERY_HEAD'],
+              'checkoutCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'repository': os.environ['GITHUB_REPOSITORY'], 'ref': os.environ['GITHUB_REF'],
+              'headRef': pull['head']['ref'], 'upstreamCommit': report['commit'],
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              **required, 'files': files,
+          }
+          (application / 'delivery-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as stream:
+              stream.write('SOMNUS_DELIVERY_APPLICATION=' + str(application) + '\n')
+          print('Validated local application delivery: ' + str(len(files)) + ' files')
+
+      - name: Preserve the requested local application for one day
+        if: >-
+          success() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.head_ref == 'build/local-source-update'
+        timeout-minutes: 15
+        uses: actions/upload-artifact@v4
+        with:
+          name: somnus-local-source-update
+          path: ${{ env.SOMNUS_DELIVERY_APPLICATION }}/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 3
+
+# Ordinary runs upload only reports. The exact same-repository local-update PR may
+# retain its verified application directory for one day; no installer or Release is published.
