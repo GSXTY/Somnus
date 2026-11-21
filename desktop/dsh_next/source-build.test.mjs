@@ -37,6 +37,7 @@ test('the backend must have a matching source-build receipt and cannot come from
   await assert.rejects(inspectBackend(backend, '0.3.0-test'), /does not match/);
   await writeFile(record, JSON.stringify({ schemaVersion: 1, producer: 'SomnusNext PyInstaller', sourceVersion: '0.3.0-test' }));
   assert.equal(await inspectBackend(backend, '0.3.0-test'), await realpath(backend));
+  assert.equal(await inspectBackend(backend, '0.3.0-test', directory), await realpath(backend));
   const existing = join(directory, 'app/resources/backend');
   await mkdir(existing, { recursive: true });
   await assert.rejects(inspectBackend(existing, '0.3.0-test', directory), /Existing app/);

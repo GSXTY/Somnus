@@ -117,7 +117,12 @@ export function pnpmCommand(entry) {
 /** Accept only a source-frozen backend, never the existing app's resources. */
 export async function inspectBackend(directory, expectedVersion, productRoot = root) {
   const backend = await realpath(directory);
-  const app = resolve(productRoot, 'app');
+  // Windows TEMP may name RUNNER~1 while realpath returns runneradmin.
+  // Canonicalize the existing owner even when a fresh source clone has no app/.
+  const product = await realpath(productRoot);
+  let app = join(product, 'app');
+  try { app = await realpath(app); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   const rel = relative(app, backend);
   if (rel === '' || (!rel.startsWith('..' + sep) && rel !== '..' && !isAbsolute(rel))) {
     throw new Error('Existing app resources are not an allowed source-built backend');
