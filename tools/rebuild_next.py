@@ -48,6 +48,15 @@ def deploy_frontend(deployed, source, stamp):
     return deployed
 
 
+def bundled_plugins():
+    """Source-built plugins that ship inside the installer, in a stable order."""
+    candidates = [ROOT / 'plugins-ui/somnus-home']
+    tools = ROOT / 'plugins-ui/tools'
+    if tools.is_dir():
+        candidates.extend(sorted((path for path in tools.iterdir() if path.is_dir()), key=lambda path: path.name))
+    return [(path, path.name) for path in candidates if (path / 'package.json').is_file()]
+
+
 def deploy_bundle(source, target, stamp):
     """Replace the packaged copy of one installer-shipped plugin.
 
@@ -57,7 +66,7 @@ def deploy_bundle(source, target, stamp):
     failure; no user data lives below ``app/resources``.
     """
     if not (source / 'package.json').is_file() or not (source / 'dist/client.js').is_file():
-        raise RuntimeError('The home plugin source is incomplete (need package.json and dist/client.js): ' + str(source))
+        raise RuntimeError('Plugin source is incomplete (need package.json and dist/client.js): ' + str(source))
     target.parent.mkdir(parents=True, exist_ok=True)
     staged = target.parent / ('.bundle-pending-' + stamp)
     previous = target.parent / ('.bundle-previous-' + stamp)
@@ -72,7 +81,7 @@ def deploy_bundle(source, target, stamp):
         if moved and not target.exists():
             previous.rename(target)
         shutil.rmtree(staged, ignore_errors=True)
-        raise RuntimeError('Could not deploy the bundled home plugin to ' + str(target)) from error
+        raise RuntimeError('Could not deploy the bundled plugin to ' + str(target)) from error
     if moved:
         shutil.rmtree(previous, ignore_errors=True)
     return target
@@ -95,7 +104,10 @@ def inspect():
         raise RuntimeError('The local pinned DSH Next build input is missing or has changed.')
     for relative in ('app/Somnus.exe', 'app/resources/app.asar', 'electron/runtime/resources.cjs',
                      'electron/bundled-plugins.cjs', 'desktop/dsh_next/stage-next.mjs', 'launcher.py',
-                     'plugins-ui/somnus-home/package.json', 'plugins-ui/somnus-home/dist/client.js'):
+                     'plugins-ui/somnus-home/package.json', 'plugins-ui/somnus-home/dist/client.js',
+                     'plugins-ui/tools/sql-query/package.json', 'plugins-ui/tools/sql-query/dist/client.js',
+                     'plugins-ui/tools/deep-analysis/package.json', 'plugins-ui/tools/deep-analysis/dist/client.js',
+                     'plugins-ui/tools/waveform/package.json', 'plugins-ui/tools/waveform/dist/client.js'):
         if not (ROOT / relative).is_file():
             raise RuntimeError('Missing local project file: ' + relative)
     return baseline, manifest
@@ -147,9 +159,10 @@ def main():
     host_copy = "require(process.argv[1]).copyHostFiles(process.argv[2],process.argv[3]).then(x=>console.log(JSON.stringify(x)))"
     subprocess.run([node, '-e', host_copy, str(ROOT / 'electron/runtime/resources.cjs'),
                     str(ROOT / 'electron'), str(resources / 'somnus')], cwd=ROOT, env=env, check=True)
-    # The installer ships the home plugin under resources/bundles; the DSH
-    # profile links that deployed directory, not the source tree.
-    deploy_bundle(ROOT / 'plugins-ui/somnus-home', resources / 'bundles/somnus-home', stamp)
+    # The installer ships the source-built plugins under resources/bundles; the DSH
+    # profile links those deployed directories, not the source tree.
+    for source, name in bundled_plugins():
+        deploy_bundle(source, resources / 'bundles' / name, stamp)
     if args.frontend:
         deploy_frontend(resources / 'backend/_internal/page_design/web', ROOT / 'page_design/web', stamp)
     # Keep the working archive until every overlay and resource operation has succeeded.

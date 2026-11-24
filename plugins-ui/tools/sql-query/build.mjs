@@ -2,7 +2,7 @@
  * 用仓库里已装好的 esbuild 构建 DSH 客户端模块（不 pnpm install、不联网）。
  *
  * 产物：dist/client.js
- *   window.__ModuleLoader__.load({ id: '@local/somnus-tools-probe', factory(require) { ... } })
+ *   window.__ModuleLoader__.load({ id: '@local/somnus-tool-sql', factory(require) { ... } })
  *   内部是 esbuild 的 CJS 产物原样包裹；宿主模块表提供 react（external: ['react']），
  *   antd / @ant-design/icons 从 page_design/frontend/node_modules 解析后打进 bundle；react 与 react-dom 由宿主模块表提供（external），避免出现第二份 React DOM。
  *
@@ -20,11 +20,11 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const PACKAGE_ID = '@local/somnus-tools-probe'
+const PACKAGE_ID = '@local/somnus-tool-sql'
 const require = createRequire(import.meta.url)
-// plugins-ui/tools-probe/build.mjs → 仓库根目录
+// plugins-ui/tools/sql-query/build.mjs → 仓库根目录（3 层）（3 层）
 const pluginRoot = dirname(fileURLToPath(import.meta.url))
-const repoRoot = resolve(pluginRoot, '..', '..')
+const repoRoot = resolve(pluginRoot, '..', '..', '..')
 const frontendNodeModules = join(repoRoot, 'page_design', 'frontend', 'node_modules')
 const waveformPluginPath = join(repoRoot, 'desktop', 'dsh_next', 'client', 'waveform-build.mjs')
 
@@ -36,10 +36,10 @@ const entry = join(pluginRoot, 'src', 'entry.tsx')
 const outDir = join(pluginRoot, 'dist')
 const outFile = join(outDir, 'client.js')
 
-console.log(`[somnus-tools-probe] entry: ${entry}`)
-console.log(`[somnus-tools-probe] esbuild: ${esbuild.version}`)
-console.log(`[somnus-tools-probe] node paths: ${frontendNodeModules}`)
-console.log(`[somnus-tools-probe] waveform plugin: ${waveformPluginPath}`)
+console.log(`[somnus-tool-sql] entry: ${entry}`)
+console.log(`[somnus-tool-sql] esbuild: ${esbuild.version}`)
+console.log(`[somnus-tool-sql] node paths: ${frontendNodeModules}`)
+console.log(`[somnus-tool-sql] waveform plugin: ${waveformPluginPath}`)
 
 const result = await esbuild.build({
   entryPoints: [entry],
@@ -76,11 +76,11 @@ const bundled = result.outputFiles[0].text
 const indented = bundled.split('\n').map(line => (line === '' ? '' : `    ${line}`)).join('\n')
 
 const wrapped = `/**
- * Somnus 工具页对照插件客户端模块。
+ * Somnus 业务工具插件客户端模块（数据查询）。
  * 由 build.mjs 自动生成，请勿手改；重新构建：node build.mjs
  *
  * 渲染代码就是原内置工具页源码（已从 desktop/dsh_next/client/ 移入 src/，由插件自带）：
- *   NativeTools → SqlQuery / DeepAnalysis / NativeWaveform
+ *   页面组件复用仓库源码：数据查询。
  */
 window.__ModuleLoader__.load({
   id: '${PACKAGE_ID}',
@@ -98,4 +98,4 @@ await mkdir(outDir, { recursive: true })
 await writeFile(outFile, wrapped, 'utf8')
 
 const bytes = Buffer.byteLength(wrapped, 'utf8')
-console.log(`[somnus-tools-probe] wrote ${outFile} (${bytes} bytes, ${(bytes / 1024).toFixed(1)} KiB)`)
+console.log(`[somnus-tool-sql] wrote ${outFile} (${bytes} bytes, ${(bytes / 1024).toFixed(1)} KiB)`)

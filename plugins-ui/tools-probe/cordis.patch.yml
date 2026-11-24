@@ -1,7 +1,0 @@
-# Somnus 工具页对照插件自带的配置层。
-#
-# 必须写成 insert 形式（不能是空数组 []）：只有插入一行，这个包才会出现在
-# DSH「插件」页的清单里并真正被装载。
-- insert:
-    - id: somnus-tools-probe
-      name: '@local/somnus-tools-probe'

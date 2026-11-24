@@ -1,0 +1,24 @@
+{
+  "name": "@local/somnus-tool-sql",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Somnus 业务工具插件：SQL 查询。页面由插件提供，入口在内置「工具」页。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "immediately": true },
+    "somnus": { "kind": "tool" }
+  }
+}

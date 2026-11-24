@@ -1,8 +1,8 @@
 {
-  "name": "@local/somnus-tools-probe",
-  "version": "1.0.0",
+  "name": "@local/somnus-tool-deep-analysis",
+  "version": "0.1.0",
   "private": true,
-  "description": "Somnus 工具页对照插件：以插件形式渲染与内置「工具」页同一份组件，供并排比对差异。",
+  "description": "Somnus 业务工具插件：深度分析。页面由插件提供，入口在内置「工具」页。",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -18,9 +18,7 @@
   ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
-    "client": {
-      "platform": "web",
-      "immediately": true
-    }
+    "client": { "platform": "web", "immediately": true },
+    "somnus": { "kind": "tool" }
   }
 }
