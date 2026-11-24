@@ -167,7 +167,10 @@ export function startSomnus({ DesktopHostProcess, DesktopBackendController, Desk
       return removed;
     });
     ipcMain.handle('somnus:api:request', async (event, payload) => {
-      if (!dshWindow || dshWindow.isDestroyed() || event.sender !== dshWindow.webContents) {
+      const frame = event.senderFrame;
+      if (!dshWindow || dshWindow.isDestroyed() || event.sender !== dshWindow.webContents ||
+          !frame || frame !== dshWindow.webContents.mainFrame || frame.detached ||
+          !dshUrl || URL.parse(frame.url || '')?.origin !== new URL(dshUrl).origin) {
         throw new Error('Somnus API bridge rejected an unowned renderer');
       }
       const target = typeof payload?.path === 'string' ? payload.path : '';
@@ -178,6 +181,9 @@ export function startSomnus({ DesktopHostProcess, DesktopBackendController, Desk
       const method = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(payload?.method) ? payload.method : 'GET';
       const headers = { ...(payload?.headers && typeof payload.headers === 'object' ? payload.headers : {}) };
       headers['X-Data-Agent-Native'] = somnusToken;
+      // Main-process net.fetch has no browser Origin by default. The backend
+      // requires this local intent marker before accepting authenticated POSTs.
+      headers['X-Data-Agent-Local'] = '1';
       const response = await net.fetch(somnusOrigin + target, {
         method, headers, redirect: 'error',
         ...(method === 'GET' || method === 'HEAD' ? {} : payload?.body === undefined ? {} : { body: payload.body }),
@@ -195,6 +201,16 @@ export function startSomnus({ DesktopHostProcess, DesktopBackendController, Desk
   const engineLog = message => {
     const line = `${new Date().toISOString()} ${message}\n`;
     void appendFile(join(app.getPath('logs'), 'somnus-engine.log'), line).catch(error => console.error(error));
+  };
+  // The packaged installer ships plugins next to the other resources. Absent in
+  // an unpackaged launch, where seeding is a no-op.
+  const bundledPlugins = () => {
+    try {
+      return require(join(process.resourcesPath, 'somnus', 'bundled-plugins.cjs')).seedBundledPlugins;
+    } catch (error) {
+      engineLog(`Bundled plugin seeder unavailable: ${error.message}`);
+      return undefined;
+    }
   };
   const splashPage = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8">
@@ -355,7 +371,23 @@ export function startSomnus({ DesktopHostProcess, DesktopBackendController, Desk
     let startupTimer;
     try {
       await Promise.race([
-        engine.start(() => manager.applyRelease()),
+        // `applyRelease` initializes `<home>/profiles/desktop` (DSH template)
+        // and the host loads that profile only after this callback resolves, so
+        // seeding here is visible on the very first launch without a restart.
+        engine.start(async () => {
+          await manager.applyRelease();
+          const seed = bundledPlugins();
+          if (!seed) return;
+          try {
+            const result = seed({ bundlesDir: join(process.resourcesPath, 'bundles'), dshHome: home,
+              log: message => engineLog(`Bundled plugins: ${message}`) });
+            if (result.added.length || result.skipped.length || result.errors.length) {
+              engineLog(`Bundled plugins: ${JSON.stringify(result)}`);
+            }
+          } catch (error) {
+            engineLog(`Bundled plugin seeding failed: ${error?.message ?? error}`);
+          }
+        }),
         new Promise((_, reject) => { startupTimer = setTimeout(() => reject(new Error('Somnus workspace startup timed out after 60 seconds')), 60000); }),
       ]);
     } finally { clearTimeout(startupTimer); }

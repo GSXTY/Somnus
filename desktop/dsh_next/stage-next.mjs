@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { cachePath } from '../storage-paths.mjs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { join, normalize, resolve } from 'node:path';
@@ -17,12 +17,16 @@ const release = JSON.parse(await readFile(new URL('next-release.json', import.me
 const branding = JSON.parse(await readFile(new URL('branding.json', import.meta.url), 'utf8'));
 const somnusPackage = JSON.parse(await readFile(join(root, 'electron', 'package.json'), 'utf8'));
 const requireElectron = createRequire(join(root, 'electron', 'package.json'));
-const requireBuilder = createRequire(requireElectron.resolve('electron-builder'));
-const requireBuilderLib = createRequire(requireBuilder.resolve('app-builder-lib'));
-const requireAsar = createRequire(requireBuilderLib.resolve('@electron/asar'));
-const asar = requireBuilderLib('@electron/asar');
-const { Pickle } = requireAsar('./pickle');
-const { getFileIntegrity } = requireAsar('./integrity');
+let archiveTools;
+function getArchiveTools() {
+  if (archiveTools) return archiveTools;
+  const requireBuilder = createRequire(requireElectron.resolve('electron-builder'));
+  const requireBuilderLib = createRequire(requireBuilder.resolve('app-builder-lib'));
+  const requireAsar = createRequire(requireBuilderLib.resolve('@electron/asar'));
+  archiveTools = { requireBuilderLib, asar: requireBuilderLib('@electron/asar'),
+    Pickle: requireAsar('./pickle').Pickle, getFileIntegrity: requireAsar('./integrity').getFileIntegrity };
+  return archiveTools;
+}
 const hostRoot = 'dsh/node_modules/@deepseek-ai';
 const appId = 'com.vvfly.somnusnext';
 const packageName = 'somnus-next-desktop';
@@ -44,9 +48,15 @@ startSomnus({ DesktopHostProcess, DesktopBackendController, DesktopProjectManage
 `);
 }
 
-async function createChanges(read) {
+/** Build Somnus transforms for a pinned release or a locally compiled source tree. */
+export async function createSomnusChanges(read, { sourceBuild, profileBootFile } = {}) {
   const manifest = JSON.parse(read('package.json'));
-  if (manifest.name !== 'dsh-next-desktop' || manifest.main !== 'lib/main.js' ||
+  if (sourceBuild) {
+    if (manifest.main !== 'lib/main.js' || sourceBuild.commit !== release.commit || sourceBuild.entry !== 'somnus-source/main.mjs' ||
+        !profileBootFile || !/^dsh\/node_modules\/@deepseek-ai\/dsh\/lib\/profile-boot-[A-Za-z0-9_-]+\.js$/.test(profileBootFile)) {
+      throw new Error('The source build does not carry the pinned Somnus source entry and profile boot module.');
+    }
+  } else if (manifest.name !== 'dsh-next-desktop' || manifest.main !== 'lib/main.js' ||
       manifest.version !== release.version || manifest.dshBuildCommit !== release.commit ||
       manifest.dshBuildDirty !== false || manifest.dshNext?.repository !== release.repository) {
     throw new Error(`Expected the unmodified ${release.repository} Windows release ${release.version} (${release.commit}).`);
@@ -54,19 +64,20 @@ async function createChanges(read) {
   const helperTs = await readFile(new URL('host/somnus-desktop.ts', import.meta.url), 'utf8');
   const helperJs = stripTypeScriptTypes(helperTs, { mode: 'strip' });
   const desktopHost = `${hostRoot}/dsh-desktop-host/lib/index.js`;
-  const profile = `${hostRoot}/dsh/lib/profile-boot-QhDEDXsF.js`;
+  const profile = sourceBuild ? profileBootFile : `${hostRoot}/dsh/lib/profile-boot-QhDEDXsF.js`;
   const appBoot = `${hostRoot}/dsh-app-boot/lib/index.js`;
   const { dshNext, ...baseManifest } = manifest;
   const changes = new Map([
     ...buildNativeDeepSeekReasoningOverlay(read),
     ['package.json', Buffer.from(JSON.stringify({ ...baseManifest, name: packageName,
       version: somnusPackage.version, description: somnusPackage.description, author: somnusPackage.author,
-      productName: branding.appName, dshDesktopAppId: appId, somnusDistribution: { upstream: release } }, null, 2))],
+      productName: branding.appName, dshDesktopAppId: appId,
+      somnusDistribution: { upstream: release, ...(sourceBuild ? { sourceBuild } : {}) } }, null, 2))],
     ['lib/somnus-desktop.mjs', Buffer.from(helperJs)],
     ['lib/product-profile.mjs', await readFile(new URL('host/product-profile.mjs', import.meta.url))],
     ['lib/standalone-main.mjs', await readFile(new URL('host/standalone-main.mjs', import.meta.url))],
     ['lib/acp-host.mjs', await readFile(new URL('host/acp-host.mjs', import.meta.url))],
-    ['lib/main.js', standaloneMain(read)],
+    ...sourceBuild ? [] : [['lib/main.js', standaloneMain(read)]],
     ['lib/somnus-preload.cjs', Buffer.from(read('lib/preload-app.cjs').toString('utf8')
       .replace('location.protocol === `dsh-app:` && location.hostname === "app" && process.isMainFrame ? createProductApi() : { protocolVersion: 1 }',
         '(location.protocol === `dsh-app:` && location.hostname === "app" || location.protocol === "http:" && location.hostname === "127.0.0.1") && process.isMainFrame ? createProductApi() : { protocolVersion: 1 }')
@@ -110,10 +121,16 @@ async function createChanges(read) {
   const bootWordmark = 'this.wordmark=$r(br.wordmark,"HARNESS")';
   const bootHint = 'this.hint=$r(br.hint,"Loading plugins…")';
   let bootSource = read(bootFile).toString('utf8');
-  if (!bootSource.includes(bootWordmark) || !bootSource.includes(bootHint)) {
+  if (sourceBuild) {
+    const wordmark = /(this\.wordmark=[\w$]+\([\w$.]+,)["`]HARNESS["`](\))/g;
+    const hint = /(this\.hint=[\w$]+\([\w$.]+,)["`]Loading plugins…["`](\))/g;
+    if ([...bootSource.matchAll(wordmark)].length !== 1 || [...bootSource.matchAll(hint)].length !== 1) {
+      throw new Error('Expected the source-built DSH boot screen.');
+    }
+    bootSource = bootSource.replace(wordmark, '$1"Somnus"$2').replace(hint, '$1"正在启动 Somnus…"$2');
+  } else if (!bootSource.includes(bootWordmark) || !bootSource.includes(bootHint)) {
     throw new Error('Expected the pinned DSH boot screen.');
-  }
-  bootSource = bootSource
+  } else bootSource = bootSource
     .replace(bootWordmark, 'this.wordmark=$r(br.wordmark,"Somnus")')
     .replace(bootHint, 'this.hint=$r(br.hint,"正在启动 Somnus…")');
   changes.set(bootFile, Buffer.from(bootSource));
@@ -139,6 +156,7 @@ async function createChanges(read) {
 
 /** Preserve all unmodified packed offsets, links, and unpacked file records. */
 async function rewriteArchive(input, output, changes) {
+  const { asar, Pickle, getFileIntegrity } = getArchiveTools();
   const { header, headerSize } = asar.getRawHeader(input);
   const dataStart = 8 + headerSize;
   let offset = (await stat(input)).size - dataStart;
@@ -170,6 +188,7 @@ async function rewriteArchive(input, output, changes) {
 }
 
 async function writeVerifiedArchive(original, target, changes) {
+  const { asar } = getArchiveTools();
   await rewriteArchive(original, target, changes);
   for (const [file, contents] of changes) {
     if (!asar.extractFile(target, normalize(file)).equals(contents)) throw new Error(`Staged ASAR failed verification at ${file}.`);
@@ -183,6 +202,7 @@ async function digest(file) {
 }
 
 async function brandWindowsExecutable(input, output) {
+  const { requireBuilderLib } = getArchiveTools();
   const { NtExecutable, NtExecutableResource, Data, Resource } = requireBuilderLib('resedit');
   const executable = NtExecutable.from(await readFile(input));
   const resources = NtExecutableResource.from(executable);
@@ -221,12 +241,13 @@ function copyWindowsTree(source, target, ignored = []) {
 }
 
 async function stage(installation, backend, installer) {
+  const { asar } = getArchiveTools();
   if (await digest(installer) !== release.windowsInstallerSha256) throw new Error('DSH Next installer checksum does not match the pinned release.');
   const source = await realpath(installation);
   const original = join(source, 'resources', 'app.asar');
   const service = await realpath(backend);
   if (!(await stat(join(service, 'SomnusBackend.exe'))).isFile()) throw new Error('Build the Somnus launcher backend first.');
-  const changes = await createChanges(name => asar.extractFile(original, normalize(name)));
+  const changes = await createSomnusChanges(name => asar.extractFile(original, normalize(name)));
   const scratch = cachePath(root, 'tmp');
   await mkdir(scratch, { recursive: true });
   const preview = await mkdtemp(join(scratch, 'somnus-next-stage-'));
@@ -250,28 +271,45 @@ async function stage(installation, backend, installer) {
     await copyWindowsTree(terminalSource, join(support, 'node_modules', 'node-pty'));
     break;
   }
-  for (const name of ['agents', 'shared-documents', 'THIRD_PARTY_LICENSES']) {
+  for (const name of ['agents', 'shared-documents', 'bundles', 'THIRD_PARTY_LICENSES']) {
     const previous = join(legacyResources, name);
     if (await stat(previous).then(info => info.isDirectory(), () => false)) {
       await copyWindowsTree(previous, join(app, 'resources', name));
     }
   }
+  // The installer carries its own copy of the home plugin. Copy it from the
+  // source tree so a full stage always matches the plugin actually built here,
+  // even when the local `app/resources/bundles` copy is stale or missing.
+  const bundledHome = join(app, 'resources', 'bundles', 'somnus-home');
+  if (!(await stat(join(root, 'plugins-ui', 'somnus-home', 'dist', 'client.js')).then(info => info.isFile(), () => false))) {
+    throw new Error('Build the Somnus home plugin first: plugins-ui/somnus-home/dist/client.js is missing.');
+  }
+  await rm(bundledHome, { recursive: true, force: true });
+  await mkdir(join(app, 'resources', 'bundles'), { recursive: true });
+  await cp(join(root, 'plugins-ui', 'somnus-home'), bundledHome, { recursive: true });
   await cp(join(root, 'USER_GUIDE.md'), join(app, 'resources', '使用说明.txt'));
   await writeVerifiedArchive(original, target, changes);
   await writeFile(join(preview, 'stage.json'), JSON.stringify({ upstream: release, executable: join(app, 'Somnus.exe') }, null, 2));
   console.log(app);
 }
 
+async function main() {
 const [installation, backend, installer, ...extra] = process.argv.slice(2);
 if (process.platform !== 'win32' || !installation || !backend || !installer || extra.length) {
   throw new Error('Usage: node desktop/dsh_next/stage-next.mjs <extracted DSH Next release> <SomnusBackend directory> <upstream installer>');
 }
 if (installation === '--archive-only') {
+  const { asar } = getArchiveTools();
   const original = await realpath(backend);
-  const changes = await createChanges(file => asar.extractFile(original, normalize(file)));
+  const changes = await createSomnusChanges(file => asar.extractFile(original, normalize(file)));
   await writeVerifiedArchive(original, resolve(installer), changes);
 } else if (installation === '--brand-only') {
   await brandWindowsExecutable(await realpath(backend), resolve(installer));
 } else {
   await stage(resolve(installation), resolve(backend), resolve(installer));
 }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+
+export { rewriteArchive as rewriteSomnusArchive, brandWindowsExecutable as brandSomnusExecutable };
