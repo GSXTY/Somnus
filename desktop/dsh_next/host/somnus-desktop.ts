@@ -311,6 +311,7 @@ export function createSomnusDesktop() {
 
   return { start, openHome, launchFolder, setupTray,
     setPrimaryFocus: (focus: (() => boolean) | undefined) => { primaryFocus = focus },
+    openProfiles: () => profileControls().openProfiles(),
     openRecovery: (error: Error) => profileControls().openRecovery(error),
     engineEnabled: () => !profileControls().safeMode && !profileControls().isRecovery,
     close: async () => {

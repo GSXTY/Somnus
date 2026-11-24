@@ -100,8 +100,17 @@ export function startSomnus({ DesktopHostProcess, DesktopBackendController, Desk
   const registerSomnusApi = () => {
     if (somnusApiRegistered) return;
     somnusApiRegistered = true;
+    // Menu actions report failures through the shared workbench error path so
+    // none of them can surface as an unhandled rejection.
+    const menuAction = run => () => {
+      try { void Promise.resolve(run()).catch(reportWorkbenchError); } catch (error) { reportWorkbenchError(error); }
+    };
     registerNativeChrome({ ipcMain, getWindow: () => dshWindow, rendererOrigin: () => dshUrl ? new URL(dshUrl).origin : '',
-      nativeTheme, Menu, app, readDeviceInfo, resolveDesktopLocale });
+      nativeTheme, Menu, app, readDeviceInfo, resolveDesktopLocale, actions: {
+        openProfiles: menuAction(() => workbench.openProfiles?.()),
+        openRecovery: menuAction(() => workbench.openRecovery?.(new Error('从应用菜单打开故障恢复'))),
+        openLogs: menuAction(() => shell.openPath(app.getPath('logs')).then(error => { if (error) throw new Error(error) })),
+      } });
     ipcMain.handle('somnus:configuration', (event, method, args) => {
       if (!configurationDispatch) throw new Error('Somnus configuration is not ready');
       return configurationDispatch(event, method, args);
