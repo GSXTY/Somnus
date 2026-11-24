@@ -22,7 +22,7 @@ test('the Vite build manifest includes both final entries and the source of the 
 
   const plugin = frontendBuildManifest();
   plugin.configResolved({ root, build: { outDir: 'dist' } });
-  await plugin.closeBundle();
+  await plugin.writeBundle();
 
   assert.equal(await readFile(join(output, 'index.html'), 'utf8'), index);
   const embed = await readFile(join(output, 'embed.html'), 'utf8');
