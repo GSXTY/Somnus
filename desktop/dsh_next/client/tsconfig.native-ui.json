@@ -25,6 +25,7 @@
   },
   "include": [
     "NativeAgentSettings.tsx",
+    "NativeTools.tsx",
     "nativeAssetTypes.d.ts",
     "nativeUiTypes.d.ts",
     "NativeDocumentLibrary.tsx"
