@@ -1,0 +1,26 @@
+{
+  "name": "@local/somnus-tools-probe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Somnus 工具页对照插件：以插件形式渲染与内置「工具」页同一份组件，供并排比对差异。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
