@@ -18,7 +18,7 @@ export function frontendBuildManifest() {
  let root, output;
  return { name: 'somnus-verified-build-manifest', apply: 'build',
   configResolved(config) { root = config.root; output = path.resolve(root, config.build.outDir); },
-  async closeBundle() {
+  async writeBundle() {
    await makeEmbed(output);
    const sources = ['package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'vite.config.ts', 'build-manifest.mjs', 'index.html', 'scripts/make-embed.mjs'];
    for (const directory of ['src', 'public']) {

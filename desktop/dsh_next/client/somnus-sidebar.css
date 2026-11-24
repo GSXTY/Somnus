@@ -1,0 +1,218 @@
+/*
+ * Somnus sidebar skin for the DSH shell.
+ *
+ * Visual alignment with the legacy web workbench sidebar
+ * (page_design/frontend/src/app/workspace-layout.css, .workspace-sidebar-*, .nav-rail-*):
+ * soft sage fill, larger radii, looser rows, mint selection with a leading accent,
+ * lighter group captions and a settings trigger that shares the row rhythm.
+ *
+ * Selector evidence (read from app/resources/app.asar):
+ *   @deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx
+ *     -> <div data-app-frame>, sidebar column is its first <div> child.
+ *   @deepseek-ai/dsh-client-ui-sidebar/src/client/SidebarRoot.tsx
+ *     -> toggle button [data-sidebar-toggle], scroll seat [data-sidebar-scrollport],
+ *        panel list <nav> (the only <nav> inside the scroll seat),
+ *        row buttons carry aria-current="page" when active.
+ *   @deepseek-ai/dsh-client-ui-workspace/src/client/SidebarSections.tsx
+ *     -> <section data-sidebar-section="recent|pinned|<custom>">,
+ *        <div data-sidebar-section-header>, heading is its first <button>.
+ *   @deepseek-ai/dsh-client-ui-workspace/src/client/rows/WorkspaceBrowser.tsx
+ *     -> <div data-sidebar-list-area>, <div data-sidebar-workspace-header>
+ *        with the 工作区 label in its first <button>.
+ *   @deepseek-ai/dsh-client-ui-workspace/src/client/SidebarSessionRows.tsx
+ *     -> [role="listitem"][data-row-key="<source>-session:<id>"] with an inner
+ *        button[aria-current="page"] for the open conversation.
+ *   @deepseek-ai/dsh-client-ui-workspace/src/client/rows/Rows.tsx
+ *     -> [role="treeitem"][data-row-key="workspace:<id>"] (aria-selected) and
+ *        [role="treeitem"][data-row-key="session:<id>"] (aria-selected).
+ *   @deepseek-ai/dsh-client-ui-settings-general/src/client/SettingsRoot.tsx
+ *     -> settings trigger <button aria-haspopup="dialog"> inside the footer row.
+ *
+ * Upstream design tokens are overridden on the sidebar column only, so the chat
+ * surface, the settings dialog and the tool iframes keep their own palette.
+ */
+
+/* The sidebar column: the frame child that owns the sidebar toggle. */
+[data-app-frame] > div:has([data-sidebar-toggle]) {
+  --somnus-sidebar-fill: #f1f8f3;
+  --somnus-sidebar-fill-deep: #e8f2ec;
+  --somnus-sidebar-ink: #1a3a2f;
+  --somnus-sidebar-ink-soft: #4f6a61;
+  --somnus-sidebar-caption: #7e938b;
+  --somnus-sidebar-hover: rgba(47, 125, 107, 0.085);
+  --somnus-sidebar-selected: #ddefe4;
+  --somnus-sidebar-selected-ink: #1c6455;
+  --somnus-sidebar-accent: #2f7d6b;
+  --somnus-sidebar-line: rgba(47, 125, 107, 0.14);
+
+  /* Upstream tokens consumed by sidebar rows, headers and controls. */
+  --dsw-specific-sidebar-fill: var(--somnus-sidebar-fill);
+  --dsw-specific-sidebar-nav-item-active: var(--somnus-sidebar-selected);
+  --dsw-alias-interactive-bg-hover: var(--somnus-sidebar-hover);
+  --dsw-alias-label-primary: var(--somnus-sidebar-ink);
+  --dsw-alias-label-secondary: var(--somnus-sidebar-ink-soft);
+  --dsw-alias-label-tertiary: var(--somnus-sidebar-caption);
+  --dsw-alias-label-caption: var(--somnus-sidebar-caption);
+
+  /* Larger rounding and looser rhythm, matching the web sidebar rows. */
+  --dsw-radius-sm: 8px;
+  --dsw-radius-md: 10px;
+  --dsw-radius-lg: 14px;
+  --dsh-sidebar-row-padding: 14px;
+  --dsh-sidebar-label-gap: 10px;
+  --dsh-sidebar-inline-padding: 10px;
+  --dsh-scrollbar-thumb: rgba(47, 125, 107, 0.18);
+
+  background-color: var(--somnus-sidebar-fill);
+}
+
+/* Soft vertical sage wash on the expanded sidebar (rail keeps the flat fill). */
+[data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) {
+  background-image: linear-gradient(186deg, #f6fbf8 0%, #f0f7f3 52%, #e9f3ed 100%);
+}
+
+/* ---- Group captions: 工作区 / 最近 / pinned / custom sections ---- */
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-section-header] > button:first-child,
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-workspace-header] > button:first-child {
+  color: var(--somnus-sidebar-caption);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-section-header],
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-workspace-header] {
+  min-height: 30px;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-section] {
+  margin-block: 14px 6px;
+}
+
+/* ---- Rows: taller, rounder, roomier icon/text gap ---- */
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > button,
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > div > button {
+  min-height: 36px;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="listitem"][data-row-key],
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="treeitem"][data-row-key] {
+  height: 36px;
+  min-height: 36px;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="listitem"][data-row-key] > button,
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="treeitem"][data-row-key] > button {
+  height: 36px;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="list"],
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav {
+  gap: 4px;
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="treeitem"] + [role="treeitem"] {
+  margin-top: 4px;
+}
+
+/* ---- Selection: mint fill plus a leading accent bar ---- */
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > button[aria-current="page"],
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > div:has(> button[aria-current="page"]),
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="listitem"][data-row-key]:has(> button[aria-current="page"]),
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="treeitem"][data-row-key][aria-selected="true"] {
+  background-color: var(--somnus-sidebar-selected);
+  color: var(--somnus-sidebar-selected-ink);
+  box-shadow: inset 3px 0 0 var(--somnus-sidebar-accent);
+}
+
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > button[aria-current="page"] .anticon,
+[data-app-frame] > div:has([data-sidebar-toggle]) [role="listitem"][data-row-key]:has(> button[aria-current="page"]) svg {
+  color: var(--somnus-sidebar-accent);
+}
+
+/* The panel row inside a selected entry must not paint a second fill. */
+[data-app-frame] > div:has([data-sidebar-toggle]) [data-sidebar-scrollport] nav > div:has(> button[aria-current="page"]) > button {
+  background-color: transparent;
+}
+
+/* ---- Footer settings trigger: same rhythm as the list rows ---- */
+[data-app-frame]:not([data-sidebar-collapsed]) > div:has([data-sidebar-toggle]) div:has(> button[aria-haspopup="dialog"]) {
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--somnus-sidebar-line);
+}
+
+[data-app-frame]:not([data-sidebar-collapsed]) > div:has([data-sidebar-toggle]) button[aria-haspopup="dialog"] {
+  min-height: 38px;
+  color: var(--somnus-sidebar-ink);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+@media (hover: hover) {
+  [data-app-frame] > div:has([data-sidebar-toggle]) button[aria-haspopup="dialog"]:hover {
+    background-color: var(--somnus-sidebar-hover);
+  }
+}
+
+/* ---- New session button: soft sage chip instead of the flat elevated plate ---- */
+[data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) > button[aria-keyshortcuts] {
+  height: 40px;
+  border-radius: 12px;
+  border-color: rgba(47, 125, 107, 0.18);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--somnus-sidebar-selected-ink);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(23, 58, 46, 0.04);
+}
+
+@media (hover: hover) {
+  [data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) > button[aria-keyshortcuts]:hover {
+    background: #e3f1e8;
+  }
+}
+
+/* ---- Dark theme: reuse the same tokens with a deep forest palette ---- */
+body[data-ds-dark-theme] [data-app-frame] > div:has([data-sidebar-toggle]) {
+  --somnus-sidebar-fill: #17231f;
+  --somnus-sidebar-fill-deep: #131d1a;
+  --somnus-sidebar-ink: #e4efe8;
+  --somnus-sidebar-ink-soft: #a9c0b4;
+  --somnus-sidebar-caption: #7e968a;
+  --somnus-sidebar-hover: rgba(160, 220, 190, 0.1);
+  --somnus-sidebar-selected: #24443a;
+  --somnus-sidebar-selected-ink: #cfe9dc;
+  --somnus-sidebar-accent: #79c4a7;
+  --somnus-sidebar-line: rgba(160, 220, 190, 0.16);
+  --dsh-scrollbar-thumb: rgba(160, 220, 190, 0.2);
+
+  background-color: var(--somnus-sidebar-fill);
+}
+
+body[data-ds-dark-theme] [data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) {
+  background-image: linear-gradient(186deg, #1a2723 0%, #17231f 55%, #131d1a 100%);
+}
+
+body[data-ds-dark-theme] [data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) > button[aria-keyshortcuts] {
+  border-color: rgba(160, 220, 190, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--somnus-sidebar-ink);
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  body[data-ds-dark-theme] [data-app-frame] > div:has([data-sidebar-toggle]) div:has(> div > [data-sidebar-scrollport]) > button[aria-keyshortcuts]:hover {
+    background: rgba(160, 220, 190, 0.12);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-app-frame] > div:has([data-sidebar-toggle]) :is(
+    [data-sidebar-scrollport] nav > button,
+    [role="listitem"][data-row-key],
+    [role="treeitem"][data-row-key],
+    button[aria-haspopup="dialog"]
+  ) {
+    transition: background-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+  }
+}

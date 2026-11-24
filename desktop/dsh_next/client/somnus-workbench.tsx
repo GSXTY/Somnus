@@ -7,11 +7,14 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import './somnus-workbench.css'
-import { LegacyWorkbench } from './LegacyWorkbench'
+import './somnus-sidebar.css'
 import { NativeDocumentLibrary } from './NativeDocumentLibrary'
 import { attachConfigurationRelay, nativeRefreshActivity } from '../../../page_design/frontend/src/configuration/embeddedConfigurationBridge.mjs'
 import { NativeAgentSettings, NativeModelSettingsAction, NativeModelIdentity } from './NativeAgentSettings'
+import { somnusToolRegistry } from './toolRegistry'
 export { NativeAgentSettings, NativeModelIdentity } from './NativeAgentSettings'
+
+const NativeTools = lazy(() => import('./NativeTools'))
 
 export interface SomnusApiBridge {
   request(path: string): Promise<{ status: number; body: ArrayBuffer }>
@@ -24,13 +27,10 @@ export interface SomnusApiBridge {
   onConfigurationUpdate?(listener: (update: unknown) => void): () => void
 }
 
-const NativeTools = lazy(() => import('./NativeTools'))
-
 const localeId = 'somnus-workbench'
 let inspectNativeActivity = () => ({ known: false, active: true })
 const zh = {
   chat: '会话管理',
-  home: '主页',
   documents: '文档',
   tools: '工具',
   config: '配置中心',
@@ -41,7 +41,6 @@ const zh = {
 }
 const en: typeof zh = {
   chat: 'Chats',
-  home: 'Home',
   documents: 'Documents',
   tools: 'Tools',
   config: 'Configuration',
@@ -57,11 +56,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-type PageKey = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
-type IconName = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type PageKey = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type IconName = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
 
 const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: IconName; order: number }[] = [
-  { id: 'somnus-home' as MainPanelId, key: 'home', view: 'dashboard', icon: 'home', order: -10 },
   { id: 'somnus-documents' as MainPanelId, key: 'documents', view: 'documents', icon: 'documents', order: -9 },
   { id: 'somnus-tools' as MainPanelId, key: 'tools', view: 'plugins', icon: 'tools', order: -8 },
 ]
@@ -69,7 +67,6 @@ const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: Icon
 function PanelIcon({ size, name }: { size: number; name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
     chat: <><path d="M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z" /><path d="M8 9h8M8 12h5" /></>,
-    home: <><path d="M4 11.2 12 4l8 7.2" /><path d="M6.5 10v9h11v-9" /></>,
     documents: <><path d="M7 3.5h7l3 3v14H7z" /><path d="M14 3.5v3.2h3.2" /><path d="M9.5 11h5M9.5 14.5h5" /></>,
     tools: <><path d="m14.5 5.5 4 4-9 9-4-4z" /><path d="M6.5 16.5 5 18a2.1 2.1 0 0 1-3-3l1.5-1.5" /></>,
     config: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" /></>,
@@ -106,14 +103,59 @@ function SomnusFrame({ view }: { view: string }) {
 }
 
 function Panel({ page, t }: { page: typeof pages[number]; t: (key: keyof typeof zh) => string }) {
-  if (page.key === 'home') return <LegacyWorkbench />
   if (page.key === 'documents') return <NativeDocumentLibrary />
   if (page.key === 'tools') return <Suspense fallback={<div className="somnus-frame-state">正在加载工具…</div>}><NativeTools /></Suspense>
   if (!page.view) return <div className="somnus-frame-state">{t('imNotice')}</div>
   return <SomnusFrame view={page.view} />
 }
 
+/**
+ * 把服务暴露给其它客户端插件。
+ *
+ * 依据（app.asar 内 `@deepseek-ai/dsh-client-ui-layout/lib/client.js`）：
+ *   `const disposeService = ctx.reflect.provide('layout', layout)`
+ * 即官方插件统一走 `ctx.reflect.provide(name, value)`。cordis 里 `ctx.reflect.provide`
+ * 就是 `ctx.provide` 的 mixin（同一声明），两者等价；这里优先用 reflect，
+ * 旧宿主没有 reflect 时退回 ctx.provide，两者都不可用则 warn 并跳过。
+ */
+function provideSomnusService(ctx: Context, name: string, value: unknown): () => void {
+  const scope = ctx as unknown as {
+    reflect?: { provide?: (service: string, serviceValue: unknown) => () => void }
+    provide?: (service: string, serviceValue: unknown) => () => void
+  }
+  if (scope.reflect && typeof scope.reflect.provide === 'function') return scope.reflect.provide(name, value)
+  if (typeof scope.provide === 'function') return scope.provide(name, value)
+  console.warn(`[somnusTools] 宿主没有 ctx.reflect.provide/ctx.provide，无法暴露服务「${name}」`)
+  return () => {}
+}
+
+type LayoutService = {
+  selectPanel(panelId: string): void
+}
+
 export function registerSomnusWorkbench(ctx: Context): void {
+  // 在 apply 的最前面暴露工具注册表：内置工具页与工具插件共用同一实例。
+  // ctx.reflect.provide 内部就是 fiber.effect，注册随插件卸载自动回收。
+  // cordis 的服务唤醒机制保证「插件先加载、服务后提供」也能拿到（见报告）。
+  provideSomnusService(ctx, 'somnusTools', somnusToolRegistry)
+
+  // 卡片的点击行为由外壳注入：切到插件注册的 main 面板。
+  // 面板尚未注册时 layout.selectPanel 会抛 `main panel "…" is not registered`，
+  // 这里降级成 warn，避免一次点击把整页打挂。
+  ctx.inject(['layout'], scope => {
+    const layout = (scope as unknown as { layout: LayoutService }).layout
+    ctx.effect(() => {
+      somnusToolRegistry.setOpener(panelKey => {
+        try {
+          layout.selectPanel(panelKey)
+        } catch (error) {
+          console.warn(`[somnusTools] 无法切到工具面板「${panelKey}」：${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+      return () => somnusToolRegistry.setOpener(() => {})
+    }, 'Somnus tool panel opener')
+  })
+
   ctx.inject(['somnusSettings'], scope => {
     const settings = (scope as unknown as { somnusSettings: { open(section?: string): void } }).somnusSettings
     scope.slots.inject('conversation.input.model.options', () => scope.slots.register({

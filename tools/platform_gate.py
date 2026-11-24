@@ -19,7 +19,7 @@ SUITES = [
     ('group_plugin', [sys.executable, '-m', 'unittest', 'tests.test_assistant_group_conversation', 'tests.test_assistant_plugin_bundles', 'tests.test_plugin_contract', 'tests.test_plugin_cards', 'tests.test_plugin_ui_contract', 'tests.test_platform_gate']),
     ('frontend_types', ['node', 'page_design/frontend/node_modules/typescript/bin/tsc', '--noEmit', '--project', 'page_design/frontend/tsconfig.json']),
     ('frontend_chat_state', ['node', '--test', 'page_design/frontend/tests/runtime-task-state.test.mjs', 'page_design/frontend/tests/assistant-ui.test.mjs', 'page_design/frontend/tests/chat-workspace-panel.test.mjs', 'page_design/frontend/tests/ui-preferences.test.mjs', 'page_design/frontend/tests/child-conversation-ui.test.mjs', 'page_design/frontend/tests/plugin-document.test.mjs', 'page_design/frontend/tests/appearance-ui.test.mjs', 'page_design/frontend/tests/child-association-ui.test.mjs', 'page_design/frontend/tests/composer-shortcuts.test.mjs', 'page_design/frontend/tests/inherited-history-ui.test.mjs', 'page_design/frontend/tests/ledger-model.test.mjs', 'page_design/frontend/tests/native-fork-ui.test.mjs', 'page_design/frontend/tests/child-media-ui.test.mjs', 'page_design/frontend/tests/plugin-document-contract.test.mjs']),
-    ('runtime_host_boundaries_resources', ['node', '--test', '--test-concurrency=1', *[str(p.relative_to(ROOT)) for p in sorted((ROOT / 'electron/runtime').glob('*.test.cjs'))], 'electron/acp-dsh-package-source.test.cjs', 'electron/acp-deadline.test.cjs', 'electron/acp-agents.test.cjs', 'electron/acp-native-permissions.test.cjs', 'electron/acp-dsh-recovery.test.cjs']),
+    ('runtime_host_boundaries_resources', ['node', '--test', '--test-concurrency=1', *[str(p.relative_to(ROOT)) for p in sorted((ROOT / 'electron/runtime').glob('*.test.cjs'))], 'electron/acp-dsh-package-source.test.cjs', 'electron/acp-deadline.test.cjs', 'electron/acp-agents.test.cjs', 'electron/acp-native-permissions.test.cjs', 'electron/acp-dsh-recovery.test.cjs', 'desktop/dsh_next/host/native-api-bridge.test.mjs']),
 ]
 
 
@@ -106,7 +106,7 @@ def verify(report):
     return True
 
 
-def check():
+def check(progress=None):
     before, files = fingerprint()
     pinned = provenance()
     try:
@@ -117,12 +117,18 @@ def check():
         assets_ok = False
     checks = []
     for name, command in SUITES:
+        if progress:
+            progress({'stage': name, 'checks': checks, 'assets_ok': assets_ok,
+                      'assets_error': pinned.get('assets_error')})
         try:
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=240)
             checks.append({'id': name, 'ok': result.returncode == 0, 'exit_code': result.returncode,
                            'summary': (result.stdout + result.stderr)[-6000:]})
         except (OSError, subprocess.TimeoutExpired) as error:
             checks.append({'id': name, 'ok': False, 'summary': type(error).__name__})
+        if progress:
+            progress({'stage': name + ':complete', 'checks': checks, 'assets_ok': assets_ok,
+                      'assets_error': pinned.get('assets_error')})
     after, _ = fingerprint()
     return {'schema_version': SCHEMA, 'created_at': time.time(), 'fingerprint': before,
             'files': files, 'provenance': pinned, 'checks': checks,
@@ -136,8 +142,11 @@ def main():
     parser.add_argument('--candidate', type=Path)
     args = parser.parse_args()
     if args.action == 'check':
-        report = check()
         args.report.parent.mkdir(parents=True, exist_ok=True)
+        def progress(value):
+            args.report.with_suffix('.progress.json').write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+            print('Platform gate: ' + value['stage'], flush=True)
+        report = check(progress)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps({'ok': report['ok'], 'report': str(args.report), 'fingerprint': report['fingerprint']}))
         raise SystemExit(0 if report['ok'] else 1)

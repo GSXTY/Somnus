@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -218,6 +218,25 @@ export async function applySomnusBuiltOverlay(unpackedAppDir, { sourceRoot, somn
   if (!(await stat(executable)).isFile()) throw new Error('The source Next executable is missing.');
   await brandSomnusExecutable(executable, join(output, 'Somnus.exe'));
   await mkdir(join(resources, 'shared-documents'), { recursive: true });
+  // A source-built application carries the same installer plugins as a staged
+  // release: the home bundle plus every business tool bundle.
+  await mkdir(join(resources, 'bundles'), { recursive: true });
+  const pluginSources = [join(owner, 'plugins-ui/somnus-home')];
+  const toolDirectories = await readdir(join(owner, 'plugins-ui/tools'), { withFileTypes: true })
+    .catch(() => []);
+  for (const entry of toolDirectories.filter(item => item.isDirectory()).sort((left, right) => left.name.localeCompare(right.name))) {
+    pluginSources.push(join(owner, 'plugins-ui/tools', entry.name));
+  }
+  for (const source of pluginSources) {
+    if (!(await stat(join(source, 'package.json')).then(info => info.isFile(), () => false))) continue;
+    const name = source.split(/[\\/]/).filter(Boolean).pop();
+    if (!(await stat(join(source, 'dist/client.js')).then(info => info.isFile(), () => false))) {
+      throw new Error(`The source plugin is incomplete (need dist/client.js): ${source}`);
+    }
+    const target = join(resources, 'bundles', name);
+    await rm(target, { recursive: true, force: true });
+    await cp(source, target, { recursive: true });
+  }
   await writeFile(join(resources, 'somnus-source-build.json'), JSON.stringify(sourceBuild, null, 2) + '\n');
   const backend = join(resources, 'backend', process.platform === 'win32' ? 'SomnusBackend.exe' : 'SomnusBackend');
   const applicationReady = await stat(backend).then(info => info.isFile(), error => { if (error.code === 'ENOENT') return false; throw error; });

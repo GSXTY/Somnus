@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { cachePath } from '../storage-paths.mjs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { join, normalize, resolve } from 'node:path';
@@ -271,11 +271,31 @@ async function stage(installation, backend, installer) {
     await copyWindowsTree(terminalSource, join(support, 'node_modules', 'node-pty'));
     break;
   }
-  for (const name of ['agents', 'shared-documents', 'THIRD_PARTY_LICENSES']) {
+  for (const name of ['agents', 'shared-documents', 'bundles', 'THIRD_PARTY_LICENSES']) {
     const previous = join(legacyResources, name);
     if (await stat(previous).then(info => info.isDirectory(), () => false)) {
       await copyWindowsTree(previous, join(app, 'resources', name));
     }
+  }
+  // The installer carries its own copies of the plugins built from this tree:
+  // `plugins-ui/somnus-home` plus every `plugins-ui/tools/<name>`. Always copy
+  // from source so a full stage matches the plugins actually built here, even
+  // when the local `app/resources/bundles` copy is stale or missing.
+  const pluginSources = [join(root, 'plugins-ui', 'somnus-home')];
+  const toolSources = await readdir(join(root, 'plugins-ui', 'tools'), { withFileTypes: true }).catch(() => []);
+  for (const entry of toolSources.filter(item => item.isDirectory()).sort((left, right) => left.name.localeCompare(right.name))) {
+    pluginSources.push(join(root, 'plugins-ui', 'tools', entry.name));
+  }
+  await mkdir(join(app, 'resources', 'bundles'), { recursive: true });
+  for (const source of pluginSources) {
+    if (!(await stat(join(source, 'package.json')).then(info => info.isFile(), () => false))) continue;
+    const name = source.split(/[\\/]/).filter(Boolean).pop();
+    if (!(await stat(join(source, 'dist', 'client.js')).then(info => info.isFile(), () => false))) {
+      throw new Error(`Build the Somnus plugin first: ${source.replace(root, '')}/dist/client.js is missing.`);
+    }
+    const target = join(app, 'resources', 'bundles', name);
+    await rm(target, { recursive: true, force: true });
+    await cp(source, target, { recursive: true });
   }
   await cp(join(root, 'USER_GUIDE.md'), join(app, 'resources', '使用说明.txt'));
   await writeVerifiedArchive(original, target, changes);

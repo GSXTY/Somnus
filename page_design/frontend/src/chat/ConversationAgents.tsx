@@ -1,6 +1,6 @@
 import { SomnusMark } from '../app/SomnusMark';
 import { Button, Dropdown } from 'antd';
-import { CloseOutlined, PlusOutlined, RobotOutlined, TeamOutlined } from '@ant-design/icons';
+import { CloseOutlined, RobotOutlined, TeamOutlined } from '@ant-design/icons';
 import type { ExternalAgent } from './assistantAcp';
 import codexIcon from '../agent-icons/codex-acp.svg';
 import dshIcon from '../agent-icons/deepseek.svg';
@@ -19,11 +19,9 @@ type Props = {
   parallelCount: number;
   locked: boolean;
   saving: boolean;
-  onRefresh: () => void;
   onMembership: (id: string, added: boolean) => void;
 };
-export function ConversationAgents({ members, available, active, queued, parallelCount, locked, saving, onRefresh, onMembership }: Props) {
-  const candidates = available.filter(agent => !members.includes(agent.id));
+export function ConversationAgents({ members, available, active, queued, parallelCount, locked, saving, onMembership }: Props) {
   const availableById = new Map(available.map(agent => [agent.id, agent]));
   return <section className="group-agent-bar" aria-label="会话 Agent 成员">
     {members.length > 0 && <span className="group-agent-title"><TeamOutlined aria-hidden="true" /> 群聊成员</span>}
@@ -44,14 +42,6 @@ export function ConversationAgents({ members, available, active, queued, paralle
       })}
     </div>
     {parallelCount > 0 && <small className="group-active-count" role="status">{parallelCount} 个任务进行中</small>}
-    <Dropdown trigger={['click']} placement="bottomRight" onOpenChange={open => { if (open) onRefresh(); }}
-      menu={{
-        items: candidates.length ? candidates.map(agent => ({ key: agent.id, icon: <AgentAvatar name={agent.name} />, label: agent.name }))
-          : [{ key: 'empty', label: available.length ? '已添加全部可用 Agent' : '请先在配置中心接入 Agent', disabled: true }],
-        onClick: ({ key }) => onMembership(key, true),
-      }}>
-      <Button type="text" size="small" className="group-agent-add" icon={<PlusOutlined />} loading={saving} disabled={locked || saving}>添加 Agent</Button>
-    </Dropdown>
   </section>;
 }
 
