@@ -8,7 +8,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import './somnus-workbench.css'
 import './somnus-sidebar.css'
-import { LegacyWorkbench } from './LegacyWorkbench'
 import { NativeDocumentLibrary } from './NativeDocumentLibrary'
 import { attachConfigurationRelay, nativeRefreshActivity } from '../../../page_design/frontend/src/configuration/embeddedConfigurationBridge.mjs'
 import { NativeAgentSettings, NativeModelSettingsAction, NativeModelIdentity } from './NativeAgentSettings'
@@ -31,7 +30,6 @@ const localeId = 'somnus-workbench'
 let inspectNativeActivity = () => ({ known: false, active: true })
 const zh = {
   chat: '会话管理',
-  home: '主页',
   documents: '文档',
   tools: '工具',
   config: '配置中心',
@@ -42,7 +40,6 @@ const zh = {
 }
 const en: typeof zh = {
   chat: 'Chats',
-  home: 'Home',
   documents: 'Documents',
   tools: 'Tools',
   config: 'Configuration',
@@ -58,11 +55,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-type PageKey = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
-type IconName = 'chat' | 'home' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type PageKey = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type IconName = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
 
 const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: IconName; order: number }[] = [
-  { id: 'somnus-home' as MainPanelId, key: 'home', view: 'dashboard', icon: 'home', order: -10 },
   { id: 'somnus-documents' as MainPanelId, key: 'documents', view: 'documents', icon: 'documents', order: -9 },
   { id: 'somnus-tools' as MainPanelId, key: 'tools', view: 'plugins', icon: 'tools', order: -8 },
 ]
@@ -70,7 +66,6 @@ const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: Icon
 function PanelIcon({ size, name }: { size: number; name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
     chat: <><path d="M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z" /><path d="M8 9h8M8 12h5" /></>,
-    home: <><path d="M4 11.2 12 4l8 7.2" /><path d="M6.5 10v9h11v-9" /></>,
     documents: <><path d="M7 3.5h7l3 3v14H7z" /><path d="M14 3.5v3.2h3.2" /><path d="M9.5 11h5M9.5 14.5h5" /></>,
     tools: <><path d="m14.5 5.5 4 4-9 9-4-4z" /><path d="M6.5 16.5 5 18a2.1 2.1 0 0 1-3-3l1.5-1.5" /></>,
     config: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" /></>,
@@ -107,7 +102,6 @@ function SomnusFrame({ view }: { view: string }) {
 }
 
 function Panel({ page, t }: { page: typeof pages[number]; t: (key: keyof typeof zh) => string }) {
-  if (page.key === 'home') return <LegacyWorkbench />
   if (page.key === 'documents') return <NativeDocumentLibrary />
   if (page.key === 'tools') return <Suspense fallback={<div className="somnus-frame-state">正在加载工具…</div>}><NativeTools /></Suspense>
   if (!page.view) return <div className="somnus-frame-state">{t('imNotice')}</div>

@@ -27,7 +27,6 @@
     "NativeAgentSettings.tsx",
     "nativeAssetTypes.d.ts",
     "nativeUiTypes.d.ts",
-    "LegacyWorkbench.tsx",
     "NativeDocumentLibrary.tsx",
     "NativeTools.tsx"
   ]
