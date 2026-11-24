@@ -54,7 +54,6 @@
   vertical-align: middle;
 }
 .group-agent-avatar img { width: 15px; height: 15px; object-fit: contain; }
-.group-agent-add { white-space: nowrap; }
 .group-agent-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .group-agent-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #397f68; }
 .group-agent-status[data-waiting="true"]::before { background: #ae7119; }

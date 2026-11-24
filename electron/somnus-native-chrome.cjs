@@ -6,8 +6,31 @@ function chromeWindowOptions(platform, dark) {
     ...(platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 18 },
       vibrancy: 'sidebar', visualEffectState: 'active', backgroundColor: '#00000000' } : {}) };
 }
-function registerNativeChrome({ ipcMain, getWindow, rendererOrigin, nativeTheme, Menu, app, readDeviceInfo, resolveDesktopLocale }) {
+function registerNativeChrome({ ipcMain, getWindow, rendererOrigin, nativeTheme, Menu, app, readDeviceInfo, resolveDesktopLocale, actions = {} }) {
   let language = 'zh-CN';
+  // New menu entries are absent from the injected shell locale catalogue, so the
+  // native chrome owns their copy. The app pins zh-CN; other languages get English.
+  const actionLabels = () => /^zh/i.test(language)
+    ? { profiles: '运行配置…', recovery: '故障恢复…', logs: '打开日志文件夹' }
+    : { profiles: 'Run Profiles…', recovery: 'Recovery…', logs: 'Open Logs Folder' };
+  // The caller owns user-facing error reporting; this only prevents an action
+  // failure from escaping as an uncaught exception or unhandled rejection.
+  const runAction = run => () => {
+    try {
+      const result = run();
+      if (result && typeof result.then === 'function') result.catch(error => console.error('Somnus menu action:', error));
+    } catch (error) { console.error('Somnus menu action:', error); }
+  };
+  const applicationItems = copy => {
+    const labels = actionLabels();
+    const entries = [[actions.openProfiles, labels.profiles], [actions.openRecovery, labels.recovery], [actions.openLogs, labels.logs]]
+      .filter(([run]) => typeof run === 'function')
+      .map(([run, label]) => ({ label, click: runAction(run) }));
+    const items = [{ role: 'about', label: copy.about }];
+    if (entries.length) items.push({ type: 'separator' }, ...entries);
+    items.push({ type: 'separator' }, { role: 'quit', label: copy.quit });
+    return items;
+  };
   const owned = event => { const window = getWindow(); return window && !window.isDestroyed() && event.sender === window.webContents &&
     event.senderFrame === window.webContents.mainFrame && !event.senderFrame.detached &&
     URL.parse(event.senderFrame.url)?.origin === rendererOrigin(); };
@@ -27,7 +50,7 @@ function registerNativeChrome({ ipcMain, getWindow, rendererOrigin, nativeTheme,
     const copy = resolveDesktopLocale(language).messages;
     const editItem = (role, key, modifiers, accelerator) => ({ label: copy[role], accelerator,
       click: () => { window.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers }); } });
-    const items = name === 'application' ? [{ role: 'about', label: copy.about }, { type: 'separator' }, { role: 'quit', label: copy.quit }] : [
+    const items = name === 'application' ? applicationItems(copy) : [
       editItem('undo', 'Z', ['control'], 'Ctrl+Z'), editItem('redo', 'Y', ['control'], 'Ctrl+Y'), { type: 'separator' },
       editItem('cut', 'X', ['control'], 'Ctrl+X'), editItem('copy', 'C', ['control'], 'Ctrl+C'), editItem('paste', 'V', ['control'], 'Ctrl+V'),
       editItem('delete', 'Delete', []), { type: 'separator' }, editItem('selectAll', 'A', ['control'], 'Ctrl+A') ];

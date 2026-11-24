@@ -11,7 +11,7 @@ type DocumentBridge = {
   createFolder(folder: string, name: string): Promise<DocumentListing>;
   createFile?(folder: string, name: string, content?: string): Promise<DocumentListing>;
   deleteEntry?(path: string): Promise<DocumentListing>;
-  importFiles(folder: string): Promise<DocumentListing>;
+  importFiles(folder: string, files?: readonly File[]): Promise<DocumentListing>;
   openFile(scope: DocumentScope, path: string): Promise<void>;
   readFile(scope: DocumentScope, path: string): Promise<DocumentFile>;
 };
@@ -94,8 +94,9 @@ const httpBridge: DocumentBridge = {
   deleteEntry: path => request<DocumentListing>('/delete', {
     method: 'POST', body: JSON.stringify({ path }),
   }),
-  async importFiles(folder) {
-    const files = await chooseFiles();
+  async importFiles(folder, dropped) {
+    // Drag-and-drop reuses the same validation and /import endpoint as the picker.
+    const files = dropped ? Array.from(dropped) : await chooseFiles();
     if (!files.length) return request<DocumentListing>(`?scope=private&folder=${encode(folder)}`);
     let total = 0;
     const prepared = [];

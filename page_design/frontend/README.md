@@ -4,7 +4,7 @@ React 18 + TypeScript + Ant Design 5 + ECharts 5；全部依赖本地打包，�
 
 在本目录运行 `pnpm install --frozen-lockfile` 安装依赖，使用 `pnpm test` 运行测试，使用 `pnpm build` 构建。产物输出到 `../web`，静态资源路径前缀为 `/workbench-assets/`。
 
-若环境的 pnpm 版本管理器试图重查依赖，可在已安装后直接运行 `node node_modules/typescript/bin/tsc --noEmit`、`node node_modules/vite/bin/vite.js build` 和 `node --test tests/*.test.mjs`。API测试利用Node 24原生TypeScript读取能力；不额外引入测试框架。
+若环境的 pnpm 版本管理器试图重查依赖，可在已安装后直接运行 `node node_modules/typescript/bin/tsc --noEmit`、`node scripts/publish-build.mjs` 和 `node --test tests/*.test.mjs`。`publish-build.mjs` 在外置临时目录构建、按 manifest 校验后原子替换 `../web`；直接 `vite build` 会先清空产物目录，失败即丢失资源。API测试利用Node 24原生TypeScript读取能力；不额外引入测试框架。
 
 页面总是请求 `/api/workbench`，用户抽屉单独请求 `/api/workbench/users/:id`。默认显式演示；真实来源未连接时不回退假数据。提供10秒可控轮询、页面隐藏暂停、请求代际保护与取消。ECharts 在容器变化时 resize、卸载时 dispose；未改变的数据不反复重置图表。
 

@@ -35,6 +35,7 @@ def main():
     run(sys.executable, '-B', 'tools/check_source_layout.py')
     run(sys.executable, '-B', 'tools/prepare_dsh_source.py', '--check')
     run(sys.executable, '-B', '-m', 'unittest', 'tests.test_storage_paths', 'tests.test_dsh_source', 'tests.test_backend_build_receipt')
+    run('node', '--test', 'electron/dsh-config-bridge.test.cjs', 'desktop/dsh_next/host/native-api-bridge.test.mjs')
     run('node', '--test', 'desktop/dsh_next/source-build.test.mjs', 'desktop/dsh_next/source-overlay.test.mjs')
     tsc = 'page_design/frontend/node_modules/typescript/bin/tsc'
     run('node', tsc, '--noEmit', '--project', 'page_design/frontend/tsconfig.json')

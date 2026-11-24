@@ -56,8 +56,6 @@
     "page_design/frontend/src/SkillPicker.tsx": "page_design/frontend/src/chat/SkillPicker.tsx",
     "page_design/frontend/src/workspaceTerminal.css": "page_design/frontend/src/chat/workspaceTerminal.css",
     "page_design/frontend/src/WorkspaceTerminal.tsx": "page_design/frontend/src/chat/WorkspaceTerminal.tsx",
-    "page_design/frontend/src/AgentActivityPanel.tsx": "page_design/frontend/src/configuration/AgentActivityPanel.tsx",
-    "page_design/frontend/src/agentActivityPanel.css": "page_design/frontend/src/configuration/agentActivityPanel.css",
     "page_design/frontend/src/AgentExecutionSettings.tsx": "page_design/frontend/src/configuration/AgentExecutionSettings.tsx",
     "page_design/frontend/src/AgentWorkMode.tsx": "page_design/frontend/src/configuration/AgentWorkMode.tsx",
     "page_design/frontend/src/agentWorkMode.css": "page_design/frontend/src/configuration/agentWorkMode.css",

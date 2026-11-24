@@ -1,0 +1,4 @@
+# 业务工具插件自带的配置层：必须 insert 一行，否则插件不会出现在「插件」页也不会被装载。
+- insert:
+    - id: waveform
+      name: '@local/somnus-tool-waveform'

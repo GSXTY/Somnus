@@ -36,8 +36,7 @@ import { PermissionSwitch } from './PermissionSwitch';
 import { AgentWorkMode } from '../configuration/AgentWorkMode';
 import { ChatWorktree } from '../analysis/ProjectTools';
 import { ChatProjectContext } from './ChatProjectContext';
-import { AgentActivityPanel, useAgentConnections } from '../configuration/AgentActivityPanel';
-import { useRuntimeTasks, useFocusedRuntimeTasks, runtimeConversation } from '../runtime/runtimeTasks';
+import { useRuntimeTasks, runtimeConversation } from '../runtime/runtimeTasks';
 import { taskIsActive, taskLabel, taskMessageStatus } from '../runtime/runtimeTaskModel.mjs';
 import { ChatWorkspacePanel } from './ChatWorkspacePanel';
 import { ConversationTrajectory } from './ConversationTrace';
@@ -48,7 +47,7 @@ import { createPortal } from 'react-dom';
 import { SidebarSessionList as RecentSessions } from './SidebarSessionList';
 import { SessionFinder } from './SessionFinder';
 import { Alert, Badge, Button, Dropdown, Input, Modal, Skeleton, Space, Spin, Tag, Tooltip } from 'antd';
-import { AimOutlined, BranchesOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DatabaseOutlined, DownloadOutlined, EllipsisOutlined, FolderOpenOutlined, SendOutlined, ShareAltOutlined, DownOutlined, ArrowDownOutlined, FileTextOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, CloseOutlined, LayoutOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, BellOutlined, EditOutlined, AppstoreOutlined, TeamOutlined } from '@ant-design/icons';
+import { AimOutlined, BranchesOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DatabaseOutlined, DownloadOutlined, EllipsisOutlined, FolderOpenOutlined, SendOutlined, ShareAltOutlined, DownOutlined, ArrowDownOutlined, FileTextOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, CloseOutlined, LayoutOutlined, MessageOutlined, PlusOutlined, ReloadOutlined, ArrowUpOutlined, BellOutlined, EditOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { assistantStatus, beginExternalTurn, branchConversation, changeConversationAgent, finishExternalTurn, cancelConversation, conversation, conversationTrace, conversations, createConversation, deleteConversation, listProviders, organizeConversation, renameConversation, reserveExternalSteer, respondToDelegation, respondToMcpApproval, saveConversationPermission, sendMessage } from './assistantApi';
 import { linkedConversation, reportConversationFinished, watchAnalysisTask } from '../app/taskAttention';
 import type { DelegationResult } from './assistantApi';
@@ -307,7 +306,6 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
   const [items, setItems] = useState<Conversation[]>([]), [active, setActive] = useState<Conversation | null>(null);
   const [unconfirmedModeChat, setUnconfirmedModeChat] = useState<string>();
   const members = active?.agent_members || [];
-  const connectionStates = useAgentConnections(active?.id, members);
   const runtimeSnapshot = useRuntimeTasks();
   useEffect(()=>{ const open=(event:Event)=>{const id=(event as CustomEvent).detail?.conversationId;if(typeof id==='string')void conversation(id).then(value=>{onOpenChat(value.conversation.workspace_id||workspace);void selectHistory(id);}).catch(failure=>setError(failureText(failure)));};window.addEventListener('somnus:open-conversation',open);return()=>window.removeEventListener('somnus:open-conversation',open);},[workspace]);
   const [uiPreferences] = useUiPreferences();
@@ -405,8 +403,6 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
   const [configOpen, setConfigOpen] = useState(false);
   const [projectContextOpen, setProjectContextOpen] = useState(false);
   const [workspacePanelChat, setWorkspacePanelChat] = useState<string>();
-  const [activityPanelChat, setActivityPanelChat] = useState<string>();
-  const focusedRuntimeSnapshot = useFocusedRuntimeTasks(runtimeSnapshot, active?.id, visible && activityPanelChat === active?.id);
   const [workspaceWebRequest, setWorkspaceWebRequest] = useState<{ conversationId: string; url: string; sequence: number }>();
   const workspaceWebSequence = useRef(0);
   const [workspaceActionError, setWorkspaceActionError] = useState<{ conversationId: string; message: string }>();
@@ -650,20 +646,20 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
     setMemberSelection(agent && active ? { conversationId: active.id, workspace,
       agent: { agentId: agent.id, agentName: agent.name } } : undefined);
   }
-  async function changeMembership(agentId: string, added: boolean) {
-    if (navigationLocked || membershipLock.current || !externalBridge || active?.archived) return;
-    if (added && !memberDirectory.some(agent => agent.id === agentId)) return;
-    if (!added && (group?.turns.has(agentId) || selectedTurn?.runningAgent?.id === agentId || pendingQueue.some(item => item.route.agent?.agentId === agentId))) return;
+  async function changeMembership(agentId: string, added: boolean, preferred?: Conversation | null) {
+    if (navigationLocked || membershipLock.current || !externalBridge || (preferred === undefined ? active : preferred)?.archived) return null;
+    if (added && !memberDirectory.some(agent => agent.id === agentId)) return null;
+    if (!added && (group?.turns.has(agentId) || selectedTurn?.runningAgent?.id === agentId || pendingQueue.some(item => item.route.agent?.agentId === agentId))) return null;
     membershipLock.current = true;
     setSavingMember(true);
     const workspaceAtStart = workspace;
-    let item = active;
+    let item: Conversation | null = preferred === undefined ? active : preferred;
     try {
       if (!item) {
-        if (!added) return;
+        if (!added) return null;
         const savedDraft = snapshotDraft();
         item = await createConversation(workspaceAtStart, nextPermission);
-        if (!alive.current || workspaceRef.current !== workspaceAtStart || activeId.current) return;
+        if (!alive.current || workspaceRef.current !== workspaceAtStart || activeId.current) return null;
         if (hasDraft) {
           drafts.current.set(item.id, savedDraft);
           drafts.current.delete('workspace:' + workspaceAtStart);
@@ -677,7 +673,7 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
       }
       const nextMembers = await changeConversationAgent(item.id, agentId, added);
       if (!added) void externalBridge.releaseConversationAgent?.({ conversationId: item.id, agentId }).catch(() => {});
-      if (!alive.current || workspaceRef.current !== workspaceAtStart) return;
+      if (!alive.current || workspaceRef.current !== workspaceAtStart) return item;
       const running = turns.current.get(item.id);
       if (running) running.conversation = { ...running.conversation, agent_members: nextMembers };
       for (const lane of groups.current.get(item.id)?.turns.values() || []) {
@@ -686,9 +682,11 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
       setItems(old => old.map(row => row.id === item!.id ? { ...row, agent_members: nextMembers } : row));
       setActive(old => old?.id === item!.id ? { ...old, agent_members: nextMembers } : old);
       if (!added) setMemberSelection(old => old?.conversationId === item!.id && old.agent.agentId === agentId ? undefined : old);
+      return item;
     } catch (failure) {
       if (alive.current && workspaceRef.current === workspaceAtStart &&
           (!item || activeId.current === item.id)) setError(failureText(failure));
+      return item;
     } finally {
       membershipLock.current = false;
       if (alive.current) setSavingMember(false);
@@ -2536,6 +2534,8 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
     </div>}
   </>;
 
+  const renderEntries = messages.map(message => ({ kind: 'message' as const, message }));
+
   const attentionItems = new Map<string, { id: string; workspace: string; title: string; label: string }>();
   for (const [id, turn] of activeTurns) {
     if (turn.permission || turn.delegation) attentionItems.set(id, {
@@ -2617,13 +2617,8 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
               if (key === 'feedback') window.open('https://github.com/GSXTY/Somnus/issues', '_blank', 'noopener,noreferrer');
             },
           }}><Button type="text" size="small" icon={<EllipsisOutlined />} aria-label="会话操作" /></Dropdown>
-          <Button type="text" size="small" icon={<TeamOutlined />} aria-label="Agent 任务" title="Agent 任务"
-            className="assistant-agent-activity-toggle" data-active={activityPanelChat === active.id}
-            aria-expanded={activityPanelChat === active.id} onClick={() => { setWorkspacePanelChat(undefined); setActivityPanelChat(value => value === active.id ? undefined : active.id); }}>
-            <span>Agent 任务</span>{(unifiedRuntime ? Boolean(activeRuntimeSummary?.active_count) : busy) && <span className="group-active-count">{unifiedRuntime ? activeRuntimeSummary?.active_count : groupTurns.length || 1}</span>}
-          </Button>
           {window.vvmanProjects && <Button type="text" size="small" icon={<LayoutOutlined />} aria-label="工作区" title="工作区"
-            aria-expanded={workspacePanelChat === active.id} onClick={() => { setActivityPanelChat(undefined); setWorkspacePanelChat(value => value === active.id ? undefined : active.id); }} />}
+            aria-expanded={workspacePanelChat === active.id} onClick={() => { setWorkspacePanelChat(value => value === active.id ? undefined : active.id); }} />}
         </Space>}
         </div>
         {active && <div className="assistant-session-views">
@@ -2652,9 +2647,9 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
           parallelCount={unifiedRuntime ? activeRuntimeSummary?.active_count || 0 : groupTurns.length}
           queued={new Set(pendingQueue.flatMap(entry => entry.route.agent ? [entry.route.agent.agentId] : []))}
           locked={navigationLocked || Boolean(active?.archived)} saving={savingMember}
-          onRefresh={() => void refreshMemberDirectory()} onMembership={changeMembership} />}
+          onMembership={changeMembership} />}
       </header>
-        {runtimeSnapshot.availability === 'offline' && activityPanelChat !== active?.id && <Alert className="assistant-error" type="warning" showIcon message="任务状态连接中断，正在显示最后记录。不会自动重发任务。" />}
+        {runtimeSnapshot.availability === 'offline' && <Alert className="assistant-error" type="warning" showIcon message="任务状态连接中断，正在显示最后记录。不会自动重发任务。" />}
         {workspaceActionError && workspaceActionError.conversationId === active?.id && <Alert
           className="assistant-error" type="error" showIcon message={workspaceActionError.message}
           closable onClose={() => setWorkspaceActionError(undefined)} />}
@@ -2667,7 +2662,8 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
         <div className="assistant-session-body" hidden={trajectoryOpen} id={active ? 'assistant-panel-chat' : undefined}
           role={active ? 'tabpanel' : undefined} aria-labelledby={active ? 'assistant-tab-chat' : undefined}>
         <div className="assistant-transcript-frame">
-        <div className="assistant-message-log" ref={log} onScroll={followLog} role="log" aria-live="polite" aria-label="会话消息"><div className="assistant-column-measure" aria-hidden="true" />{active&&<InheritedHistory key={active.id} conversationId={active.id} available={Boolean(active.inherited_history)}/>} {loading ? <div className="skeleton-list">{[0, 1, 2].map(index => <Skeleton key={index} active title={false} paragraph={{ rows: 2, width: ['92%', '68%'] }} />)}</div> : messages.length ? messages.map(message => {
+        <div className="assistant-message-log" ref={log} onScroll={followLog} role="log" aria-live="polite" aria-label="会话消息"><div className="assistant-column-measure" aria-hidden="true" />{active&&<InheritedHistory key={active.id} conversationId={active.id} available={Boolean(active.inherited_history)}/>} {loading ? <div className="skeleton-list">{[0, 1, 2].map(index => <Skeleton key={index} active title={false} paragraph={{ rows: 2, width: ['92%', '68%'] }} />)}</div> : renderEntries.length ? renderEntries.map(entry => {
+          const message = entry.message;
           const groupLane = groupTurns.find(turn => turn.assistantMessageId === message.id);
           const notice = message.reply_meta?.mcp_approval_blocked || mcpBlocked[message.id];
           const messageTurn = groupLane || (runningReply?.id === message.id ? selectedTurn : undefined);
@@ -2971,15 +2967,6 @@ export function AIAssistant({ workspace, visible, sidebar, attentionTarget, newC
         </ComposerExtensions>}
         </div>
       </section>
-      {visible && active && !loading && activityPanelChat === active.id && <AgentActivityPanel key={'activity:' + active.id}
-        conversationId={active.id} members={members} available={memberDirectory} connections={connectionStates} messages={messages} runtimeSnapshot={focusedRuntimeSnapshot}
-        lanes={[...groupTurns, ...(selectedTurn ? [selectedTurn] : [])].map(turn => ({ messageId: turn.assistantMessageId || turn.execution?.assistantId,
-          agentId: turn.runningAgent?.id, name: turn.nativeDsh ? 'Somnus' : turn.runningAgent?.name || 'Somnus', startedAt: turn.startedAt,
-          stage: turn.stage, stopping: turn.stopping, approval: Boolean(turn.permission || turn === selectedTurn && question), error: turn.error, execution: turn.execution?.data }))}
-        onJump={id => { setTrajectoryFor(undefined); requestAnimationFrame(() => {
-          const element = [...(log.current?.querySelectorAll<HTMLElement>('[data-message-id]') || [])].find(node => node.dataset.messageId === id);
-          element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        }); }} onClose={() => setActivityPanelChat(undefined)} />}
       {visible && active && !loading && workspacePanelChat === active.id && <ChatWorkspacePanel key={active.id}
         conversationId={active.id} workspace={workspace} worktree={active.worktree}
         webRequest={workspaceWebRequest?.conversationId === active.id ? workspaceWebRequest : undefined}

@@ -42,6 +42,7 @@
     "acp-dsh-plugin-settings.cjs",
     "runtime/workspace-scope.cjs",
     "runtime/history-archive.cjs",
-    "runtime/plugin-slot-adapters.cjs"
+    "runtime/plugin-slot-adapters.cjs",
+    "bundled-plugins.cjs"
   ]
 }

@@ -12,7 +12,7 @@ const entry = `${base}/index.ts`;
 const brandEntry = 'packages/client/ui-brand-official/src/client/index.ts';
 const sidebarBrand = 'packages/client/ui-brand-official/src/client/Brand.tsx';
 const theme = 'packages/client/ui-theme/src/client/index.ts';
-const contributionFiles = ['somnus-workbench.tsx', 'somnus-workbench.css'];
+const contributionFiles = ['somnus-workbench.tsx', 'somnus-workbench.css', 'somnus-sidebar.css'];
 const workbenchFile = new URL(contributionFiles[0], import.meta.url);
 const nativeBridge = 'typeof window !== "undefined" && typeof window.somnusNext?.openPage === "function"';
 const sourceNativeBridge = `typeof window !== 'undefined' && typeof (window as Window & { somnusNext?: { openPage?: unknown } }).somnusNext?.openPage === 'function'`;

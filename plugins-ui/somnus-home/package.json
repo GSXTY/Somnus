@@ -1,0 +1,26 @@
+{
+  "name": "@local/somnus-home-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Somnus 主页插件：提供侧边栏「主页」入口与启动默认页，页面数据仍走本机 Somnus 服务。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./dist/client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

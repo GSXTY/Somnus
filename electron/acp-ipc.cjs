@@ -382,7 +382,7 @@ function registerAcpAgents({ ipcMain, app, dialog, shell, window, origin, token,
     const frame = event.senderFrame;
     return update => {
       if (window.isDestroyed() || frame.detached || frame !== window.webContents.mainFrame ||
-          URL.parse(frame.url)?.origin !== origin) return;
+          URL.parse(frame.url)?.origin !== trustedOrigin) return;
       try {
         frame.send('vvman-acp:update', update);
       } catch {

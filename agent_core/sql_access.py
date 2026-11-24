@@ -122,7 +122,11 @@ def connect(settings: SqlSettings):
         path = settings.sqlite_path
         if not path.is_file():
             raise SqlAccessError(f'数据源不存在：{path}。请先初始化演示库或配置 ANALYTICS_DB_URL。')
-        connection = sqlite3.connect(f'file:{path.as_posix()}?mode=ro', uri=True, timeout=settings.timeout_seconds)
+        # URI delimiters in an ordinary filename (notably # in sandbox/TEMP
+        # paths) must not become fragments or query parameters. as_uri also
+        # escapes literal percent signs and keeps the readonly flag our own.
+        connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True,
+                                     timeout=settings.timeout_seconds)
         connection.row_factory = sqlite3.Row
         return connection
     if settings.driver == 'mysql':

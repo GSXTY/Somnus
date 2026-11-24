@@ -1,4 +1,4 @@
-﻿.somnus-frame {
+.somnus-frame {
   display: block;
   width: 100%;
   height: 100%;
@@ -177,4 +177,8 @@ button[aria-label="发送消息"]:hover { filter: brightness(1.06); }
 [data-home-whale], [class*="whale" i], [class*="Whale"], .JgOtAa_canvas {
   display: none !important;
   animation: none !important;
+}
+/* Somnus: the sidebar-foot settings trigger does not show its shortcut tooltip. */
+[aria-label="设置"] ~ [role="tooltip"] {
+  display: none !important;
 }

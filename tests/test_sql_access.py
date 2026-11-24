@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+import sqlite3
+from contextlib import closing
 from pathlib import Path
+from urllib.parse import quote
 
-from agent_core.sql_access import SqlAccessError, SqlSettings, guard, run, schema
+from agent_core.sql_access import SqlAccessError, SqlSettings, connect, guard, run, schema
 from agent_core.sql_agent import extract_sql
 from tools.seed_analytics_demo import seed
 
@@ -65,6 +68,21 @@ class ExecutionTests(unittest.TestCase):
         settings = SqlSettings(url=f'sqlite:///{(Path(self.temp.name) / "missing.db").as_posix()}')
         with self.assertRaises(SqlAccessError):
             run('select 1', settings)
+
+    def test_reserved_uri_characters_in_database_path_are_literal_and_readonly(self):
+        directory = Path(self.temp.name) / 'sandbox #! percent% 中文'
+        directory.mkdir()
+        path = seed(directory / 'analytics #! %3Fmode%3Drw.sqlite3', users=2, days=1)
+        # Config URLs decode once; the actual SQLite file URI must encode again.
+        settings = SqlSettings(url='sqlite:///' + quote(path.as_posix(), safe='/:'), max_rows=10)
+        self.assertEqual(settings.sqlite_path, path)
+        self.assertIn('users', {table['table'] for table in schema(settings)})
+        self.assertEqual(len(run('select user_id from users', settings)['rows']), 2)
+        with closing(connect(settings)) as connection:
+            with self.assertRaisesRegex(sqlite3.OperationalError, 'readonly'):
+                connection.execute('DELETE FROM users')
+        self.assertEqual(len(run('select user_id from users', settings)['rows']), 2)
+        self.assertEqual(list(directory.iterdir()), [path])
 
 
 class PromptExtractionTests(unittest.TestCase):
