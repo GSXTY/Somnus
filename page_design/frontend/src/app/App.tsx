@@ -327,7 +327,6 @@ export default function App() {
     { key: 'dashboard', label: '主页', icon: <HomeOutlined />, onClick: () => changeView('dashboard') },
     { key: 'documents', label: '文档', icon: <FileTextOutlined />, onClick: () => changeView('documents') },
     { key: 'plugins', label: '工具', icon: <ToolOutlined aria-hidden="true" />, onClick: () => changeView('plugins') },
-    { key: 'config', label: '配置中心', icon: <SettingOutlined />, onClick: () => changeView('config') },
     ...pluginPages.filter((page,index,pages) => page.pluginId !== DSH_IM_PLUGIN || pages.findIndex(item => item.pluginId === DSH_IM_PLUGIN) === index).map(page => ({ key: 'owned:' + page.id, label: page.pluginId===DSH_IM_PLUGIN?'IM 机器人':page.label,
       icon: page.pluginId === DSH_IM_PLUGIN ? <RobotOutlined aria-hidden="true" /> : <AppstoreOutlined aria-hidden="true" />,
       onClick: () => setActivePluginPage(page) })),

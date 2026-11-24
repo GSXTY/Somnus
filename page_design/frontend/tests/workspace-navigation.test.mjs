@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readProjectLaunch, readWorkspaceView, isStandardView, workspacePath, recordWorkspaceVisit } from '../src/app/workspaceNavigation.mjs';
-import { activeRailView, builtInTools, workspaceRail } from '../src/app/navigation.mjs';
+import { activeRailView, builtInTools, labelOf, navigationItems, workspaceRail } from '../src/app/navigation.mjs';
 
 test('native backend links retain the Somnus chat surface', () => {
   const root = 'http://127.0.0.1:8765/';
@@ -65,6 +65,10 @@ test('configuration and general settings keep independent routes and sidebar ent
   }
   assert.equal(activeRailView('plugin-config'), 'plugin-config');
   assert.equal(activeRailView('plugins'), 'plugins');
+  // 配置中心入口已从侧边栏移除：路由仍可直达，但不再出现在 rail 或导航条目里。
+  assert.equal(workspaceRail.some(entry => entry.key === 'config'), false);
+  assert.equal(navigationItems.some(item => item.key === 'config'), false);
+  assert.equal(labelOf('config'), '配置中心');
   for (const view of ['config', 'models']) assert.equal(activeRailView(view), 'config');
   for (const view of ['mcp', 'skills']) assert.equal(activeRailView(view), 'plugin-config');
   assert(workspaceRail.some(entry => entry.key === 'plugin-config' && entry.label === '插件'));
