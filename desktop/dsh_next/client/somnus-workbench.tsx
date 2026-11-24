@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -24,14 +24,11 @@ export interface SomnusApiBridge {
   onConfigurationUpdate?(listener: (update: unknown) => void): () => void
 }
 
-const NativeTools = lazy(() => import('./NativeTools'))
-
 const localeId = 'somnus-workbench'
 let inspectNativeActivity = () => ({ known: false, active: true })
 const zh = {
   chat: '会话管理',
   documents: '文档',
-  tools: '工具',
   config: '配置中心',
   im: 'IM 机器人',
   codex: 'Codex',
@@ -41,7 +38,6 @@ const zh = {
 const en: typeof zh = {
   chat: 'Chats',
   documents: 'Documents',
-  tools: 'Tools',
   config: 'Configuration',
   im: 'IM bot',
   codex: 'Codex',
@@ -55,19 +51,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-type PageKey = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
-type IconName = 'chat' | 'documents' | 'tools' | 'config' | 'im' | 'codex'
+type PageKey = 'chat' | 'documents' | 'config' | 'im' | 'codex'
+type IconName = 'chat' | 'documents' | 'config' | 'im' | 'codex'
 
 const pages: readonly { id: MainPanelId; key: PageKey; view?: string; icon: IconName; order: number }[] = [
   { id: 'somnus-documents' as MainPanelId, key: 'documents', view: 'documents', icon: 'documents', order: -9 },
-  { id: 'somnus-tools' as MainPanelId, key: 'tools', view: 'plugins', icon: 'tools', order: -8 },
 ]
 
 function PanelIcon({ size, name }: { size: number; name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
     chat: <><path d="M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z" /><path d="M8 9h8M8 12h5" /></>,
     documents: <><path d="M7 3.5h7l3 3v14H7z" /><path d="M14 3.5v3.2h3.2" /><path d="M9.5 11h5M9.5 14.5h5" /></>,
-    tools: <><path d="m14.5 5.5 4 4-9 9-4-4z" /><path d="M6.5 16.5 5 18a2.1 2.1 0 0 1-3-3l1.5-1.5" /></>,
     config: <><circle cx="12" cy="12" r="3.2" /><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" /></>,
     im: <><rect x="4" y="6" width="16" height="12" rx="3" /><path d="M8.5 21v-3M15.5 21v-3" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /></>,
     codex: <><path d="m8 6-4 6 4 6M16 6l4 6-4 6M13 5l-2 14" /></>,
@@ -103,7 +97,6 @@ function SomnusFrame({ view }: { view: string }) {
 
 function Panel({ page, t }: { page: typeof pages[number]; t: (key: keyof typeof zh) => string }) {
   if (page.key === 'documents') return <NativeDocumentLibrary />
-  if (page.key === 'tools') return <Suspense fallback={<div className="somnus-frame-state">正在加载工具…</div>}><NativeTools /></Suspense>
   if (!page.view) return <div className="somnus-frame-state">{t('imNotice')}</div>
   return <SomnusFrame view={page.view} />
 }

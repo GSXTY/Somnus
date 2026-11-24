@@ -20,7 +20,7 @@ async function main() {
     const fixture = `
       import React from 'react';
       import { createRoot } from 'react-dom/client';
-      import NativeTools from './desktop/dsh_next/client/NativeTools';
+      import NativeTools from './plugins-ui/tools-probe/src/NativeTools';
       window.failNext = false; window.calls = []; window.errors = [];
       window.addEventListener('error', event => errors.push(event.message));
       window.addEventListener('unhandledrejection', event => errors.push(event.reason?.stack || String(event.reason)));

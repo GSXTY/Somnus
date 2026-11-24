@@ -1,24 +1,26 @@
 /**
- * DSH 客户端模块入口：把内置「工具」页整页以插件形式渲染出来（对照实验用）。
+ * DSH 客户端模块入口：以插件形式渲染「工具」页（内置实现已移除，本插件是唯一实现）。
  *
  * 做的事只有四件：
  *   1) 收集依赖图里出现的全部 CSS，拼成一个 <style data-somnus-tools-probe="styles">；
- *   2) 注册 `main` 主面板（key = sidebar id = `plugin-tools`），渲染内置的 NativeTools；
+ *   2) 注册 `main` 主面板（key = sidebar id = `plugin-tools`），渲染本插件自带的 NativeTools；
  *   3) 注册 `sidebar.panellist` 侧边栏入口，标签「工具（插件）」，order -7.5；
  *   4) 不调用 layout.selectPanel —— 工具页不是启动默认页。
  *
- * 页面渲染代码与内置工具页是同一份源码（本文件直接 import
- * desktop/dsh_next/client/NativeTools），没有重写，也没有修改内置页任何一行。
+ * 页面渲染代码与原先的内置工具页是同一份源码（现已从
+ * desktop/dsh_next/client/ 移入本插件的 src/，由插件自带），没有重写。
+ * 内置页已从软件本体移除，原始实现备份在
+ * plugins-ui/_backup/builtin-tools-2026-11-24/。
  *
  * JSX 说明：构建走 esbuild 经典转换（React.createElement）。本文件不 import React，
  * 由 build.mjs 生成的 factory 顶部 `var React = require('react')` 提供标识符。
  */
-import NativeTools from '../../../desktop/dsh_next/client/NativeTools'
-// 内置 NativeTools 自己的样式（与内置构建一致，不额外加作用域包裹）。
-import nativeToolsCss from '../../../desktop/dsh_next/client/native-tools.css'
-// 工具页内嵌的两个子页面样式。内置构建（desktop/dsh_next/client/overlay.mjs 的
+import NativeTools from './NativeTools'
+// 工具页样式：插件自带（已从 desktop/ 移入本目录），不额外加作用域包裹。
+import nativeToolsCss from './native-tools.css'
+// 工具页内嵌的两个子页面样式。原内置构建（desktop/dsh_next/client/overlay.mjs 的
 // somnus-scoped-tool-styles）把这三份整体收在 .somnus-native-tools 之下；这里用
-// 同样的包裹方式，避免污染宿主样式，并与内置版视觉一致。
+// 同样的包裹方式，避免污染宿主样式，并保持与内置版一致的视觉。
 import sqlQueryCss from '../../../page_design/frontend/src/dashboard/sql-query.css'
 import deepAnalysisCss from '../../../page_design/frontend/src/analysis/deep-analysis.css'
 import deepAnalysisReportCss from '../../../page_design/frontend/src/analysis/deep-analysis-report.css'

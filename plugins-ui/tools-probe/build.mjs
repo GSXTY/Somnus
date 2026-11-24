@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 用仓库里已装好的 esbuild 构建 DSH 客户端模块（不 pnpm install、不联网）。
  *
  * 产物：dist/client.js
@@ -79,7 +79,7 @@ const wrapped = `/**
  * Somnus 工具页对照插件客户端模块。
  * 由 build.mjs 自动生成，请勿手改；重新构建：node build.mjs
  *
- * 渲染代码就是内置工具页本身（import desktop/dsh_next/client/NativeTools）：
+ * 渲染代码就是原内置工具页源码（已从 desktop/dsh_next/client/ 移入 src/，由插件自带）：
  *   NativeTools → SqlQuery / DeepAnalysis / NativeWaveform
  */
 window.__ModuleLoader__.load({
